@@ -67,13 +67,11 @@ impl VerifyingKey {
     /// Decode a canonical key, refusing metadata outside the machine's regions or the program commitment's profile.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         let (root, rest) = bytes.split_first_chunk::<32>()?;
-        if !rest.len().is_multiple_of(8) {
+        let (words, tail) = rest.as_chunks::<8>();
+        if !tail.is_empty() {
             return None;
         }
-        let words: Vec<_> = rest
-            .chunks_exact(8)
-            .map(|w| u64::from_le_bytes(w.try_into().expect("eight bytes")))
-            .collect();
+        let words: Vec<_> = words.iter().map(|w| u64::from_le_bytes(*w)).collect();
         let (&[bc, entry, ram, advice, len], image) = words.split_first_chunk::<5>()?;
         let (bc, ram, advice) = (
             usize::try_from(bc).ok()?,

@@ -63,6 +63,12 @@ impl<'p> ProofShape<'p> {
         let clock = r.scope("announcement", |r| self.read_announcement(r));
         let output = output.map(|o| r.b.k_to_e1(o));
         let claims = infallible(self.layout.verify_core(&mut r, clock, &output, self.shape.rate()));
+        let root =
+            r.b.d_const(primitives::hash::digest_words(self.program.verifying_key().root()));
+        r.scope("program opening", |r| {
+            infallible(self.program.verifying_key().verify_program(r, root, &claims.program))
+        });
+        infallible(r.check_eof());
         CoreRows {
             claims,
             state: t.digest(b),
@@ -84,7 +90,16 @@ impl<'p> ProofShape<'p> {
             let core = infallible(self.layout.record_core(&mut rec, self.shape.rate(), &output));
             let claims = infallible(core.claims.into_plain(&mut rec));
             // A record too large for the key commitment has no outer proof: the rows then refuse every proof.
-            let fits = core.keys.verify_outer(rec).map(|mut r| infallible(r.check_eof()));
+            let fits = core.keys.verify_outer(rec).map(|mut r| {
+                let root =
+                    r.b.d_const(primitives::hash::digest_words(self.program.verifying_key().root()));
+                infallible(
+                    self.program
+                        .verifying_key()
+                        .verify_program(&mut r, root, &claims.program),
+                );
+                infallible(r.check_eof());
+            });
             (claims, fits.is_ok())
         };
         if !fits {
@@ -300,13 +315,19 @@ mod tests {
             let mut forged = f.openings.clone();
             forged[phase].paths[1][0] ^= 1;
             let failure = first(&f.proof, &forged);
-            assert!(failure.starts_with("opening / whir / rows"), "{failure}");
+            assert!(
+                failure.starts_with("opening / whir / rows") || failure.starts_with("program opening / whir / rows"),
+                "{failure}"
+            );
 
             let mut forged = f.openings.clone();
             let last = forged[phase].leaf_words - 1;
             forged[phase].images[last].0 ^= 1;
             let failure = first(&f.proof, &forged);
-            assert!(failure.starts_with("opening / whir / rows"), "{failure}");
+            assert!(
+                failure.starts_with("opening / whir / rows") || failure.starts_with("program opening / whir / rows"),
+                "{failure}"
+            );
         }
     }
 

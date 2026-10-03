@@ -67,7 +67,6 @@ impl Layout {
     ) -> Result<DeferredClaims<V::E>, CpuError> {
         let commitment = Commitment::read(v, self.shape, rate)?;
         let claims = self.verify_committed(v, &commitment, clock, output)?;
-        v.check_eof()?;
         Ok(claims)
     }
 

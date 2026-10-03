@@ -84,7 +84,7 @@ mod stacking;
 mod tables;
 
 pub use commitment::{InvalidRate, Rate, SECURITY_BITS};
-pub use cpu::{DecodeError, Output, Program, Proof, ProveError, ProvenRun, Prover, Stats, VerifyError};
+pub use cpu::{DecodeError, Output, Program, Proof, ProveError, ProvenRun, Prover, Stats, VerifyError, VerifyingKey};
 #[doc(hidden)]
 pub use rec::tree::{
     Aggregate, Capacity, CircuitStats, Claim, ClaimGroup, ClaimLeaf, ClaimSet, ClaimSetError, ClaimShape, DensePoly,

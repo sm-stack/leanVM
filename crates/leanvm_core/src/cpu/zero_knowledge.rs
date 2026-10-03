@@ -104,6 +104,7 @@ pub(super) fn prove(program: &Program, mut w: Witness, output: Output, rate: Rat
         rec.finish().1
     });
     info_span!("Outer proof").in_scope(|| keys.prove_outer(&mut ps, &record));
+    program.open_program(&mut ps, output, ProofKind::ZeroKnowledge);
     Proof(ps.into_proof(), ProofKind::ZeroKnowledge)
 }
 
@@ -118,7 +119,7 @@ fn replay<'p>(
     proof: &'p ProofTranscript,
 ) -> (Recorder<VerifierState<'p>>, RecordedCore<Hash, F192>) {
     let mut rec = Recorder::new(VerifierState::new(&program.zk_session(), output.words(), proof));
-    let core = record_proof(program, &mut rec, output).expect("the prover's own proof verifies");
+    let core = record_proof(&program.key, &mut rec, output).expect("the prover's own proof verifies");
     (rec, core)
 }
 
@@ -129,26 +130,29 @@ fn replay<'p>(
 /// # Errors
 ///
 /// Returns the first stage that refuses the proof.
-pub(super) fn verify_core<V>(program: &Program, output: Output, inner: V) -> Result<(V, DeferredClaims), CpuError>
+pub(super) fn verify_core<V>(
+    program: &super::VerifyingKey,
+    output: Output,
+    inner: V,
+) -> Result<(V, DeferredClaims), CpuError>
 where
     V: OpeningVerifier<E = F192> + PublicColumns,
 {
     let mut rec = Recorder::new(inner);
     let core = record_proof(program, &mut rec, output)?;
     let claims = core.claims.into_plain(&mut rec)?;
-    let mut inner = core.keys.verify_outer(rec).map_err(CpuError::Outer)?;
-    inner.check_eof()?;
+    let inner = core.keys.verify_outer(rec).map_err(CpuError::Outer)?;
     Ok((inner, claims))
 }
 
 /// The recorded core of a proof read natively: its announced shape, its layout, then the core.
 fn record_proof<V: OpeningVerifier<E = F192>>(
-    program: &Program,
+    program: &super::VerifyingKey,
     rec: &mut Recorder<V>,
     output: Output,
 ) -> Result<RecordedCore<V::Root, F192>, CpuError> {
     let (taus, rate) = Announcement::read_shape(rec.inner())?;
-    let layout = Layout::announced(program.rv(), taus, ProofKind::ZeroKnowledge)?;
+    let layout = Layout::for_key(program, taus, ProofKind::ZeroKnowledge)?;
     let output = output.words().map(|o| rec.constant(F192::from(F64(o))));
     layout.record_core(rec, rate, &output)
 }

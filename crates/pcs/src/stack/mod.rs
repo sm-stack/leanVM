@@ -196,11 +196,11 @@ pub struct Statement<'a, E = F192> {
 impl<E: Copy> Statement<'_, E> {
     /// The statement's invariants, one check for the prover and the verifier.
     ///
-    /// - There is at least one ring-switched claim.
+    /// - There is at least one point or ring-switched claim.
     /// - Every region and every claim is an aligned slice of the first `committed` words.
     /// - Every ring-switched claim's point spans its region.
     fn check(&self, log_n: usize, committed: usize) -> Result<(), WhirError> {
-        if self.rings.iter().all(|ring| ring.claims.is_empty()) {
+        if self.points.is_empty() && self.rings.iter().all(|ring| ring.claims.is_empty()) {
             return Err(WhirError::NoRingClaim);
         }
         for (index, ring) in self.rings.iter().enumerate() {
@@ -523,6 +523,7 @@ mod tests {
         // Fixture state: a 2^10-word cube, its first 2^9 words committed.
         let check = |points: &[StackClaim], rings: &[RingSwitch]| Statement { points, rings }.check(10, 1 << 9);
         assert!(check(&[point(64, 6), strided(3)], &[ring(256, 8)]).is_ok());
+        assert!(check(&[point(64, 6)], &[]).is_ok());
 
         // No ring claim; a region past the committed lanes, misaligned, or wider than the cube.
         assert!(matches!(check(&[], &[]), Err(WhirError::NoRingClaim)));

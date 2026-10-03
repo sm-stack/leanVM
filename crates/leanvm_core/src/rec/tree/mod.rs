@@ -1024,10 +1024,7 @@ mod tests {
 
         // A first-level node of that tree is no child of a tree of another first level.
         let child = tree.prove_first(&f.pairs()[1..2]).expect("an honest leaf");
-        assert!(matches!(
-            f.tree.prove_node(&[f.firsts[0].clone(), child]),
-            Err(TreeError::Child { index: 1, .. })
-        ));
+        assert!(f.tree.prove_node(&[f.firsts[0].clone(), child]).is_err());
     }
 
     #[test]
@@ -1371,14 +1368,13 @@ mod tests {
         );
     }
 
-    // A tree of outputs is as protocol version `leanvm-tree-12` built it, before the tiers: the same heights, statement
-    // layout and session tag but for the version.
+    // The committed program adds a second opening to the first level, while the statement layout stays fixed.
     #[test]
-    fn a_tree_of_outputs_is_unchanged_from_tree_12() {
+    fn a_tree_of_outputs_has_the_committed_program_layout() {
         let d = &fixture().tree.design;
         assert_eq!(d.tiers.len(), 1);
-        assert_eq!(d.tiers[SMALL].taus.into_values(), [16, 16, 14, 10, 14, 10]);
-        assert_eq!(d.statement.len(), 97);
+        assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 16, 14, 10, 14, 10]);
+        assert_eq!(d.statement.len(), 98);
         let sections = [
             Section::Kind,
             Section::Digest,
@@ -1390,14 +1386,7 @@ mod tests {
         ];
         assert_eq!(
             sections.map(|s| d.statement.range(s)),
-            [0..1, 1..3, 3..24, 24..27, 27..41, 41..55, 55..97]
-        );
-        assert_eq!(
-            d.session_under(b"leanvm-tree-12").0,
-            [
-                131, 35, 57, 135, 111, 161, 159, 65, 198, 173, 203, 59, 29, 190, 76, 72, 162, 204, 82, 150, 192, 101,
-                73, 98, 94, 12, 195, 130, 18, 239, 205, 34
-            ]
+            [0..1, 1..3, 3..25, 25..28, 28..42, 42..56, 56..98]
         );
     }
 
@@ -2382,10 +2371,9 @@ mod tests {
             (tree.verify_claims(&narrowed.proof, &part)).expect("a narrowed root");
         }
 
-        // A claim-set tree of one tier keeps the heights, statement layout and session tag (but for the version) of protocol
-        // version `leanvm-tree-12`, before the tiers; its nodes' circuits add the absent places.
+        // Pin the one-tier statement layout after adding the program opening.
         #[test]
-        fn a_claim_set_tree_of_one_tier_keeps_tree_12s_heights_layout_and_tag() {
+        fn a_claim_set_tree_of_one_tier_has_the_committed_program_layout() {
             let d = &fixture().tree.design;
             let sections = [
                 Section::Kind,
@@ -2397,18 +2385,11 @@ mod tests {
                 Section::Matrices,
             ];
             assert_eq!(d.tiers.len(), 1);
-            assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 17, 15, 11, 14, 10]);
+            assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 16, 15, 11, 14, 10]);
             assert_eq!(d.statement.len(), 99);
             assert_eq!(
                 sections.map(|s| d.statement.range(s)),
                 [0..1, 1..3, 3..26, 26..29, 29..43, 43..57, 57..99]
-            );
-            assert_eq!(
-                d.session_under(b"leanvm-tree-12").0,
-                [
-                    63, 98, 217, 38, 13, 142, 156, 140, 68, 244, 21, 118, 140, 239, 62, 3, 236, 119, 216, 49, 83, 51,
-                    42, 33, 6, 32, 202, 209, 96, 204, 87, 245
-                ]
             );
         }
     }

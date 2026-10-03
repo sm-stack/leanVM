@@ -31,8 +31,8 @@ impl ProofKind {
     /// The magic tells the two kinds apart, so a proof of one kind is refused as the other.
     const fn envelope(self) -> Envelope {
         match self {
-            Self::Plain => Envelope::new(*b"LVMP", 17),
-            Self::ZeroKnowledge => Envelope::new(*b"LVMZ", 1),
+            Self::Plain => Envelope::new(*b"LVMP", 18),
+            Self::ZeroKnowledge => Envelope::new(*b"LVMZ", 2),
         }
     }
 }

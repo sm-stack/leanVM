@@ -7,13 +7,13 @@ use super::deferred::DeferredClaims;
 use super::error::{CpuError, ProveError, VerifyError};
 use super::execute::{Execution, Recorder, RowCounter, TraceBuilder};
 use super::filler::{FillBlocks, Plan};
-use super::layout::{Announcement, Lookup, Schema, Sizes};
+use super::key::{ProgramCommitment, VerifyingKey};
+use super::layout::{Announcement, Schema, Sizes};
 use super::proof::ProofKind;
 use super::reduce::TableClaims;
 use super::witness::Witness;
 use super::zero_knowledge;
 use super::{Output, Proof, Prover};
-use crate::bus::PublicColumns;
 use crate::commitment::{Committed, Rate, RingSwitch, StackClaim};
 use crate::constraints::{Claims, Columns};
 use crate::rv::{ElfError, Guest, Machine, ProgramError, Region, RiscvProgram};
@@ -24,10 +24,9 @@ use fiat_shamir::arith::Native;
 use fiat_shamir::{ProverState, SessionId, VerifierState};
 use flock::reduction;
 use pcs::merkle::Openings;
-use pcs::verifier::{OpeningVerifier, Recording};
 use primitives::field::{F64, F192};
-use primitives::hash::Hasher;
 use std::cmp::Reverse;
+use std::sync::Arc;
 use tracing::info_span;
 
 /// A validated program, its fill blocks, and the digest of everything public about it.
@@ -41,22 +40,21 @@ pub struct Program {
     pub(super) digest: [u8; 32],
     /// Where each fill block sits in the text.
     pub(super) filler: FillBlocks,
+    pub(super) key: VerifyingKey,
+    pub(super) committed: Arc<ProgramCommitment>,
 }
-
-// Why: the digest reads tables of words as bytes, which is their little-endian image only on a little-endian target.
-const _: () = assert!(cfg!(target_endian = "little"));
 
 impl Program {
     /// The domain separator of the digest, versioned with the statement's format.
-    const DIGEST_DOMAIN: &'static [u8] = b"leanvm-rv64im-13";
+    pub(crate) const DIGEST_DOMAIN: &'static [u8] = b"leanvm-rv64im-committed-1";
 
     /// The protocol half of the transcript's session tag: the proof system, its sponge and codecs, its version.
     ///
     /// The program's digest follows it in the tag, naming the relation.
-    const SESSION_TAG: &'static [u8] = b"leanvm/rv64im-proof/blake2s-duplex/gf2-192/v2";
+    pub(crate) const SESSION_TAG: &'static [u8] = b"leanvm/rv64im-proof/blake2s-duplex/gf2-192/v2";
 
     /// The session tag of a zero-knowledge proof: another protocol, so no challenge of one kind is one of the other.
-    const ZK_SESSION_TAG: &'static [u8] = b"leanvm/rv64im-zk-proof/blake2s-duplex/gf2-192/v1";
+    pub(crate) const ZK_SESSION_TAG: &'static [u8] = b"leanvm/rv64im-zk-proof/blake2s-duplex/gf2-192/v1";
 
     /// The cycles between two checks of a running trace against one commitment.
     const SIZE_CHECK_PERIOD: u64 = 1 << 16;
@@ -85,7 +83,12 @@ impl Program {
         words
             .checked_add(1 + FillBlocks::WORDS + 2)
             .and_then(usize::checked_next_power_of_two)
-            .is_some_and(|total| total <= 1 << Region::TEXT.max_log_words())
+            .is_some_and(|total| {
+                total
+                    <= 1 << Region::TEXT
+                        .max_log_words()
+                        .min(crate::commitment::MAX_MU - crate::bus::N_TUPLE_BITS)
+            })
     }
 
     /// The program of instruction words, an entry point, a RAM image and the memory sizes.
@@ -114,8 +117,12 @@ impl Program {
         text.push(0);
         let filler = FillBlocks::append(&mut text);
         let rv = RiscvProgram::new(&text, entry_pc, image, log_ram, log_advice)?;
+        let committed = Arc::new(ProgramCommitment::new(&rv));
+        let key = VerifyingKey::new(committed.root(), Sizes::of(&rv), entry_pc, rv.image().to_vec());
         Ok(Self {
-            digest: Self::digest_of(&rv),
+            digest: *key.digest(),
+            key,
+            committed,
             rv,
             filler,
         })
@@ -263,6 +270,7 @@ impl Program {
                 .open(&mut ps, &w.q, &slots, &rings)
                 .expect("opening uses the committed witness");
         });
+        self.open_program(&mut ps, output, ProofKind::Plain);
         Proof(ps.into_proof(), ProofKind::Plain)
     }
 
@@ -361,65 +369,44 @@ impl Program {
     /// The proof is not one of this program and this output.
     #[tracing::instrument(name = "Verify", skip_all)]
     pub fn verify(&self, output: Output, proof: &Proof) -> Result<(), VerifyError> {
-        let claims = self.verify_core(output, proof)?;
-        Ok(self.check_deferred(&claims)?)
+        self.key.verify(output, proof)
     }
 
-    /// The verifier's core: every check that depends on the proof.
-    ///
-    /// It returns the claims the proof leaves on polynomials only the program or the VM's circuits fix.
-    /// A proof verifies exactly when the core accepts it and its claims are settled.
-    /// A caller may settle them later, but never skip them.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first stage that refuses the proof.
+    /// The public key, sufficient to verify without decoding the program.
+    pub const fn verifying_key(&self) -> &VerifyingKey {
+        &self.key
+    }
+
     #[doc(hidden)]
-    #[tracing::instrument(name = "Verify core", skip_all)]
     pub fn verify_core(&self, output: Output, proof: &Proof) -> Result<DeferredClaims, CpuError> {
-        if proof.is_zero_knowledge() {
-            let vs = VerifierState::new(&self.zk_session(), output.words(), &proof.0);
-            return zero_knowledge::verify_core(self, output, vs).map(|(_, claims)| claims);
-        }
-        // The session names the program, and the output is the instance, as on the prover's side.
-        let mut vs = VerifierState::new(&self.session(), output.words(), &proof.0);
-        self.core(output, &mut vs)
+        self.key.verify_core(output, proof)
     }
 
-    /// Verify a proof, keeping every Merkle opening it authenticates, phase by phase.
-    ///
-    /// A recursive verifier of the proof hashes those openings rather than decoding the hints again.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first stage that refuses the proof.
-    #[tracing::instrument(name = "Verify", skip_all)]
     #[doc(hidden)]
     pub fn verify_recording(&self, output: Output, proof: &Proof) -> Result<Vec<Openings>, VerifyError> {
-        if proof.is_zero_knowledge() {
-            let recording = Recording::new(VerifierState::new(&self.zk_session(), output.words(), &proof.0));
-            let (recording, claims) = zero_knowledge::verify_core(self, output, recording)?;
-            self.check_deferred(&claims)?;
-            return Ok(recording.into_openings());
-        }
-        let mut recording = Recording::new(VerifierState::new(&self.session(), output.words(), &proof.0));
-        let claims = self.core(output, &mut recording)?;
-        self.check_deferred(&claims)?;
-        Ok(recording.into_openings())
+        self.key.verify_recording(output, proof)
     }
 
-    /// The verifier's core over a verifier reading the proof: the announcement, its layout, then every check.
-    fn core<V: OpeningVerifier<E = F192> + PublicColumns>(
-        &self,
-        output: Output,
-        v: &mut V,
-    ) -> Result<DeferredClaims, CpuError> {
-        // The announced sizes, then the layout they describe, then the core.
-        let announcement = Announcement::read(v)?;
-        let l = announcement.layout(&self.rv)?;
-        let clock = F192::from(F64(announcement.ts_final));
-        let output = output.words().map(|o| F192::from(F64(o)));
-        l.verify_core(v, clock, &output, announcement.rate)
+    pub(super) fn open_program(&self, ps: &mut ProverState, output: Output, kind: ProofKind) {
+        let claims = match kind {
+            ProofKind::Plain => {
+                let mut v = VerifierState::new(&self.session(), output.words(), ps.proof());
+                self.key.witness_core(output, &mut v)
+            }
+            ProofKind::ZeroKnowledge => {
+                let v = VerifierState::new(&self.zk_session(), output.words(), ps.proof());
+                zero_knowledge::verify_core(&self.key, output, v).map(|(_, claims)| claims)
+            }
+        };
+        let claims = match claims {
+            Ok(claims) => claims,
+            // Forged-witness tests also construct proofs that fail before the program opening.
+            #[cfg(test)]
+            Err(_) => return,
+            #[cfg(not(test))]
+            Err(error) => panic!("the prover's own core: {error}"),
+        };
+        self.committed.open(ps, &self.key, &claims.program);
     }
 
     /// The decoded text, memory image and region sizes.
@@ -478,30 +465,6 @@ impl Program {
             return Err(ProveError::TooLong);
         }
         Ok(committed)
-    }
-
-    /// The digest of `rv`'s public statement.
-    ///
-    /// Every variable-length part is length-framed, so the preimage parses one way.
-    fn digest_of(rv: &RiscvProgram) -> [u8; 32] {
-        let bytes = |words: &[u64]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
-        let table = Lookup::Bytecode.table(rv);
-        let table_bytes: Vec<u8> = table.iter().flat_map(|w| w.0.to_le_bytes()).collect();
-
-        // The domain, the bytecode table, then the scalars and the image.
-        let mut h = Hasher::new();
-        h.update(Self::DIGEST_DOMAIN);
-        h.update(&bytes(&[table.len() as u64]));
-        h.update(&table_bytes);
-        h.update(&bytes(&[
-            rv.entry_pc(),
-            rv.halt_pc(),
-            rv.log_ram() as u64,
-            rv.log_advice() as u64,
-            rv.image().len() as u64,
-        ]));
-        h.update(&bytes(rv.image()));
-        h.finalize()
     }
 }
 
@@ -566,6 +529,7 @@ fn log2_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Lookup;
     use super::*;
     use crate::bus::Coord;
     use crate::bus::tests::unmatched_leaves;
@@ -622,7 +586,13 @@ mod tests {
         // The largest text that fits, after the illegal word, the fill blocks, and the two slots `rv` appends.
         //
         // Building a program that large takes gigabytes, so the boundary is checked on lengths.
-        let limit = (1 << Region::TEXT.max_log_words()) - 1 - FillBlocks::WORDS - 2;
+        let limit = (1
+            << Region::TEXT
+                .max_log_words()
+                .min(crate::commitment::MAX_MU - crate::bus::N_TUPLE_BITS))
+            - 1
+            - FillBlocks::WORDS
+            - 2;
         assert!(Program::text_fits(limit));
         assert!(!Program::text_fits(limit + 1));
 

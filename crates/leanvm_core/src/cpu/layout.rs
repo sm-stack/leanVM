@@ -63,7 +63,7 @@ impl Framework {
     }
 
     /// The block's two tuples: the push side's seed, then the pull side's finalization.
-    fn tuples(self, p: &RiscvProgram, ts_final: u64) -> (Vec<Coord>, Vec<Coord>) {
+    fn tuples(self, sizes: Sizes, entry_pc: u64, image: &[u64], ts_final: u64) -> (Vec<Coord>, Vec<Coord>) {
         // A read-write array: each cell starts at the seed's clock holding `init`.
         //
         // It ends at its last timestamp holding its final word (§sec:memchan).
@@ -88,13 +88,13 @@ impl Framework {
             Self::State => (
                 vec![
                     Separator::State.coordinate(),
-                    Const(F64(p.entry_pc())),
+                    Const(F64(entry_pc)),
                     Const(F64(Clock::CLOCK_START)),
                     Const(F64::ZERO),
                 ],
                 vec![
                     Separator::State.coordinate(),
-                    Const(F64(p.halt_pc())),
+                    Const(F64(Region::TEXT.address((1 << sizes.log_bytecode) - 1))),
                     Const(F64(ts_final)),
                     Const(F64::ONE),
                 ],
@@ -109,7 +109,7 @@ impl Framework {
             }
             // RAM starts as the program's image, then zeros, all public.
             Self::Ram => {
-                let image = Sparse(Arc::new(SparseColumn::new(p.log_ram(), &[(0, p.image())])));
+                let image = Sparse(Arc::new(SparseColumn::new(sizes.log_ram, &[(0, image)])));
                 array(
                     Separator::Memory.value(),
                     word(Region::RAM.base()),
@@ -560,13 +560,44 @@ impl Layout {
     ///
     /// So every row was executed, and no flush has padding tuples to divide back out of the bus.
     pub fn new(p: &RiscvProgram, taus: PerTable<usize>, ts_final: u64) -> Self {
-        let sizes = Sizes::of(p);
+        Self::build(
+            Sizes::of(p),
+            p.entry_pc(),
+            p.image(),
+            Lookup::Bytecode.tuple(p),
+            taus,
+            ts_final,
+        )
+    }
 
+    pub(crate) fn for_key(key: &super::VerifyingKey, taus: PerTable<usize>, kind: ProofKind) -> Result<Self, CpuError> {
+        Self::check_heights(&taus)?;
+        let pc = IntIndex {
+            base: F64(Region::TEXT.base()),
+            shift: 2,
+        };
+        let coords = [Separator::Bytecode.coordinate(), pc]
+            .into_iter()
+            .chain((0..10).map(|_| Coord::Public(PublicColumn::new(Arc::new(Vec::new())))))
+            .collect();
+        Self::build(key.sizes(), key.entry_pc(), key.image(), coords, taus, 0)
+            .of_kind(kind)
+            .fits()
+    }
+
+    fn build(
+        sizes: Sizes,
+        entry_pc: u64,
+        image: &[u64],
+        coords: Vec<Coord>,
+        taus: PerTable<usize>,
+        ts_final: u64,
+    ) -> Self {
         // The framework's blocks open both sides, one push and one pull block each.
         let (mut push, mut pull) = (Vec::new(), Vec::new());
         for block in Framework::ALL {
             let kappa = block.log_rows(sizes);
-            let (seed, finalize) = block.tuples(p, ts_final);
+            let (seed, finalize) = block.tuples(sizes, entry_pc, image, ts_final);
             push.push(Block::framework(kappa, seed));
             pull.push(Block::framework(kappa, finalize));
         }
@@ -586,7 +617,7 @@ impl Layout {
             .into_iter()
             .map(|lookup| Producer {
                 kappa: lookup.log_rows(sizes),
-                coords: lookup.tuple(p),
+                coords: coords.clone(),
                 col: lookup.multiplicity().col(),
                 bits: lookup.multiplicity_bits(&taus),
             })
@@ -822,17 +853,6 @@ impl Announcement {
             rate: Self::decode_rate(log_inv_rate)?,
             ts_final: ts_final.c0,
         })
-    }
-
-    /// The layout the announced heights describe for `p`, its final clock zero.
-    ///
-    /// The verifier adds the announced clock's share itself.
-    ///
-    /// # Errors
-    ///
-    /// Refuses heights whose stacked witness the commitment does not take.
-    pub(super) fn layout(&self, p: &RiscvProgram) -> Result<Layout, CpuError> {
-        Layout::announced(p, self.taus, ProofKind::Plain)
     }
 }
 

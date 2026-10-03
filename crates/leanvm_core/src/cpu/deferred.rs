@@ -216,7 +216,20 @@ impl Program {
             return Err(CpuError::Constraint(ConstraintError::FinalMismatch));
         }
 
-        for (f, claim) in CircuitId::ALL.into_iter().zip(&claims.circuits) {
+        claims.check_circuits()?;
+        Ok(())
+    }
+}
+
+impl DeferredClaims {
+    pub(crate) fn check_circuits(&self) -> Result<(), CpuError> {
+        if self.circuits.len() != N_CIRCUITS {
+            return Err(CpuError::MalformedClaim(MalformedClaim::CircuitCount {
+                expected: N_CIRCUITS,
+                got: self.circuits.len(),
+            }));
+        }
+        for (f, claim) in CircuitId::ALL.into_iter().zip(&self.circuits) {
             let (table, part) = (f.table().name(), f.part());
             if !f.shape().fits(&claim.point) {
                 return Err(CpuError::MalformedClaim(MalformedClaim::MatrixForm { table, part }));

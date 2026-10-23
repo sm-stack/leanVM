@@ -8,6 +8,7 @@ use std::ptr;
 /// # Safety
 /// Always safe to call. The caller owns the resulting mapping, which is never
 /// unmapped (the arena lives for the process).
+#[cfg(not(target_os = "zkvm"))]
 pub unsafe fn reserve(size: usize) -> *mut u8 {
     let flags = libc::MAP_PRIVATE | libc::MAP_ANON;
     // MAP_NORESERVE keeps Linux from charging the whole sparse reservation
@@ -22,6 +23,15 @@ pub unsafe fn reserve(size: usize) -> *mut u8 {
     } else {
         ret.cast::<u8>()
     }
+}
+
+/// No address-space reservation is available on zkVM targets.
+///
+/// # Safety
+/// Always safe to call; returns null and creates no mapping.
+#[cfg(target_os = "zkvm")]
+pub unsafe fn reserve(_size: usize) -> *mut u8 {
+    ptr::null_mut()
 }
 
 /// Ask the kernel not to use transparent huge pages for `[ptr, ptr + size)`.

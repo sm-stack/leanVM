@@ -140,7 +140,7 @@ pub fn mul_wide(a: u64, b: u64) -> u128 {
         all(target_arch = "x86_64", target_feature = "pclmulqdq")
     )))]
     {
-        software::clmul(a, b)
+        software::clmul_fast(a, b)
     }
 }
 
@@ -152,9 +152,23 @@ pub fn square_wide(a: u64) -> u128 {
         // SAFETY: bmi2 is enabled at compile time.
         unsafe { x86_64::spread(a) }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    #[cfg(all(
+        not(all(target_arch = "x86_64", target_feature = "bmi2")),
+        any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )
+    ))]
     {
         mul_wide(a, a)
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "bmi2"),
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    )))]
+    {
+        software::spread(a)
     }
 }
 
@@ -341,7 +355,47 @@ pub mod x86_64 {
 }
 
 pub mod software {
-    /// Portable 64x64 carry-less product, used by fallback paths and as the reference.
+    /// [BearSSL's bmul](https://www.bearssl.org/constanttime.html#ghash-for-gcm): three holes absorb carries.
+    #[inline]
+    fn bmul32(a: u32, b: u32) -> u64 {
+        let a = u64::from(a);
+        let b = u64::from(b);
+        let (a0, a1, a2, a3) = (a & 0x1111_1111, a & 0x2222_2222, a & 0x4444_4444, a & 0x8888_8888);
+        let (b0, b1, b2, b3) = (b & 0x1111_1111, b & 0x2222_2222, b & 0x4444_4444, b & 0x8888_8888);
+        let c0 = (a0 * b0) ^ (a1 * b3) ^ (a2 * b2) ^ (a3 * b1);
+        let c1 = (a0 * b1) ^ (a1 * b0) ^ (a2 * b3) ^ (a3 * b2);
+        let c2 = (a0 * b2) ^ (a1 * b1) ^ (a2 * b0) ^ (a3 * b3);
+        let c3 = (a0 * b3) ^ (a1 * b2) ^ (a2 * b1) ^ (a3 * b0);
+        (c0 & 0x1111_1111_1111_1111)
+            | (c1 & 0x2222_2222_2222_2222)
+            | (c2 & 0x4444_4444_4444_4444)
+            | (c3 & 0x8888_8888_8888_8888)
+    }
+
+    /// Portable carry-less product using three 32-bit products and Karatsuba.
+    #[inline]
+    pub fn clmul_fast(a: u64, b: u64) -> u128 {
+        let (a0, a1) = (a as u32, (a >> 32) as u32);
+        let (b0, b1) = (b as u32, (b >> 32) as u32);
+        let lo = bmul32(a0, b0);
+        let hi = bmul32(a1, b1);
+        let mid = bmul32(a0 ^ a1, b0 ^ b1) ^ lo ^ hi;
+        u128::from(lo) ^ (u128::from(mid) << 32) ^ (u128::from(hi) << 64)
+    }
+
+    /// Carry-less square by spreading each bit into an even bit position.
+    #[inline]
+    pub fn spread(a: u64) -> u128 {
+        let mut x = u128::from(a);
+        x = (x | (x << 32)) & 0x0000_0000_ffff_ffff_0000_0000_ffff_ffff;
+        x = (x | (x << 16)) & 0x0000_ffff_0000_ffff_0000_ffff_0000_ffff;
+        x = (x | (x << 8)) & 0x00ff_00ff_00ff_00ff_00ff_00ff_00ff_00ff;
+        x = (x | (x << 4)) & 0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f;
+        x = (x | (x << 2)) & 0x3333_3333_3333_3333_3333_3333_3333_3333;
+        (x | (x << 1)) & 0x5555_5555_5555_5555_5555_5555_5555_5555
+    }
+
+    /// Bit-by-bit carry-less product, kept as an independent reference.
     pub const fn clmul(a: u64, b: u64) -> u128 {
         let mut acc = 0u128;
         let mut i = 0;
@@ -432,6 +486,18 @@ mod tests {
                 assert_eq!(vgetq_lane_u64::<0>(pair), reference_mul(a, b));
                 assert_eq!(vgetq_lane_u64::<1>(pair), reference_mul(b, b));
             }
+        }
+    }
+
+    #[test]
+    fn portable_products_and_squares_match_reference() {
+        let mut rng = Rng::new(42);
+        let random = (0..50_000).map(|_| (rng.next_u64(), rng.next_u64()));
+        let corners = CORNERS.iter().flat_map(|&a| CORNERS.iter().map(move |&b| (a, b)));
+        let bits = (0..64).flat_map(|i| (0..64).map(move |j| (1 << i, 1 << j)));
+        for (a, b) in random.chain(corners).chain(bits) {
+            assert_eq!(software::clmul_fast(a, b), software::clmul(a, b));
+            assert_eq!(software::spread(a), software::clmul(a, a));
         }
     }
 

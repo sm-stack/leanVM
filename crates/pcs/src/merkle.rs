@@ -20,6 +20,7 @@
 //!
 //! Above the blocks, the last block to finish a unit of nodes climbs it, so no pass waits on a barrier.
 
+use std::borrow::Cow;
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -68,7 +69,7 @@ impl MerkleBuilder {
     ///
     /// Panics unless the block is aligned, sized like every other, and new.
     pub fn absorb(&self, first_leaf: usize, rows: &[F64]) {
-        self.absorb_bytes(first_leaf, words_as_bytes(rows));
+        self.absorb_bytes(first_leaf, &words_as_bytes(rows));
     }
 
     fn absorb_bytes(&self, first_leaf: usize, rows: &[u8]) {
@@ -375,9 +376,16 @@ impl Tile {
     }
 }
 
-fn words_as_bytes(words: &[F64]) -> &[u8] {
-    // SAFETY: F64 is repr(transparent) over u64, so on this LE target the slice is its words' byte image.
-    unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) }
+fn words_as_bytes(words: &[F64]) -> Cow<'_, [u8]> {
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: F64 is repr(transparent) over u64, whose byte image is little-endian here.
+        Cow::Borrowed(unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) })
+    }
+    #[cfg(target_endian = "big")]
+    {
+        Cow::Owned(words.iter().flat_map(|w| w.0.to_le_bytes()).collect())
+    }
 }
 
 fn digests_as_bytes(out: &mut [MaybeUninit<Hash>]) -> &mut [u8] {
@@ -389,11 +397,23 @@ fn digests_as_bytes(out: &mut [MaybeUninit<Hash>]) -> &mut [u8] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn words_hash_in_little_endian_order() {
+        let words = [F64(0x0123_4567_89ab_cdef), F64(0xfedc_ba98_7654_3210)];
+        let bytes = words_as_bytes(&words);
+        assert_eq!(
+            bytes.as_ref(),
+            &[
+                0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe
+            ]
+        );
+    }
+
     /// The tree over `num_leaves` rows of `row_words`, each hashed as `zeros(leaf_words - row_words) ‖ row`.
     fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize, leaf_words: usize) -> ArenaVec<Hash> {
         assert_eq!(data.len(), row_words * num_leaves);
         let builder = MerkleBuilder::new(num_leaves, row_words, leaf_words);
-        builder.absorb_all(words_as_bytes(data));
+        builder.absorb_all(&words_as_bytes(data));
         builder.finish()
     }
 
@@ -476,7 +496,7 @@ mod tests {
             let want = merkle_tree_sequential(
                 data.chunks(row_words).map(|row| {
                     let mut image = vec![0u8; 8 * (leaf_words - row_words)];
-                    image.extend_from_slice(words_as_bytes(row));
+                    image.extend_from_slice(&words_as_bytes(row));
                     hash_leaf(&image)
                 }),
                 num_leaves,

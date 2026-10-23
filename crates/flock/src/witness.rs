@@ -113,13 +113,16 @@ pub(crate) fn write_lin_word_ab_packed(bit_off: usize, val: u32, z: &mut [u64], 
 
 /// of the `u64` words on a little-endian target.
 pub(crate) fn packed_bytes(words: &[u64]) -> &[u8] {
-    const _: () = assert!(
-        cfg!(target_endian = "little"),
-        "packed witness bytes assume little-endian"
-    );
-    // SAFETY: `u64` has no padding or invalid bit patterns, and `u8`'s
-    // alignment divides `u64`'s, so the words are a valid `8 · len` byte slice.
-    unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: u64 has no padding, and u8's alignment divides u64's.
+        unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
+    }
+    #[cfg(target_endian = "big")]
+    {
+        let _ = words;
+        unimplemented!("packed witness generation requires a little-endian target")
+    }
 }
 
 // ---------------------------------------------------------------------------

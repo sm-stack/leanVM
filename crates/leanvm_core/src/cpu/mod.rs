@@ -128,10 +128,6 @@ pub struct Program {
     filler: Vec<filler::Block>,
 }
 
-/// The digest reinterprets tables of words as bytes, which is their `to_le_bytes`
-/// image only on a little-endian target.
-const _: () = assert!(cfg!(target_endian = "little"));
-
 impl Program {
     /// The decoded text, memory image and region sizes, for inspection or interpretation.
     pub fn rv(&self) -> &rv::Program {
@@ -182,13 +178,16 @@ impl Program {
         let table = layout::bytecode_table(&rv);
         // SAFETY: F64 is #[repr(transparent)] over u64, so the slice's byte image is
         // exactly the concatenation of its `to_le_bytes` on little-endian targets.
+        #[cfg(target_endian = "little")]
         let table_bytes: &[u8] =
             unsafe { core::slice::from_raw_parts(table.as_ptr().cast::<u8>(), core::mem::size_of_val(&table[..])) };
+        #[cfg(target_endian = "big")]
+        let table_bytes: Vec<u8> = table.iter().flat_map(|w| w.0.to_le_bytes()).collect();
         // Every variable-length part is length-framed, so the preimage parses one way.
         let mut h = primitives::hash::Hasher::new();
         h.update(b"leanvm-rv64im-2");
         h.update(&bytes(&[table.len() as u64]));
-        h.update(table_bytes);
+        h.update(table_bytes.as_ref());
         h.update(&bytes(&[
             rv.entry_pc,
             rv.halt_pc(),

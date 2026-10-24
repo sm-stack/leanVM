@@ -18,6 +18,9 @@ use zk::OuterError;
 /// Every variant is a limit of the prover or a mistake of its caller, except a trap, which is the run's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum ProveError {
+    /// The program has verifier data only.
+    #[error("a verifier-only program cannot prove")]
+    VerifierOnly,
     /// The run trapped.
     #[error(transparent)]
     Trap(#[from] Trap),

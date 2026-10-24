@@ -73,11 +73,13 @@ impl Tree<'_> {
     ///
     /// A polynomial too large to commit.
     pub fn seal_prover(&self) -> Result<SealProver, TreeError> {
+        self.require_prover()?;
         self.seal_prover_over(&self.tables)
     }
 
     /// Commitments to the fixed polynomials of `tables`, which a test may forge.
     pub(super) fn seal_prover_over(&self, tables: &DenseTables) -> Result<SealProver, TreeError> {
+        self.require_prover()?;
         let n_fixed = self.design.statement.polys().iter().filter(|p| p.is_fixed()).count();
         let stacks = (DensePoly::ALL.iter().copied().filter(|p| p.is_fixed()).take(n_fixed))
             .map(|poly| {
@@ -96,12 +98,19 @@ impl Tree<'_> {
     /// # Errors
     ///
     /// A root that is not of this tree.
-    #[expect(clippy::disallowed_methods, reason = "every claim's point and value is in the instance, the root's statement")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "every claim's point and value is in the instance, the root's statement"
+    )]
     pub fn seal(&self, prover: &SealProver, root: &TreeProof) -> Result<ProofTranscript, TreeError> {
+        self.require_prover()?;
         let d = &self.design;
         let position = self.known(root)?;
         let statement = root.statement(d.statement);
-        let mut ps = ProverState::new(&session(d, &prover.roots()), &LengthPrefixed(root.limbs().as_flattened()));
+        let mut ps = ProverState::new(
+            &session(d, &prover.roots()),
+            &LengthPrefixed(root.limbs().as_flattened()),
+        );
         for poly in fixed_polys(d, position) {
             let (_, words, stack) = (prover.stacks.iter())
                 .find(|(p, _, _)| *p == poly)
@@ -112,7 +121,14 @@ impl Tree<'_> {
                 low_point: point,
                 value: statement.dense_value(poly),
             };
-            stack.open(&mut ps, words, Statement { points: &[claim], rings: &[] });
+            stack.open(
+                &mut ps,
+                words,
+                Statement {
+                    points: &[claim],
+                    rings: &[],
+                },
+            );
         }
         Ok(ps.proof().clone())
     }
@@ -187,9 +203,17 @@ impl Tree<'_> {
         if roots.0.len() != n_fixed {
             return Err(TreeError::MixedClass);
         }
-        let committed: Vec<DensePoly> = DensePoly::ALL.iter().copied().filter(|p| p.is_fixed()).take(n_fixed).collect();
+        let committed: Vec<DensePoly> = DensePoly::ALL
+            .iter()
+            .copied()
+            .filter(|p| p.is_fixed())
+            .take(n_fixed)
+            .collect();
         for poly in fixed {
-            let index = committed.iter().position(|&p| p == poly).ok_or(TreeError::Claim(FalseClaim::Dense(poly)))?;
+            let index = committed
+                .iter()
+                .position(|&p| p == poly)
+                .ok_or(TreeError::Claim(FalseClaim::Dense(poly)))?;
             let (log_n, config, lanes) = stack_shape(1 << d.vars.0[poly as usize])?;
             let point = statement.dense_point()[..d.vars.0[poly as usize]].to_vec();
             let claim = StackClaim::Point {
@@ -198,10 +222,17 @@ impl Tree<'_> {
                 value: statement.dense_value(poly),
             };
             StackCommitment::new(roots.0[index], log_n, lanes, config)
-                .verify(&mut v, Statement { points: &[claim], rings: &[] })
+                .verify(
+                    &mut v,
+                    Statement {
+                        points: &[claim],
+                        rings: &[],
+                    },
+                )
                 .map_err(|_| TreeError::Claim(FalseClaim::Dense(poly)))?;
         }
-        v.check_eof().map_err(|_| TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))?;
+        v.check_eof()
+            .map_err(|_| TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))?;
         Ok(())
     }
 }

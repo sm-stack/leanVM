@@ -148,7 +148,7 @@ impl Program {
         })
     }
 
-    /// Spike: this program padded like [`Self::padded`], its commitment's root given rather than computed.
+    /// This program padded like [`Self::padded`], its commitment's root given rather than computed.
     ///
     /// Only its key, digest and decoded form are meaningful: it cannot be proven. A wrong root names another program.
     pub(crate) fn padded_with_root(
@@ -170,7 +170,7 @@ impl Program {
         })
     }
 
-    /// Spike: a program like [`Self::new`] without its commitment, only to be padded by [`Self::padded_with_root`].
+    /// A program like [`Self::new`] without its commitment, only to be padded by [`Self::padded_with_root`].
     pub(crate) fn uncommitted(
         text: &[u32],
         entry_pc: u64,
@@ -303,7 +303,8 @@ impl Program {
     }
 
     /// Prove a finished run, which a test may have forged, as `prover` proves.
-    pub(super) fn prove_execution(&self, exec: &Execution, prover: &Prover) -> (Proof, Stats) {
+    pub(super) fn prove_execution(&self, exec: &Execution, prover: &Prover) -> Result<(Proof, Stats), ProveError> {
+        self.require_prover()?;
         let w = info_span!("Build witness").in_scope(|| Witness::build(self, exec, prover.kind()));
         let stats = Stats {
             proven_rows: exec.proven_rows,
@@ -316,7 +317,7 @@ impl Program {
             Some(randomness) => zero_knowledge::prove(self, w, output, prover.rate(), &randomness.seed()),
             None => self.prove_witness(w, output, prover.rate()),
         };
-        (proof, stats)
+        Ok((proof?, stats))
     }
 
     /// Prove a built witness, which a test may have forged.
@@ -324,7 +325,8 @@ impl Program {
     /// # Panics
     ///
     /// Panics if the witness's bus does not balance: an honest run's always does.
-    fn prove_witness(&self, mut w: Witness, output: Output, rate: Rate) -> Proof {
+    fn prove_witness(&self, mut w: Witness, output: Output, rate: Rate) -> Result<Proof, ProveError> {
+        self.require_prover()?;
         // The session names the program, and the output is the instance: every challenge depends on both.
         let mut ps = ProverState::new(&self.session(), output.words());
 
@@ -344,8 +346,8 @@ impl Program {
                 .open(&mut ps, &w.q, &slots, &rings)
                 .expect("opening uses the committed witness");
         });
-        self.open_program(&mut ps, output, ProofKind::Plain);
-        Proof(ps.into_proof(), ProofKind::Plain)
+        self.open_program(&mut ps, output, ProofKind::Plain)?;
+        Ok(Proof(ps.into_proof(), ProofKind::Plain))
     }
 
     /// Flock's reductions, the bus and the table sumcheck over the committed witness.
@@ -461,7 +463,16 @@ impl Program {
         self.key.verify_recording(output, proof)
     }
 
-    pub(super) fn open_program(&self, ps: &mut ProverState, output: Output, kind: ProofKind) {
+    pub(super) const fn require_prover(&self) -> Result<(), ProveError> {
+        if self.committed.is_none() {
+            Err(ProveError::VerifierOnly)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn open_program(&self, ps: &mut ProverState, output: Output, kind: ProofKind) -> Result<(), ProveError> {
+        let committed = self.committed.as_ref().ok_or(ProveError::VerifierOnly)?;
         let claims = match kind {
             ProofKind::Plain => {
                 let mut v = VerifierState::new(&self.session(), output.words(), ps.proof());
@@ -476,11 +487,12 @@ impl Program {
             Ok(claims) => claims,
             // Forged-witness tests also construct proofs that fail before the program opening.
             #[cfg(test)]
-            Err(_) => return,
+            Err(_) => return Ok(()),
             #[cfg(not(test))]
             Err(error) => panic!("the prover's own core: {error}"),
         };
-        (self.committed.as_ref().expect("a program built for proving")).open(ps, &self.key, &claims.program);
+        committed.open(ps, &self.key, &claims.program);
+        Ok(())
     }
 
     /// The decoded text, memory image and region sizes.
@@ -901,7 +913,7 @@ mod tests {
         );
         column_mut(&mut w, jump_column())[row] = F64(value);
         assert!(unmatched(&w).is_empty());
-        let proof = program.prove_witness(w, forged.output.into(), Rate::MIN);
+        let proof = program.prove_witness(w, forged.output.into(), Rate::MIN).unwrap();
         program
             .verify_core(forged.output.into(), &proof)
             .expect_err("a forged successor is refused")
@@ -1154,7 +1166,7 @@ mod tests {
         let w = Witness::build(program, exec, ProofKind::Plain);
         let unmatched = unmatched(&w);
         assert!(unmatched.is_empty(), "the forged run balances: {unmatched:?}");
-        let proof = program.prove_witness(w, exec.output.into(), Rate::MIN);
+        let proof = program.prove_witness(w, exec.output.into(), Rate::MIN).unwrap();
         let claims = program.verify_core(exec.output.into(), &proof)?;
         program.check_deferred(&claims)
     }
@@ -1369,7 +1381,7 @@ mod tests {
         let program = Program::new(&text, Region::TEXT.base(), vec![], 2, 0).expect("valid instruction program");
         let honest = program.execute(&[]).unwrap();
         assert_eq!(honest.output, [12, 0, 0, 0]);
-        let (proof, _) = program.prove_execution(&honest, &Prover::new(Rate::MIN));
+        let (proof, _) = program.prove_execution(&honest, &Prover::new(Rate::MIN)).unwrap();
         program
             .verify(honest.output.into(), &proof)
             .expect("the honest run verifies");
@@ -1515,7 +1527,7 @@ mod tests {
                 unmatched(&w).is_empty(),
                 "the bus reads the register numbers, not the word"
             );
-            let proof = program.prove_witness(w, exec.output.into(), Rate::MIN);
+            let proof = program.prove_witness(w, exec.output.into(), Rate::MIN).unwrap();
             assert!(
                 matches!(program.verify_core(exec.output.into(), &proof), Err(CpuError::Open(_))),
                 "bit {bit}"
@@ -1637,7 +1649,7 @@ mod tests {
         (forged.trace.reg_ts[sink], forged.trace.reg_fin[sink]) = (F64(Clock::SEED_CLOCK), F64::ZERO);
         forged.trace.ts_final |= 1 << Clock::FAIL_BIT;
         assert!(unmatched_run(&program, &forged).is_empty());
-        let (proof, _) = program.prove_execution(&forged, &Prover::new(Rate::MIN));
+        let (proof, _) = program.prove_execution(&forged, &Prover::new(Rate::MIN)).unwrap();
         assert_eq!(
             program.verify(forged.output.into(), &proof),
             Err(CpuError::FinalClock.into())

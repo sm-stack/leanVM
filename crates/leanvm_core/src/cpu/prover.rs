@@ -109,9 +109,10 @@ impl Prover {
         fields(log_inv_rate = self.rate.log_inv_rate(), zk = self.is_zero_knowledge())
     )]
     pub fn prove(&self, program: &Program, advice: &[u64]) -> Result<ProvenRun, ProveError> {
+        program.require_prover()?;
         let exec = info_span!("Execute program").in_scope(|| program.execute_at(advice, self.floor))?;
         program.committed_size(exec.trace.row_counts(), self.kind())?;
-        let (proof, stats) = program.prove_execution(&exec, self);
+        let (proof, stats) = program.prove_execution(&exec, self)?;
         Ok(ProvenRun {
             proof,
             output: Output::new(exec.output),

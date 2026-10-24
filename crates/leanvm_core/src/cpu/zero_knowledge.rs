@@ -56,7 +56,14 @@ const FREE_CLOCK_BITS: Range<usize> = Clock::SLOT_BITS as usize..Clock::LIVE_BIT
 /// # Panics
 ///
 /// Panics if the witness's bus does not balance, or if the outer proof outgrows the key commitment.
-pub(super) fn prove(program: &Program, mut w: Witness, output: Output, rate: Rate, seed: &Seed) -> Proof {
+pub(super) fn prove(
+    program: &Program,
+    mut w: Witness,
+    output: Output,
+    rate: Rate,
+    seed: &Seed,
+) -> Result<Proof, super::ProveError> {
+    program.require_prover()?;
     let mut ps = ProverState::new(&program.zk_session(), output.words());
     Announcement::write_shape(&w.layout.taus, rate, &mut ps);
 
@@ -104,8 +111,8 @@ pub(super) fn prove(program: &Program, mut w: Witness, output: Output, rate: Rat
         rec.finish().1
     });
     info_span!("Outer proof").in_scope(|| keys.prove_outer(&mut ps, &record));
-    program.open_program(&mut ps, output, ProofKind::ZeroKnowledge);
-    Proof(ps.into_proof(), ProofKind::ZeroKnowledge)
+    program.open_program(&mut ps, output, ProofKind::ZeroKnowledge)?;
+    Ok(Proof(ps.into_proof(), ProofKind::ZeroKnowledge))
 }
 
 /// The prover's replay of its own proof so far, through the verifier's recorder: the recorder, and the core it recorded.
@@ -462,7 +469,7 @@ mod tests {
         (forged.trace.reg_ts[sink], forged.trace.reg_fin[sink]) = (F64(Clock::SEED_CLOCK), F64::ZERO);
         forged.trace.ts_final |= 1 << Clock::FAIL_BIT;
         let prover = Prover::new(Rate::MIN).zero_knowledge(Randomness::Fixed([3; 32]));
-        let (proof, _) = program.prove_execution(&forged, &prover);
+        let (proof, _) = program.prove_execution(&forged, &prover).unwrap();
         // The recorded rows do not hold, so the outer proof's claims are false and the key opening refuses them.
         let refused = CpuError::Outer(OuterError::KeyOpening(WhirError::TerminalMismatch));
         assert_eq!(program.verify(forged.output.into(), &proof), Err(refused.into()));

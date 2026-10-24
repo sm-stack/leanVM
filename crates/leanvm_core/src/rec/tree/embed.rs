@@ -128,7 +128,10 @@ impl Tree<'static> {
                 columns.push(std::sync::Arc::new(column));
             }
             let circuit = Circuit::verifier_stub(statement_len, heights);
-            keys.push(CircuitKey::from_parts(circuit, FixedColumns::from_columns(columns)).map_err(|_| TreeError::TooLarge)?);
+            keys.push(
+                CircuitKey::from_parts(circuit, FixedColumns::from_columns(columns))
+                    .map_err(|_| TreeError::TooLarge)?,
+            );
         }
         if !r.0.is_empty() {
             return Err(TreeError::MixedClass);

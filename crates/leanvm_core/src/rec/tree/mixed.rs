@@ -87,15 +87,24 @@ impl Tree<'static> {
     }
 
     /// The class's placeholder rebuilt from its commitment's root, without encoding the program again.
-    pub(super) fn mixed_placeholder_with_root(class: ProgramClass, root: pcs::merkle::Hash) -> Result<Program, TreeError> {
+    pub(super) fn mixed_placeholder_with_root(
+        class: ProgramClass,
+        root: pcs::merkle::Hash,
+    ) -> Result<Program, TreeError> {
         if !class.image_words.is_power_of_two() {
             return Err(TreeError::MixedClass);
         }
         let text = Asm::new().li(Reg::A0, 0).exit().finish();
         let placeholder =
             Program::uncommitted(&text, Region::TEXT.base(), vec![], 0, 0).map_err(|_| TreeError::MixedClass)?;
-        (placeholder.padded_with_root(class.log_bytecode, class.log_ram, class.log_advice, class.image_words, root))
-            .map_err(|_| TreeError::MixedClass)
+        (placeholder.padded_with_root(
+            class.log_bytecode,
+            class.log_ram,
+            class.log_advice,
+            class.image_words,
+            root,
+        ))
+        .map_err(|_| TreeError::MixedClass)
     }
 }
 
@@ -106,6 +115,7 @@ impl Tree<'_> {
         leaves: &[MixedLeaf<'_>],
         declare: Option<&ClaimSet>,
     ) -> Result<Aggregate, TreeError> {
+        self.require_prover()?;
         if !self.design.mixed {
             return Err(TreeError::MixedClass);
         }
@@ -252,6 +262,33 @@ mod tests {
     }
 
     #[test]
+    fn loaded_verifiers_refuse_every_prover_entry_point() {
+        let f = fixture();
+        let bytes = f.tree.mixed_verifier_bytes().unwrap();
+        let tree = Tree::mixed_from_bytes(f.class, f.shape, &bytes).unwrap();
+        let aggregate = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
+        let prover = f.tree.seal_prover().unwrap();
+        assert!(matches!(tree.prove(&[]), Err(TreeError::VerifierOnly)));
+        assert!(matches!(tree.prove_first(&[]), Err(TreeError::VerifierOnly)));
+        assert!(matches!(tree.prove_node(&[]), Err(TreeError::VerifierOnly)));
+        assert!(matches!(tree.aggregate(&[], None), Err(TreeError::VerifierOnly)));
+        assert!(matches!(tree.aggregate_leaves(&[], None), Err(TreeError::VerifierOnly)));
+        assert!(matches!(
+            tree.aggregate_programs(&[], None),
+            Err(TreeError::VerifierOnly)
+        ));
+        assert!(matches!(tree.seal_prover(), Err(TreeError::VerifierOnly)));
+        assert!(matches!(
+            tree.seal(&prover, &aggregate.proof),
+            Err(TreeError::VerifierOnly)
+        ));
+        assert!(matches!(
+            Prover::new(Rate::MIN).prove(tree.design.leaf.program(), &[]),
+            Err(crate::ProveError::VerifierOnly)
+        ));
+    }
+
+    #[test]
     fn sealed_roots_agree_with_direct_settlement_and_bind_their_inputs() {
         let f = fixture();
         let prover = f.tree.seal_prover().unwrap();
@@ -270,18 +307,39 @@ mod tests {
         // Other roots, another root's seal, a truncated or altered seal: all refused.
         let mut other = roots.clone();
         other.0[0][0] ^= 1;
-        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &other, &node_seal).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&node.proof, &node.claims, &other, &node_seal)
+                .is_err()
+        );
         let first_seal = f.tree.seal(&prover, &first.proof).unwrap();
-        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &roots, &first_seal).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&node.proof, &node.claims, &roots, &first_seal)
+                .is_err()
+        );
         let mut short = node_seal.clone();
         short.narg.truncate(short.narg.len() - 1);
-        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &roots, &short).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&node.proof, &node.claims, &roots, &short)
+                .is_err()
+        );
         for at in [0, node_seal.narg.len() / 2, node_seal.narg.len() - 1] {
             let mut bad = node_seal.clone();
             bad.narg[at] ^= 1;
-            assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &roots, &bad).is_err(), "byte {at}");
+            assert!(
+                f.tree
+                    .verify_claims_sealed(&node.proof, &node.claims, &roots, &bad)
+                    .is_err(),
+                "byte {at}"
+            );
         }
-        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &SealRoots(vec![]), &node_seal).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&node.proof, &node.claims, &SealRoots(vec![]), &node_seal)
+                .is_err()
+        );
     }
 
     #[test]

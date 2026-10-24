@@ -160,6 +160,9 @@ pub enum FalseClaim {
 /// Why a tree cannot be built, a tree proof cannot be made, or a root is refused.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum TreeError {
+    /// The tree has verifier data only.
+    #[error("a verifier-only tree cannot prove")]
+    VerifierOnly,
     /// A mixed tree requires claim sets and plain leaves of its program class.
     #[error("mixed trees require claim sets and plain leaves matching the program class")]
     MixedClass,
@@ -317,6 +320,14 @@ impl<'a> ClaimLeaf<'a> {
 }
 
 impl<'p> Tree<'p> {
+    const fn require_prover(&self) -> Result<(), TreeError> {
+        if self.verifier_only {
+            Err(TreeError::VerifierOnly)
+        } else {
+            Ok(())
+        }
+    }
+
     /// The tree over proofs of a program, shaped as given.
     ///
     /// The circuits are built from the shapes alone, so a verifier needs no proof to build its key.
@@ -442,6 +453,7 @@ impl<'p> Tree<'p> {
     ///
     /// A tree of outputs only. The wrong number of leaves, a leaf of another shape, or a leaf that does not verify.
     pub fn prove_first(&self, leaves: &[Leaf<'_>]) -> Result<TreeProof, TreeError> {
+        self.require_prover()?;
         self.outputs()?;
         let items = self.leaf_witnesses(leaves, |_| Ok([0; 4]))?;
         let inputs = NodeInputs::Prove {
@@ -519,6 +531,7 @@ impl<'p> Tree<'p> {
     ///
     /// A tree of outputs only. The wrong number of children, or a child that does not verify.
     pub fn prove_node(&self, children: &[TreeProof]) -> Result<TreeProof, TreeError> {
+        self.require_prover()?;
         self.outputs()?;
         let d = &self.design;
         if children.len() != d.arity {
@@ -555,6 +568,7 @@ impl<'p> Tree<'p> {
         leaves: &[ClaimLeaf<'_>],
         declare: Option<&ClaimSet>,
     ) -> Result<Aggregate, TreeError> {
+        self.require_prover()?;
         self.capacity()?;
         if self.design.mixed {
             return Err(TreeError::MixedClass);
@@ -599,6 +613,7 @@ impl<'p> Tree<'p> {
     /// - A declared set that is not canonical, past the capacity, or with a claim no child carries.
     /// - Children whose sets together do not fit the capacity.
     pub fn aggregate(&self, children: &[&Aggregate], declare: Option<&ClaimSet>) -> Result<Aggregate, TreeError> {
+        self.require_prover()?;
         self.capacity()?;
         let d = &self.design;
         let n = children.len();
@@ -730,6 +745,7 @@ impl<'p> Tree<'p> {
     ///
     /// A tree of outputs only. A number of leaves no tree of the arities has, or a leaf the first level refuses.
     pub fn prove(&self, leaves: &[Leaf<'_>]) -> Result<TreeProof, TreeError> {
+        self.require_prover()?;
         self.outputs()?;
         self.shape.root_kind(leaves.len())?;
         let (arity_0, arity) = (self.design.arity_0, self.design.arity);
@@ -830,7 +846,7 @@ impl<'p> Tree<'p> {
 
     /// Prove the rows of the circuit at `position`: its reduction, then its recursion proof.
     fn prove_rows(&self, rows: NodeRows) -> Result<TreeProof, TreeError> {
-        assert!(!self.verifier_only, "a tree loaded from verifier data cannot prove");
+        self.require_prover()?;
         let d = &self.design;
         let position = rows.position();
         let reduction = rows.claim_values().prove(&d.session(), &d.vars, &self.tables);
@@ -891,9 +907,7 @@ impl<'p> Tree<'p> {
     /// Spike: the words a verifier-only key would hold (circuits, fixed columns, dense tables).
     #[doc(hidden)]
     pub fn verifier_data_words(&self) -> (usize, usize, Vec<usize>) {
-        let fixed: usize = (self.keys.iter())
-            .map(|k| k.fixed().columns_len())
-            .sum();
+        let fixed: usize = (self.keys.iter()).map(|k| k.fixed().columns_len()).sum();
         let dense = self.tables.0.iter().map(Vec::len).collect();
         (self.keys.len(), fixed, dense)
     }
@@ -1334,7 +1348,10 @@ mod tests {
             f.tree.verify_sealed(&root, &outputs, &roots, &forged_seal),
             Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))
         );
-        assert_eq!(f.tree.verify_sealed(&root, &outputs, &forged.roots(), &forged_seal), Ok(()));
+        assert_eq!(
+            f.tree.verify_sealed(&root, &outputs, &forged.roots(), &forged_seal),
+            Ok(())
+        );
     }
 
     // A first-level node whose reduction a cheating prover forged: its rows hold, its claims are false.
@@ -2436,7 +2453,11 @@ mod tests {
             );
             let forged = t.tree.seal_prover_over(&tables).unwrap();
             let forged_seal = t.tree.seal(&forged, &root).unwrap();
-            assert!(t.tree.verify_claims_sealed(&root, &forged_set, &prover.roots(), &forged_seal).is_err());
+            assert!(
+                t.tree
+                    .verify_claims_sealed(&root, &forged_set, &prover.roots(), &forged_seal)
+                    .is_err()
+            );
         }
 
         // At a capacity of many chunks, a lone child of more than half of it is narrowed and republished: its set needs room in

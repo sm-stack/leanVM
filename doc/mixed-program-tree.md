@@ -14,7 +14,7 @@ The original PR's authorship is preserved in its two ported commits. The conflic
 
 `ProgramClass` specifies the bytecode dimension, RAM dimension, advice dimension, and padded image length. The image length is a nonzero power of two. `TreeShape` additionally fixes every leaf table's height, the leaf and tree rates, arities, and claim-set capacities and tiers. These together are the class. No leaf program or key is an input to `Tree::mixed`.
 
-`ProgramClass::normalize` pads shorter decoded programs with illegal entries and smaller images with zeros before key generation. It can enlarge the RAM and advice regions to the class dimensions. The resulting normalized VK digest is the identity to claim; an existing proof under an unnormalized key cannot be relabeled. This deliberately chooses explicit normalization over circuits supporting many different byte lengths and dynamic hash counters. Enlarged advice and memory bounds are part of that identity: a memory access that trapped under the original bounds can succeed after normalization. The authorized identity is therefore `(ELF, class)`, not ELF alone. An authorizer must regenerate the normalized key from the intended ELF and class and compare its digest with the authorized claim label. A prover can pad table heights through the existing filler planner; the ALU floor must allow the other tables' closing jumps. Proofs that announce a different final shape are refused.
+`ProgramClass::normalize` pads shorter decoded programs with illegal entries and smaller images with zeros before key generation. It can enlarge the RAM and advice regions to the class dimensions. The resulting normalized VK digest is the identity to claim; an existing proof under an unnormalized key cannot be relabeled. This deliberately chooses explicit normalization over circuits supporting many different byte lengths and dynamic hash counters. Enlarged advice and memory bounds are part of that identity: a memory access that trapped under the original bounds can succeed after normalization. Normalization also moves the halt slot to the end of the class-sized text. A computed jump that formerly trapped may now reach that slot and terminate, subject to the final `a7 = 93` check. The authorized identity is therefore `(ELF, class)`, not ELF alone. An authorizer must regenerate the normalized key from the intended ELF and class and compare its digest with the authorized claim label. A prover can pad table heights through the existing filler planner; the ALU floor must allow the other tables' closing jumps. Proofs that announce a different final shape are refused.
 
 ## First-level checks
 
@@ -48,7 +48,7 @@ The class-key and seal implementation below replaces setup and deferred fixed-po
 
 `Tree::mixed_verifier_bytes(&roots)` serializes the complete class key. Generate the roots with `tree.seal_prover().roots()` from a trusted `Tree::mixed(class, shape)` setup. The consumer pins `BLAKE2s-256(b"leanvm/mixed-class-key/v1" || encoding)`, with no terminator, length prefix, keyed mode or personalization in this hash. `Tree::mixed_class_key_digest` computes it. A digest supplied beside untrusted data is not an authentication mechanism: distribute the expected digest through the application's trusted configuration. Authentication covers verifier columns and roots as well as dimensions. The loader does not regenerate the circuits or prove that supplied columns and roots are consistent with the intended circuits; the trusted setup must establish that.
 
-`Tree::mixed_from_bytes(class, shape, bytes, &expected_digest)` first checks this pin, then compares the encoded descriptor with the caller's expected class and shape, validates structural lengths and heights, and refuses trailing data. The same bytes encode identically on big-endian hosts. Loaded trees expose their authenticated roots through `seal_roots()`. Passing different roots to their sealed verifier is refused. A native builder can explicitly use another root set, but that changes its class-key digest and seal session; applications must pin the genuine roots.
+`Tree::mixed_from_bytes(class, shape, bytes, &expected_digest)` first checks this pin, then compares the encoded descriptor with the caller's expected class and shape, validates structural lengths and heights, and refuses trailing data. The same bytes encode identically on big-endian hosts. Loaded trees expose their authenticated roots through `seal_roots()`. Passing different roots to their sealed verifier is refused. Built trees compute and cache their own fixed-polynomial roots and reject a different root set with `TreeError::SealRoots`, before verifying the recursion proof or opening a seal. This applies to same-program trees too. A `SealProver` from another tree is rejected before its commitments are used.
 
 ### Loading bytes authenticated by an outer mechanism
 
@@ -98,88 +98,9 @@ A loaded tree contains verifier stubs, not proving circuits. `prove`, `prove_fir
 
 ## Exporting verification inputs
 
-Run `rustup run 1.95 cargo run --release -p leanvm --example committed_program -- .context/exports/plain` for standalone inputs. Run `rustup run 1.95 cargo run --release -p leanvm --example mixed_program_tree -- .context/exports/hardened` for the mixed class. The parent directory contains `class-key.bin`, `class-key.digest` (hex text for distribution through a trusted channel), and `class.bin` (the example's convenience expected-class/shape descriptor). Each `distinct-1`, `distinct-2`, `distinct-4` directory contains `root.bin`, `claims.bin`, and `seal.bin`. The class key already contains everything authenticated, including seal roots; `class.bin` is not a second authority.
+Run `rustup run 1.95 cargo run --release -p leanvm --example committed_program -- /tmp/leanvm-plain` for standalone inputs. Run `rustup run 1.95 cargo run --release -p leanvm --example mixed_program_tree -- /tmp/leanvm-mixed` for the mixed class. The parent directory contains `class-key.bin`, `class-key.digest` (hex text for distribution through a trusted channel), and `class.bin` (the example's convenience expected-class/shape descriptor). Each `distinct-1`, `distinct-2`, `distinct-4` directory contains `root.bin`, `claims.bin`, and `seal.bin`. The class key already contains everything authenticated, including seal roots; `class.bin` is not a second authority.
 
-Use `--verify .context/exports/hardened/distinct-4 <trusted-64-hex-digit-class-key-digest>` to load the class key and verify both direct and sealed paths using only files. Supply the pin from trusted configuration, not by trusting an attacker's accompanying digest file. This example's convenience descriptor supports its one-tier class; the library class-key format and loader support two tiers. The same-program comparison is a positional output tree and has no claim-set union.
-
-## Cannon measurements on the spikes
-
-These numbers were measured by us in the OP Stack workspace on the supplied setup/seal spikes, before this hardening. They are not new measurements of the authenticated loader. Source: `sp1-proof-claims/.context/leanvm-fork-hardening/CANNON-RESULTS.md`, dated 2026-10-25. Class logs `(12,17,13)`, image 64 words, leaf/tree inverse-rate log 1, arities 2+2, capacity `(8,4)`, standard Cannon without dclmul, about 131 MiB memory.
-
-| Operation | Cannon steps |
-| --- | ---: |
-| Plain Fibonacci 16k / 131k, preimage | 0.65B / 0.67B / 0.64B |
-| Original class setup | 9.99B |
-| Original setup + root verify, 1 or 4 distinct programs | 16.21B |
-| Embedded load v1 (recommitted placeholder) | 4.94B |
-| Embedded load v2 | 0.33B |
-| Embedded direct verify including load | 6.55B |
-| Embedded sealed verify including load | 2.79B |
-
-The last total is load 0.33B, root recursion proof and set 1.94B, matrix/other claims 0.45B, and seal 0.07B. The spike key was 24.1 MiB, native load 13 ms, setup 59 ms, commitments 30 ms once, sealing 19 ms, seal about 162 KiB. Approximately 95% of the 1.94B root stage was fixed-column evaluation. The hardened loader also hashes the full key and validates its schema; Cannon must be rerun with the new files before making performance claims about it.
-
-## Earlier native measurements at e6780cb8
-
-Measured on an Apple M4 Pro using `rustc 1.98.1 (48a229cea 2026-09-01)`, release builds with `target-cpu=native`, and the benchmark harness's jemalloc allocator. Base and branch measurements ran sequentially with no concurrent builds. Each measurement uses one warmup and three measured passes, except mixed root verification, which uses seven. There is no cooldown. These are native timings, not Cannon step counts or MIPS64 execution measurements.
-
-### Stage 1: standalone proofs
-
-The base is the exact upstream commit recorded above, with an untracked measurement harness and no source changes. Base verifier setup reconstructs `Program` from the ELF; committed verifier setup decodes `VerifyingKey` from its bytes. Program setup is reported separately. The additional PCS opening increases proof size while replacing program polynomial evaluation during verification. Times are milliseconds; proof and key sizes are bytes.
-
-| Guest | Cycles | Mode | Key bytes | Proof bytes | Program setup ms | Prove ms | Verifier setup ms | Verify ms |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Fibonacci small | 16,330 | Base | N/A | 259,270 | 0.9075 | 24.0475 | 0.8623 | 1.9044 |
-| Fibonacci small | 16,330 | Committed | 328 | 336,906 | 2.0414 | 27.4609 | 0.0006 | 1.3962 |
-| Fibonacci large | 131,050 | Base | N/A | 308,902 | 0.8880 | 67.1689 | 1.0455 | 1.9143 |
-| Fibonacci large | 131,050 | Committed | 328 | 385,522 | 1.0245 | 67.3010 | 0.0006 | 1.4735 |
-| Preimage, 256 bytes | 3,353 | Base | N/A | 247,922 | 0.9061 | 13.0444 | 0.8744 | 1.6861 |
-| Preimage, 256 bytes | 3,353 | Committed | 456 | 324,990 | 1.1083 | 16.3913 | 0.0007 | 1.3764 |
-
-### Stage 2: four-leaf trees
-
-One common class covers Fibonacci, preimage and two assembled constant-output programs. Every case has four distinct statements, two first-level proofs of arity two, and one node proof of arity two. The first-level column is the measured time for the two first-level proofs divided by two; it includes the aggregation API's native leaf validation. The node column is one node proof. The class uses bytecode/RAM/advice logarithms `(12, 17, 13)`, a 64-word image, inverse-rate logarithm 1 for leaves and recursion, claim/group capacities `(8, 4)`, and table row logarithms `(15, 4, 4, 6, 7, 5, 4, 4, 4, 3, 3)` in schema order. Both first-level and node circuits commit 10,258,432 witness words. Mixed class setup takes 43.9391 ms and has no program argument. The same-program comparison uses the same padded Fibonacci leaf shape with positional output semantics, so it does not perform claim-set union.
-
-| Mode | Distinct programs | Class setup ms | First level ms/node | Node ms | Root bytes | Root verify ms | Root program polynomials |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Mixed claim set | 1 | 43.9391 | 136.6748 | 130.2043 | 269,631 | 1.9234 | 0 |
-| Mixed claim set | 2 | Same class | 131.2922 | 132.0035 | 268,863 | 1.8958 | 0 |
-| Mixed claim set | 4 | Same class | 132.1316 | 129.6774 | 269,215 | 1.8946 | 0 |
-| Same-program positional | 1 | 40.7098 | 133.4027 | 134.1861 | 269,663 | 2.0019 | Existing bytecode/image settlement |
-
-The seven-pass root verification confidence intervals are ±4.2%, ±3.9% and ±2.7% for the mixed cases. Their timings support the structural property: mixed root settlement has zero program polynomials regardless of distinct-program count. They do not establish a latency improvement between the mixed cases. Root sizes can differ because their proof paths and encodings depend on challenges. All three exported roots were separately verified by loading only `class.bin`, `claims.bin` and `root.bin`.
-
-## Earlier validation at e6780cb8 and remaining risks
-
-`rustup run 1.95 cargo test --workspace --release` passes: 526 passed, zero failed, four existing ignored tests. The four new mixed-mode tests cover two guest programs, identical class circuit keys, union and discard, cross-builder root verification, incorrect outputs and labels, swapped key/output associations, uncovered claims, tampered root/entry/image, direct circuit-row checks that bypass native prechecks, and a valid non-default entry address. Existing same-program and zero-knowledge tests also pass.
-
-The following checks pass on Rust 1.95:
-
-- `cargo check -p leanvm --examples`.
-- `cargo clippy --workspace --all-targets --release -- -D warnings`.
-- `cargo doc --release --workspace --no-deps` with the repository's warning policy.
-- `RUSTFLAGS='-C target-cpu=generic' cargo check -p leanvm --target powerpc64-unknown-linux-gnu`.
-- The x86 AVX-512 workspace cross-check from `AGENTS.md`, run in Docker with `gcc-x86-64-linux-gnu` for jemalloc's C build. A native macOS workspace cross-check lacks that C compiler; the Docker check completes the full workspace.
-- `cargo fmt --all -- --check` and `git diff --check`.
-
-The Python verifier was removed by this upstream base and is not restored. Architectural conformance fixtures and the ignored tests were not generated or run. Big-endian validation is a compile check; proving there remains explicitly unsupported by the packed witness implementation. The hardened artifacts still require new MIPS64/Cannon compatibility and performance measurements. The native root proof still evaluates its own fixed columns, which remain expensive in Cannon. Normalization changes program identity and requires proving under the normalized key. Mixed zero-knowledge leaves are explicitly unsupported. Application code must authenticate the complete class and authorized VK digests. The prose argument above relies on the existing PCS, transcript and recursion soundness assumptions; it is not an independent cryptographic audit or formal proof. No unresolved soundness exception was used to complete the implementation.
-
-## Topic commits
-
-Branch: `op-stack/mixed-program-tree`. The first two commits preserve Kevaundray Wedderburn's authorship. The MSRV declaration, stable API substitutions, endian conversion and portable arithmetic are separate topics. No push, pull request or upstream comment was made.
-
-| Commit | Change |
-| --- | --- |
-| `045d3dd0` | Port committed-program keys, proofs and native/recursive verification to the modern layout. |
-| `8559b374` | Preserve the upstream key decoder's `as_chunks` cleanup. |
-| `609f186b` | Lower workspace MSRV from 1.97 to 1.95 for downstream git dependencies. |
-| `1605c08b` | Replace three unstable lowest-bit operations with Rust 1.95 equivalents. |
-| `e6e97311` | Canonical little-endian word hashing and an explicit refusal of packed big-endian proving. |
-| `10ee3515` | Accelerate portable carry-less multiplication, squaring and three-limb Karatsuba products. |
-| `4001fb2c` | Export standalone committed proofs and native measurements. |
-| `362b2a0e` | Add normalized program classes, witnessed keys, in-circuit binding and mixed claim-set trees. |
-| `6448ccbf` | Export class data, mixed roots and claims, with a file-only verifier path. |
-
-The final documentation commit records this design, benchmark tables and validation report.
+Use `--verify /tmp/leanvm-mixed/distinct-4 <trusted-64-hex-digit-class-key-digest>` to load the class key and verify both direct and sealed paths using only files. Supply the pin from trusted configuration, not by trusting an attacker's accompanying digest file. This example's convenience descriptor supports its one-tier class; the library class-key format and loader support two tiers. The same-program comparison is a positional output tree and has no claim-set union.
 
 ## Stretch E: native root fixed-column openings, design only
 
@@ -197,39 +118,10 @@ A v2 compact class key can then hold the descriptor, authenticated roots, tier h
 
 Acceptance tests must compare direct and compact-sealed verification for every root kind in one and two tiers, with first-level roots now requiring native fixed-column openings too. Mutate each hint, point, column, circuit selector, tier selector and length; swap root proofs or class keys; replay an old seal; test truncated and extra hints. Reuse the fake child and fake large-under-wrap attacks, including commitments to forged columns. Check that the root proof's transcript remains identical and that all fixed-column evaluations were actually intercepted. Only then benchmark compact key bytes, load cost, total seal size and Cannon steps. No speedup or compact-key size is claimed by this delivery.
 
-## Hardening validation and native measurements
+## Same-program recursion and compatibility
 
-On 2026-10-25, Rust 1.95.0 (`59807616e`), Apple M4 Pro, release `target-cpu=native`, jemalloc and an explicitly initialized 16-thread pool:
+Same-program leaf circuits consume the witness-core prefix (including the zero-knowledge outer proof where applicable) and carry Bytecode and Image claims to the tree root. They do not consume or constrain the standalone program-opening suffix. The root must settle those deferred claims. Full native verification still checks the suffix and rejects trailing data; the tree prover also verifies complete leaf proofs before constructing witnesses. Mixed first-level circuits instead close program claims in-circuit and check exact transcript consumption.
 
-- `rustup run 1.95 cargo test --workspace --release`: 533 passed, zero failed, four existing ignored tests. The new test names and adversarial coverage are listed in [the review packet](mixed-program-tree-review.md).
-- `rustup run 1.95 cargo clippy --workspace --all-targets --release -- -D warnings`: passed.
-- `rustup run 1.95 cargo fmt --all -- --check` and `git diff --check`: passed.
-- `RUSTFLAGS='-C target-cpu=generic' rustup run 1.95 cargo check -p leanvm --target powerpc64-unknown-linux-gnu`: passed. This is a compile check, not a big-endian execution test.
-- `rustup run 1.95 cargo doc --release --workspace --no-deps`: passed with the repository's warning policy.
-- All three exported cases reloaded from files and passed direct and sealed verification. Python `hashlib.blake2s` independently reproduced the exported class-key digest.
+Same-program tree sessions include `/deferred-program/1` after the program digest under `leanvm-tree-17`. Regenerate their recursion keys and proofs when migrating from the earlier redundant-opening circuits. Mixed sessions, class-key v1 and seal v2 are unchanged. Standalone proofs still include the committed-program opening for key-only verification; making that opening optional would require a separate protocol design.
 
-The class is the same one-tier example described above. The key is **25,282,600 bytes (24.111 MiB)**. Its pinned digest is `de82c3471f61accaa408d475404d7cd911edf04f23873a5d0f4fb9a2344ae171`. Setup took 46.2620 ms; seal commitments took 18.9061 ms once. Authenticated load, including hashing the complete key and reconstructing its verifier tables, took 41.9793 ms in the export run and 41.48 to 41.61 ms in the independent file-only runs. This is slower than the spike's unauthenticated native load; Cannon's loader cost must be remeasured.
-
-Each timing uses `bench::Plan` with one warmup and three measured passes, no cooldown. Export-run direct verification uses seven measured passes. The table separates sealing measured during export from verification measured in fresh file-only processes, each loading and authenticating the same key. No other build or test was running during these measurements.
-
-| Distinct programs | Sealing ms | Seal bytes | File-only load ms | Direct verify ms | Sealed verify ms |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 20.3742 | 165,744 | 41.4804 | 2.1369 | 2.1179 |
-| 2 | 22.7535 | 166,096 | 41.6143 | 2.2324 | 2.2298 |
-| 4 | 20.1239 | 166,192 | 41.5016 | 2.2623 | 2.2138 |
-
-The export run's direct/sealed means were respectively 2.2261/2.0777 ms, 9.5790/2.5027 ms, and 2.0958/2.3348 ms. The two-program direct mean had 20 ms and 36 ms outliers and a ±127.1% interval; the fresh file-only measurements above are recorded separately rather than hiding those samples. These small native differences do not establish a verification speedup. Raw logs are `.context/hardening-native-measurements.log` and `.context/hardening-file-verification.log`; exported files are `.context/exports/hardened/`.
-
-D is complete: a two-tier mixed class aggregates, wraps/narrows, loads, seals and verifies on both paths. Its fake large-under-wrap attack is refused, including a seal made against forged polynomials. E is a design only, for the protocol and representation changes explained above. F is [the external review packet](mixed-program-tree-review.md). The supplied Cannon measurements remain spike-only evidence. No new push, PR or upstream comment was made for this hardening task.
-
-### Hardening commits
-
-| Commit | Change |
-| --- | --- |
-| `8eb5f992` | Apply the supplied verifier-embedding spike unchanged. |
-| `926f050a` | Apply the supplied Fixed/Wide sealing spike unchanged. |
-| `6d8600f4` | Return typed errors from verifier-only tree and Program proving entry points. |
-| `a50e234c` | Authenticate the complete class key, bind seal sessions to its digest, validate decoding and consolidate exports. |
-| `a6e3c109` | Add entry/union row tests, cross-mode rejection and two-tier mixed forgery coverage. |
-
-The following documentation commit contains the v1 wire format, seal binding, normalization authorization rule, measured results, E design and external review packet. The review range is `e6780cb8..HEAD` on `op-stack/mixed-program-tree`.
+For verifier-only loaded trees, `stats()` and `node_stats()` report zero for unavailable unpadded row counts; padded heights and committed word counts remain available.

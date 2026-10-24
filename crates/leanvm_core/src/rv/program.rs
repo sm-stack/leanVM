@@ -38,6 +38,9 @@ pub enum ProgramError {
     /// RAM is smaller than its image, or larger than its region.
     #[error("RAM is too small for its image, or exceeds its region")]
     RamSize,
+    /// A normalized class image length is not a positive power of two.
+    #[error("the class image length must be a positive power of two")]
+    ImageSize,
     /// The advice is larger than its region.
     #[error("the advice exceeds its region")]
     AdviceSize,

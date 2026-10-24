@@ -1,4 +1,4 @@
-//! The verifier's core of one RISC-V proof, in rows: every check that depends on the proof.
+//! The verifier's core of one RISC-V proof, in rows, with program claims deferred to the tree root.
 
 use super::{Rows, infallible};
 use crate::cpu::{Announcement, CpuError, DeferredClaims, Layout, Program};
@@ -7,6 +7,7 @@ use crate::rec::transcript::{ProofSource, Transcript};
 use crate::rec::tree::LeafShape;
 use crate::tables::Clock;
 use fiat_shamir::arith::{Arith, Verifier};
+use primitives::field::{F64, F192};
 use std::marker::PhantomData;
 use zk::{Recorder, Value};
 
@@ -59,7 +60,8 @@ impl<'p> ProofShape<'p> {
 
     /// The verifier's core of a proof of this shape returning `output`, read from `source`, as rows of `b`.
     ///
-    /// The rows check everything the native core checks, and leave its deferred claims as wires.
+    /// The rows check the witness core and leave its deferred claims as wires.
+    /// The standalone program-opening suffix is unused: the tree root settles the program claim.
     pub fn verify_core(&self, b: &mut Builder, output: [Kw; 4], source: ProofSource<'_>) -> CoreRows {
         if self.shape.is_zero_knowledge() {
             return self.verify_core_zk(b, output, source);
@@ -70,12 +72,7 @@ impl<'p> ProofShape<'p> {
         let clock = r.scope("announcement", |r| self.read_announcement(r));
         let output = output.map(|o| r.b.k_to_e1(o));
         let claims = infallible(self.layout.verify_core(&mut r, clock, &output, self.shape.rate()));
-        let root =
-            r.b.d_const(primitives::hash::digest_words(self.program.verifying_key().root()));
-        r.scope("program opening", |r| {
-            infallible(self.program.verifying_key().verify_program(r, root, &claims.program));
-        });
-        infallible(r.check_eof());
+        // The program opening suffix is unused here: the tree carries this claim to its root.
         CoreRows {
             claims,
             state: t.digest(b),
@@ -101,9 +98,7 @@ impl<'p> ProofShape<'p> {
                 }
             }
             let entry_e = b.k_to_e1(entry);
-            let halt = b.e_const(primitives::field::F192::from(primitives::field::F64(
-                crate::rv::Region::TEXT.address((1 << bc) - 1),
-            )));
+            let halt = b.e_const(F192::from(F64(crate::rv::Region::TEXT.address((1 << bc) - 1))));
             let gap = b.add(entry_e, halt);
             b.inv(gap);
             entry_e
@@ -157,16 +152,8 @@ impl<'p> ProofShape<'p> {
             let core = infallible(self.layout.record_core(&mut rec, self.shape.rate(), &output));
             let claims = infallible(core.claims.into_plain(&mut rec));
             // A record too large for the key commitment has no outer proof: the rows then refuse every proof.
-            let fits = core.keys.verify_outer(rec).map(|mut r| {
-                let root =
-                    r.b.d_const(primitives::hash::digest_words(self.program.verifying_key().root()));
-                infallible(
-                    self.program
-                        .verifying_key()
-                        .verify_program(&mut r, root, &claims.program),
-                );
-                infallible(r.check_eof());
-            });
+            // The root closes the program claim, so the standalone program opening suffix is unused.
+            let fits = core.keys.verify_outer(rec);
             (claims, fits.is_ok())
         };
         if !fits {
@@ -223,7 +210,8 @@ mod tests {
     use crate::rec::transcript::ProofSource;
     use crate::rv::Region;
     use crate::rv::asm::*;
-    use fiat_shamir::{ProofTranscript, TranscriptError};
+    use fiat_shamir::{ProofTranscript, TranscriptError, VerifierState};
+    use pcs::verifier::Recording;
 
     use pcs::merkle::Openings;
 
@@ -378,7 +366,13 @@ mod tests {
         assert!(failure.starts_with("bus and tables"), "{failure}");
 
         // The openings are the rows' witness: a sibling or the last leaf word of the first and the last phase.
-        for phase in [0, f.openings.len() - 1] {
+        let mut recording = Recording::new(VerifierState::new(&f.program.session(), f.output.words(), &f.proof));
+        f.program
+            .verifying_key()
+            .witness_core(f.output, &mut recording)
+            .expect("honest witness core");
+        let phases = recording.into_openings().len();
+        for phase in [0, phases - 1] {
             let mut forged = f.openings.clone();
             forged[phase].paths[1][0] ^= 1;
             let failure = first(&f.proof, &forged);
@@ -493,16 +487,32 @@ mod tests {
 
     #[test]
     fn a_tampered_zero_knowledge_proof_fails_in_rows() {
-        // Mutation: one bit of a hidden scalar, the first past the shape and the two roots; then one of the key opening's.
+        // Mutation: one bit of the key root, then of the first hidden scalar.
         //
         //     narg = [N_TABLES + 1 sizes | stack root | key root | hidden scalars ... | outer proof, key opening]
         let f = zk_fixture();
         let first_hidden = 24 * (N_TABLES + 1) + 2 * 32;
-        for at in [first_hidden + 8, f.proof.narg.len() - 24] {
+        for at in [24 * (N_TABLES + 1) + 32, first_hidden + 8] {
             let mut forged = f.proof.clone();
             forged.narg[at] ^= 1;
             let failures = f.build(ProofSource::Proof(&forged, &f.openings)).0.finish().failures;
             assert!(!failures.is_empty(), "byte {at} tampered and the rows hold");
+        }
+    }
+    #[test]
+    fn standalone_program_openings_are_deferred_in_same_program_rows() {
+        for f in [fixture(), zk_fixture()] {
+            let mut forged = f.proof.clone();
+            let last = forged.narg.len() - 24;
+            forged.narg[last] ^= 1;
+            assert!(f.program.verify_core(f.output, &Proof(forged.clone(), f.kind)).is_err());
+            let (b, claims) = f.build(ProofSource::Proof(&forged, &f.openings));
+            let claims = values(&b, &claims);
+            assert_eq!(claims, f.native);
+            f.program
+                .check_deferred(&claims)
+                .expect("the root settles the genuine program claim");
+            assert!(b.finish().failures.is_empty());
         }
     }
 }

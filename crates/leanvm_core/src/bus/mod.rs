@@ -183,6 +183,8 @@ pub struct ProducerProof {
 /// per side the tables' linear forms plus what each is claimed to sum to, and the
 /// producers' share of the push side.
 pub struct BusProof {
+    /// The fingerprint challenges, retained for the program opening's points.
+    pub alphas: Vec<F192>,
     pub claims: Vec<ColumnClaim>,
     /// The GKR point ζ: the zerocheck reuses it, so no fresh point is sampled.
     pub point: Vec<F192>,
@@ -304,6 +306,7 @@ pub fn prove_balance(
     });
 
     BusProof {
+        alphas: fp.alphas,
         claims: open.claims,
         point: bus_gkr.point,
         forms,

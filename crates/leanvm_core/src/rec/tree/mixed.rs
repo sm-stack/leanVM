@@ -34,7 +34,7 @@ impl ProgramClass {
     /// Normalize a smaller program and image to this class before proving it.
     pub fn normalize(self, program: &Program) -> Result<Program, ProgramError> {
         if !self.image_words.is_power_of_two() {
-            return Err(ProgramError::RamSize);
+            return Err(ProgramError::ImageSize);
         }
         program.padded(self.log_bytecode, self.log_ram, self.log_advice, self.image_words)
     }
@@ -264,6 +264,15 @@ mod tests {
     }
 
     #[test]
+    fn normalization_reports_invalid_image_lengths() {
+        let f = fixture();
+        for image_words in [0, 3] {
+            let class = ProgramClass { image_words, ..f.class };
+            assert!(matches!(class.normalize(&f.programs[0]), Err(ProgramError::ImageSize)));
+        }
+    }
+
+    #[test]
     fn two_tier_mixed_roots_and_fake_large_wrap() {
         let f = fixture();
         let mut shape = f.shape;
@@ -458,6 +467,34 @@ mod tests {
             let result = rows.reduce(&f.tree.design, ProofSource::Proof(&reduction, &[]));
             assert_eq!(result.failures.is_empty(), good, "{:#?}", result.failures);
         }
+    }
+
+    #[test]
+    fn built_trees_refuse_foreign_seal_provers_and_roots() {
+        let f = fixture();
+        let first = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
+        let mut other_class = f.class;
+        other_class.log_advice += 1;
+        let other = Tree::mixed(other_class, f.shape).unwrap();
+        let foreign = other.seal_prover().unwrap();
+        let genuine = f.tree.seal_prover().unwrap();
+        let roots = genuine.roots();
+        let seal = f.tree.seal(&genuine, &first.proof).unwrap();
+        assert_eq!(foreign.roots().0.len(), roots.0.len());
+        assert_ne!(foreign.roots(), roots);
+        assert!(matches!(f.tree.seal(&foreign, &first.proof), Err(TreeError::SealRoots)));
+        assert_eq!(
+            f.tree
+                .verify_claims_sealed(&first.proof, &first.claims, &foreign.roots(), &seal),
+            Err(TreeError::SealRoots)
+        );
+        assert!(matches!(
+            f.tree.mixed_verifier_bytes(&foreign.roots()),
+            Err(TreeError::SealRoots)
+        ));
+        f.tree
+            .verify_claims_sealed(&first.proof, &first.claims, &roots, &seal)
+            .unwrap();
     }
 
     #[test]

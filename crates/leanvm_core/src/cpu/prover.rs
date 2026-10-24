@@ -3,6 +3,7 @@
 use super::proof::ProofKind;
 use super::{Output, Program, Proof, ProveError, Stats};
 use crate::commitment::Rate;
+use crate::tables::PerTable;
 use tracing::info_span;
 use zk::Randomness;
 
@@ -34,11 +35,11 @@ pub struct Prover {
     rate: Rate,
     /// Where a zero-knowledge prover draws its randomness; none for a plain prover.
     randomness: Option<Randomness>,
-    floor: crate::tables::PerTable<usize>,
+    floor: PerTable<usize>,
 }
 
 impl Prover {
-    pub(crate) const fn with_floor(mut self, floor: crate::tables::PerTable<usize>) -> Self {
+    pub(crate) const fn with_floor(mut self, floor: PerTable<usize>) -> Self {
         self.floor = floor;
         self
     }
@@ -53,7 +54,7 @@ impl Prover {
         Self {
             rate,
             randomness: None,
-            floor: crate::tables::PerTable::default(),
+            floor: PerTable::default(),
         }
     }
 

@@ -5,7 +5,7 @@ use super::{Claim, CpuError, DeferredClaims, Layout, Output, Program, ProgramPoi
 use crate::bus::{N_TUPLE_BITS, PublicColumns};
 use crate::constraints::ConstraintError;
 use crate::rv::{Region, RiscvProgram};
-use fiat_shamir::arith::{Arith, Native, Verifier};
+use fiat_shamir::arith::{Arith, Verifier};
 use fiat_shamir::{ProverState, SessionId, VerifierState};
 use pcs::merkle::{Hash, Openings};
 use pcs::ring_switch::inverse_frobenius_ladder;
@@ -244,9 +244,13 @@ impl VerifyingKey {
     }
 
     pub(super) fn points<A: Arith>(&self, a: &mut A, point: &ProgramPoint<A::E>) -> Vec<Vec<A::E>> {
-        let (chi, alpha) = point.bytecode.split_at(self.sizes.log_bytecode);
+        self.points_at(a, &point.bytecode, point.twist.len())
+    }
+
+    pub(super) fn points_at<A: Arith>(&self, a: &mut A, bytecode: &[A::E], terms: usize) -> Vec<Vec<A::E>> {
+        let (chi, alpha) = bytecode.split_at(self.sizes.log_bytecode);
         let ladders: Vec<_> = chi.iter().map(|&x| inverse_frobenius_ladder(a, x, 1)).collect();
-        (0..point.twist.len())
+        (0..terms)
             .map(|i| ladders.iter().map(|l| l[i]).chain(alpha.iter().copied()).collect())
             .collect()
     }
@@ -267,16 +271,15 @@ impl ProgramCommitment {
     }
 
     #[expect(clippy::disallowed_methods, reason = "each point value is sent before opening")]
-    pub(super) fn open(&self, ps: &mut ProverState, key: &VerifyingKey, claim: &Claim<ProgramPoint>) {
-        let points: Vec<_> = key
-            .points(&mut Native, &claim.point)
-            .into_iter()
+    pub(super) fn open(&self, ps: &mut ProverState, points: &[Vec<F192>]) {
+        let points: Vec<_> = points
+            .iter()
             .map(|point| {
-                let value = mle_eval_par(&self.words[..1 << point.len()], &point);
+                let value = mle_eval_par(&self.words[..1 << point.len()], point);
                 ps.prover_message(&value);
                 StackClaim::Point {
                     offset: 0,
-                    low_point: point,
+                    low_point: point.clone(),
                     value,
                 }
             })

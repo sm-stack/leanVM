@@ -12,6 +12,7 @@ use crate::{bus, constraints};
 use fiat_shamir::arith::Verifier;
 use flock::reduction;
 use pcs::verifier::OpeningVerifier;
+use primitives::field::{F64, F192};
 
 /// What the bus and the table sumcheck leave to the rest of the verifier.
 pub(crate) struct TableReduction<E> {
@@ -156,10 +157,7 @@ impl Layout {
         .map_err(CpuError::Bus)?;
         // Replace the template entry's share of the seeded state tuple.
         if let Some(entry) = entry {
-            let delta = v.add_const(
-                entry,
-                primitives::field::F192::from(primitives::field::F64(self.entry_pc)),
-            );
+            let delta = v.add_const(entry, F192::from(F64(self.entry_pc)));
             let weight = v.mul(bus.selectors[0][Framework::State as usize], bus.weights[1]);
             bus.totals[0] = v.mul_add(weight, delta, bus.totals[0]);
         }

@@ -123,6 +123,7 @@ pub struct Tree<'p> {
     /// Loaded from verifier data: its circuits are stubs, so it verifies and refuses to prove.
     verifier_only: bool,
     class_key: OnceLock<(SealRoots, Hash)>,
+    fixed_roots: OnceLock<SealRoots>,
 }
 
 /// A leaf of a claim-set tree: a leaf proof, and the claim set whose digest's hash its output is.
@@ -162,6 +163,9 @@ pub enum FalseClaim {
 /// Why a tree cannot be built, a tree proof cannot be made, or a root is refused.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum TreeError {
+    /// The seal commitments are not this tree's fixed polynomials.
+    #[error("the seal roots do not match this tree")]
+    SealRoots,
     /// The supplied class key or roots do not match the authenticated identity.
     #[error("the class key does not match the pinned digest or seal roots")]
     ClassKeyDigest,
@@ -379,6 +383,7 @@ impl<'p> Tree<'p> {
             tables,
             verifier_only: false,
             class_key: OnceLock::new(),
+            fixed_roots: OnceLock::new(),
         })
     }
 
@@ -911,6 +916,9 @@ impl<'p> Tree<'p> {
     }
 
     /// What the circuit of one kind of node costs: of a claim-set tree's nodes, the one of the largest arity.
+    ///
+    /// Loaded verifier-only trees report zero for unavailable unpadded row counts;
+    /// padded heights and committed word counts remain available.
     #[must_use]
     pub fn stats(&self, kind: Kind) -> CircuitStats {
         self.circuit_stats(match kind {
@@ -920,6 +928,7 @@ impl<'p> Tree<'p> {
     }
 
     /// What the node circuit of this arity costs, if the tree has one: of a tree of two tiers, the large tier's.
+    /// Unpadded row counts are unavailable (reported as zero) on loaded verifier-only trees.
     #[must_use]
     pub fn node_stats(&self, arity: usize) -> Option<CircuitStats> {
         let tier = self.design.tiers.len() - 1;
@@ -1093,7 +1102,10 @@ mod tests {
 
         // A first-level node of that tree is no child of a tree of another first level.
         let child = tree.prove_first(&f.pairs()[1..2]).expect("an honest leaf");
-        assert!(f.tree.prove_node(&[f.firsts[0].clone(), child]).is_err());
+        assert!(matches!(
+            f.tree.prove_node(&[f.firsts[0].clone(), child]),
+            Err(TreeError::Child { index: 1, .. })
+        ));
     }
 
     #[test]
@@ -1340,15 +1352,11 @@ mod tests {
         );
         // A prover committing the forged polynomial opens the claim, but only under its own roots.
         let forged = f.tree.seal_prover_over(&tables).unwrap();
-        let forged_seal = f.tree.seal(&forged, &root).unwrap();
+        assert!(matches!(f.tree.seal(&forged, &root), Err(TreeError::SealRoots)));
         assert_ne!(forged.roots(), roots);
         assert_eq!(
-            f.tree.verify_sealed(&root, &outputs, &roots, &forged_seal),
-            Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))
-        );
-        assert_eq!(
-            f.tree.verify_sealed(&root, &outputs, &forged.roots(), &forged_seal),
-            Ok(())
+            f.tree.verify_sealed(&root, &outputs, &forged.roots(), &seal),
+            Err(TreeError::SealRoots)
         );
     }
 
@@ -1467,13 +1475,20 @@ mod tests {
         );
     }
 
-    // The committed program adds a second opening to the first level, while the statement layout stays fixed.
+    // Pin the deferred-program session and the recursive statement layout.
     #[test]
     fn a_tree_of_outputs_has_the_committed_program_layout() {
         let d = &fixture().tree.design;
+        assert_eq!(
+            d.session().0,
+            [
+                213, 85, 243, 172, 46, 5, 111, 190, 136, 190, 78, 94, 184, 119, 183, 35, 221, 186, 126, 160, 37, 162,
+                214, 75, 170, 228, 66, 85, 251, 77, 33, 138
+            ]
+        );
         assert_eq!(d.tiers.len(), 1);
-        assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 16, 14, 10, 14, 10]);
-        assert_eq!(d.statement.len(), 98);
+        assert_eq!(d.tiers[SMALL].taus.into_values(), [16, 16, 14, 10, 14, 10]);
+        assert_eq!(d.statement.len(), 97);
         let sections = [
             Section::Kind,
             Section::Digest,
@@ -1485,7 +1500,7 @@ mod tests {
         ];
         assert_eq!(
             sections.map(|s| d.statement.range(s)),
-            [0..1, 1..3, 3..25, 25..28, 28..42, 42..56, 56..98]
+            [0..1, 1..3, 3..24, 24..27, 27..41, 41..55, 55..97]
         );
     }
 
@@ -2450,10 +2465,10 @@ mod tests {
                 Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Wide)))
             );
             let forged = tree.seal_prover_over(&tables).unwrap();
-            let forged_seal = tree.seal(&forged, &root).unwrap();
-            assert!(
-                tree.verify_claims_sealed(&root, forged_set, &prover.roots(), &forged_seal)
-                    .is_err()
+            assert!(matches!(tree.seal(&forged, &root), Err(TreeError::SealRoots)));
+            assert_eq!(
+                tree.verify_claims_sealed(&root, forged_set, &forged.roots(), &seal),
+                Err(TreeError::SealRoots)
             );
         }
 
@@ -2482,10 +2497,17 @@ mod tests {
             (tree.verify_claims(&narrowed.proof, &part)).expect("a narrowed root");
         }
 
-        // Pin the one-tier statement layout after adding the program opening.
+        // Pin the deferred-program session and one-tier claim-set layout.
         #[test]
         fn a_claim_set_tree_of_one_tier_has_the_committed_program_layout() {
             let d = &fixture().tree.design;
+            assert_eq!(
+                d.session().0,
+                [
+                    109, 140, 201, 79, 78, 96, 167, 135, 145, 170, 72, 254, 52, 212, 215, 230, 25, 15, 30, 7, 36, 6,
+                    220, 34, 80, 204, 182, 2, 175, 132, 217, 180
+                ]
+            );
             let sections = [
                 Section::Kind,
                 Section::Digest,
@@ -2496,7 +2518,7 @@ mod tests {
                 Section::Matrices,
             ];
             assert_eq!(d.tiers.len(), 1);
-            assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 16, 15, 11, 14, 10]);
+            assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 17, 15, 11, 14, 10]);
             assert_eq!(d.statement.len(), 99);
             assert_eq!(
                 sections.map(|s| d.statement.range(s)),

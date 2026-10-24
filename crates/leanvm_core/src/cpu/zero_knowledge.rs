@@ -32,11 +32,12 @@ use super::deferred::{Claim, DeferredClaims, MalformedClaim, ProgramPoint};
 use super::layout::{Announcement, Layout, Lookup};
 use super::proof::ProofKind;
 use super::witness::Witness;
-use super::{CpuError, Output, Program, Proof};
+use super::{CpuError, Output, Program, Proof, VerifyingKey};
 use crate::bus::{self, N_TUPLE_BITS, PublicColumns, SparseColumn};
 use crate::commitment::{Commitment, Committed, Rate};
 use crate::constraints::ConstraintError;
 use crate::tables::{CircuitId, Clock, N_CIRCUITS};
+use fiat_shamir::arith::Native;
 use fiat_shamir::arith::{Arith, Verifier};
 use fiat_shamir::{ProofTranscript, ProverState, VerifierState};
 use flock::FlockError;
@@ -86,7 +87,7 @@ pub(super) fn prove(
     for bit in FREE_CLOCK_BITS {
         ps.prover_message(&F192::from(F64(w.ts_final >> bit & 1)));
     }
-    let (slots, rings) = program.prove_reductions(&mut ps, &mut w, output);
+    let (slots, rings, _) = program.prove_reductions(&mut ps, &mut w, output);
     info_span!("PCS open").in_scope(|| {
         committed
             .open(&mut ps, &w.q, &slots, &rings)
@@ -103,15 +104,17 @@ pub(super) fn prove(
     let _rho: F192 = ps.verifier_message();
 
     // The record of the whole padded transcript, then the outer proof.
-    let record = info_span!("Record").in_scope(|| {
+    let (record, program_points) = info_span!("Record").in_scope(|| {
         let (mut rec, core) = replay(program, output, ps.proof());
-        core.claims
+        let claims = core
+            .claims
             .into_plain(&mut rec)
             .expect("the prover's own claims are well formed");
-        rec.finish().1
+        let points = program.key.points(&mut Native, &claims.program.point);
+        (rec.finish().1, points)
     });
     info_span!("Outer proof").in_scope(|| keys.prove_outer(&mut ps, &record));
-    program.open_program(&mut ps, output, ProofKind::ZeroKnowledge)?;
+    program.open_program(&mut ps, &program_points)?;
     Ok(Proof(ps.into_proof(), ProofKind::ZeroKnowledge))
 }
 
@@ -137,11 +140,7 @@ fn replay<'p>(
 /// # Errors
 ///
 /// Returns the first stage that refuses the proof.
-pub(super) fn verify_core<V>(
-    program: &super::VerifyingKey,
-    output: Output,
-    inner: V,
-) -> Result<(V, DeferredClaims), CpuError>
+pub(super) fn verify_core<V>(program: &VerifyingKey, output: Output, inner: V) -> Result<(V, DeferredClaims), CpuError>
 where
     V: OpeningVerifier<E = F192> + PublicColumns,
 {
@@ -154,7 +153,7 @@ where
 
 /// The recorded core of a proof read natively: its announced shape, its layout, then the core.
 fn record_proof<V: OpeningVerifier<E = F192>>(
-    program: &super::VerifyingKey,
+    program: &VerifyingKey,
     rec: &mut Recorder<V>,
     output: Output,
 ) -> Result<RecordedCore<V::Root, F192>, CpuError> {

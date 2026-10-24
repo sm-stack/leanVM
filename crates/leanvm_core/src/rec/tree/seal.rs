@@ -1,7 +1,7 @@
 //! Settle a mixed root's fixed-polynomial claims by PCS openings, not by evaluating the polynomials.
 //!
 //! A mixed tree's fixed polynomials (`Fixed`, and `Wide` for a tree of two tiers) are functions of its class. Each is
-//! committed once, at [`SEAL_LOG_INV_RATE`]; the roots are class data, authenticated with the class. A root's fixed
+//! committed at [`SEAL_LOG_INV_RATE`]; built trees cache their genuine roots, and loaded trees authenticate them with the class. A root's fixed
 //! claims (`W(r) = v`, read from its verified statement) are then proven by one opening per polynomial, in a
 //! transcript of its own:
 //!
@@ -60,9 +60,7 @@ impl SealProver {
 
 /// The seal's session binds the class key, or the same-program tree's session tag and roots.
 fn session(tree: &Tree<'_>, roots: &SealRoots) -> Result<SessionId, TreeError> {
-    if roots.0.len() != tree.design.tiers.len() {
-        return Err(TreeError::MixedClass);
-    }
+    tree.check_seal_roots(roots)?;
     if tree.design.mixed {
         return Ok(SessionId::tagged(SEAL_DOMAIN, &tree.class_key_digest_for(roots)?));
     }
@@ -81,7 +79,28 @@ impl Tree<'_> {
     /// A polynomial too large to commit.
     pub fn seal_prover(&self) -> Result<SealProver, TreeError> {
         self.require_prover()?;
-        self.seal_prover_over(&self.tables)
+        let prover = self.seal_prover_over(&self.tables)?;
+        let _ = self.fixed_roots.set(prover.roots());
+        Ok(prover)
+    }
+
+    pub(super) fn check_seal_roots(&self, roots: &SealRoots) -> Result<(), TreeError> {
+        let expected = if self.verifier_only {
+            &self
+                .class_key
+                .get()
+                .expect("loaded trees have an authenticated class key")
+                .0
+        } else {
+            if self.fixed_roots.get().is_none() {
+                self.seal_prover()?;
+            }
+            self.fixed_roots.get().expect("seal_prover caches the genuine roots")
+        };
+        if roots != expected {
+            return Err(TreeError::SealRoots);
+        }
+        Ok(())
     }
 
     /// Commitments to the fixed polynomials of `tables`, which a test may forge.
@@ -154,6 +173,7 @@ impl Tree<'_> {
         roots: &SealRoots,
         seal: &ProofTranscript,
     ) -> Result<(), TreeError> {
+        self.check_seal_roots(roots)?;
         let position = self.verify_claims_unsettled(root, claims)?;
         self.settle_sealed(root, position, roots, seal)
     }
@@ -170,6 +190,7 @@ impl Tree<'_> {
         roots: &SealRoots,
         seal: &ProofTranscript,
     ) -> Result<(), TreeError> {
+        self.check_seal_roots(roots)?;
         let position = self.verify_unsettled(root, outputs)?;
         self.settle_sealed(root, position, roots, seal)
     }
@@ -188,12 +209,9 @@ impl Tree<'_> {
     ) -> Result<(), TreeError> {
         let d = &self.design;
         let statement = root.statement(d.statement);
+        let session = session(self, roots)?;
         self.settle_with(&statement, position, false)?;
-        let mut v = VerifierState::new(
-            &session(self, roots)?,
-            &LengthPrefixed(root.limbs().as_flattened()),
-            seal,
-        );
+        let mut v = VerifierState::new(&session, &LengthPrefixed(root.limbs().as_flattened()), seal);
         let fixed: Vec<DensePoly> = fixed_polys(d, position).collect();
         let n_fixed = d.statement.polys().iter().filter(|p| p.is_fixed()).count();
         if roots.0.len() != n_fixed {

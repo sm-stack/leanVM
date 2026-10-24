@@ -304,6 +304,8 @@ impl<'p> Design<'p> {
         tag.extend_from_slice(self.leaf.program().digest());
         if self.mixed {
             tag.extend_from_slice(b"/mixed-program/1");
+        } else {
+            tag.extend_from_slice(b"/deferred-program/1");
         }
         let large = self.claims.map(|c| c.capacity);
         let semantics = large.map_or([0; 3], |c| [1, c.claims, c.groups]);

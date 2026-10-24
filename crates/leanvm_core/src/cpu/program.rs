@@ -21,7 +21,7 @@ use crate::stacking::StackShape;
 use crate::tables::{CircuitId, ClassTable, Clock, PerTable, TableId};
 use crate::{bus, constraints};
 use fiat_shamir::arith::Native;
-use fiat_shamir::{ProverState, SessionId, VerifierState};
+use fiat_shamir::{ProverState, SessionId};
 use flock::reduction;
 use pcs::merkle::Openings;
 use primitives::field::{F64, F192};
@@ -340,25 +340,25 @@ impl Program {
         let committed = info_span!("Commit")
             .in_scope(|| Committed::new(&mut ps, &w.q, w.layout.shape, rate).expect("the witness matches its layout"));
 
-        let (slots, rings) = self.prove_reductions(&mut ps, &mut w, output);
+        let (slots, rings, program_points) = self.prove_reductions(&mut ps, &mut w, output);
         info_span!("PCS open").in_scope(|| {
             committed
                 .open(&mut ps, &w.q, &slots, &rings)
                 .expect("opening uses the committed witness");
         });
-        self.open_program(&mut ps, output, ProofKind::Plain)?;
+        self.open_program(&mut ps, &program_points)?;
         Ok(Proof(ps.into_proof(), ProofKind::Plain))
     }
 
     /// Flock's reductions, the bus and the table sumcheck over the committed witness.
     ///
-    /// It returns the opening's point claims and its ring-switched regions.
+    /// It returns the witness opening's claims and regions, and the program opening's points.
     pub(super) fn prove_reductions(
         &self,
         ps: &mut ProverState,
         w: &mut Witness,
         output: Output,
-    ) -> (Vec<StackClaim>, Vec<RingSwitch>) {
+    ) -> (Vec<StackClaim>, Vec<RingSwitch>, Vec<Vec<F192>>) {
         // Flock's reductions, batched over every class circuit then every clock circuit under shared challenges.
         //
         // Each circuit leaves a validity claim on its packed witness, discharged in the same opening through a ring-switched region.
@@ -380,7 +380,7 @@ impl Program {
         // The bus, then the linear tables' columns at its point, then the one batch over the other tables and the
         // producers, all reading the stack's windows in place.
         let spans = &Schema::get().spans;
-        let (bus_claims, table_claims) = {
+        let (bus_claims, table_claims, alphas) = {
             let cols = w.columns();
             let mut bus = info_span!("Prove bus").in_scope(|| {
                 bus::prove_balance(&l.push, &l.pull, &l.producers, l.grinding, &cols, spans.as_slice(), ps)
@@ -420,7 +420,7 @@ impl Program {
                 let batch = Batch::new(l, &bus.forms, &coefficients, &bus.weights, bus.beta, powers);
                 constraints::prove(batch.airs(), table_cols, &bus.point, &sums, ps)
             });
-            (bus.claims, TableClaims::new(settled, summed))
+            (bus.claims, TableClaims::new(settled, summed), bus.alphas)
         };
         let slots = l.opening_claims(
             &mut Native,
@@ -431,7 +431,10 @@ impl Program {
 
         // Each producer's multiplicity column is a ring-switched region too, as is each register word.
         let rings = l.rings(slices, &table_claims.producers, &table_claims.summed, F192::ZERO);
-        (slots, rings)
+        let producer = &table_claims.producers[0];
+        let bytecode = [&producer.chi[..], &alphas[..]].concat();
+        let program_points = self.key.points_at(&mut Native, &bytecode, producer.evals.len());
+        (slots, rings, program_points)
     }
 
     /// Check that the proof shows this program, run on some advice, exiting with this output.
@@ -471,27 +474,9 @@ impl Program {
         }
     }
 
-    pub(super) fn open_program(&self, ps: &mut ProverState, output: Output, kind: ProofKind) -> Result<(), ProveError> {
+    pub(super) fn open_program(&self, ps: &mut ProverState, points: &[Vec<F192>]) -> Result<(), ProveError> {
         let committed = self.committed.as_ref().ok_or(ProveError::VerifierOnly)?;
-        let claims = match kind {
-            ProofKind::Plain => {
-                let mut v = VerifierState::new(&self.session(), output.words(), ps.proof());
-                self.key.witness_core(output, &mut v)
-            }
-            ProofKind::ZeroKnowledge => {
-                let v = VerifierState::new(&self.zk_session(), output.words(), ps.proof());
-                zero_knowledge::verify_core(&self.key, output, v).map(|(_, claims)| claims)
-            }
-        };
-        let claims = match claims {
-            Ok(claims) => claims,
-            // Forged-witness tests also construct proofs that fail before the program opening.
-            #[cfg(test)]
-            Err(_) => return Ok(()),
-            #[cfg(not(test))]
-            Err(error) => panic!("the prover's own core: {error}"),
-        };
-        committed.open(ps, &self.key, &claims.program);
+        committed.open(ps, points);
         Ok(())
     }
 
@@ -501,7 +486,7 @@ impl Program {
         &self.rv
     }
 
-    /// BLAKE2s over the decoded text, the entry and halt addresses, the region sizes and the initial RAM image.
+    /// BLAKE2s over the canonical committed-program key: root, entry, region sizes and initial RAM image.
     ///
     /// ELF metadata is no part of it, and every illegal encoding decodes to the same entry.
     #[doc(hidden)]

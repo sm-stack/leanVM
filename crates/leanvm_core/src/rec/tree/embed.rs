@@ -88,7 +88,7 @@ impl Tree<'_> {
     ///
     /// # Errors
     ///
-    /// A tree that is not mixed, or a root count that differs from its tier count.
+    /// A tree that is not mixed, a root count that differs from its tier count, or roots not belonging to this tree.
     pub fn mixed_verifier_bytes(&self, roots: &SealRoots) -> Result<Vec<u8>, TreeError> {
         if !self.design.mixed {
             return Err(TreeError::MixedClass);
@@ -96,6 +96,7 @@ impl Tree<'_> {
         if roots.0.len() != self.design.tiers.len() {
             return Err(TreeError::MixedClass);
         }
+        self.check_seal_roots(roots)?;
         let key = self.design.leaf.program().verifying_key();
         let sizes = key.sizes();
         let class = ProgramClass {
@@ -138,9 +139,7 @@ impl Tree<'_> {
             if known_roots == roots {
                 return Ok(*known_digest);
             }
-            if self.verifier_only {
-                return Err(TreeError::ClassKeyDigest);
-            }
+            return Err(TreeError::SealRoots);
         }
         let hash = digest(&self.mixed_verifier_bytes(roots)?);
         let _ = self.class_key.set((roots.clone(), hash));
@@ -280,8 +279,11 @@ impl Tree<'static> {
                 let byte_len = len.checked_mul(8).ok_or(TreeError::MixedClass)?;
                 let words = r.0.get(..byte_len).ok_or(TreeError::MixedClass)?;
                 r.0 = &r.0[byte_len..];
-                let column: Vec<F64> = (words.chunks_exact(8))
-                    .map(|w| F64(u64::from_le_bytes(w.try_into().expect("eight bytes"))))
+                let column: Vec<F64> = words
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|&w| F64(u64::from_le_bytes(w)))
                     .collect();
                 columns.push(Arc::new(column));
             }
@@ -314,6 +316,7 @@ impl Tree<'static> {
             tables,
             verifier_only: true,
             class_key: OnceLock::from((roots, *digest)),
+            fixed_roots: OnceLock::new(),
         })
     }
 }

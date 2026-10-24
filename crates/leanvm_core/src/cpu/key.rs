@@ -298,6 +298,12 @@ mod tests {
     use crate::rv::asm::{Addi, Asm, Reg};
     use crate::{Prover, Rate};
 
+    impl VerifyingKey {
+        pub(crate) fn with_unchecked_entry(&self, entry: u64) -> Self {
+            Self::new(self.root, self.sizes, entry, self.image.clone())
+        }
+    }
+
     fn program(value: i32) -> Program {
         let text = Asm::new().i(Addi, Reg::A0, Reg::ZERO, value).exit().finish();
         Program::new(&text, Region::TEXT.base(), vec![17, 19], 2, 0).unwrap()
@@ -315,9 +321,8 @@ mod tests {
         for at in [0, 40, 72] {
             let mut bytes = key.to_bytes();
             bytes[at] ^= 4;
-            if let Some(forged) = VerifyingKey::from_bytes(&bytes) {
-                assert!(forged.verify(run.output, &run.proof).is_err(), "key byte {at}");
-            }
+            let forged = VerifyingKey::from_bytes(&bytes).expect("the tamper keeps valid key metadata");
+            assert!(forged.verify(run.output, &run.proof).is_err(), "key byte {at}");
         }
         let mut proof = run.proof.clone();
         let last = proof.0.narg.len() - 1;

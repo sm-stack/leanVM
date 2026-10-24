@@ -195,6 +195,7 @@ pub(super) fn singleton_rows(b: &mut Builder, digest: Dw, output: [Kw; 4]) -> Dw
 mod tests {
     use super::*;
     use crate::rec::circuit::Finished;
+    use crate::rv::asm::Ld;
     use crate::tables::TableId;
     use std::sync::OnceLock;
     use zk::Randomness;
@@ -259,6 +260,187 @@ mod tests {
                 proof: &self.runs[i].proof,
                 output: self.runs[i].output,
             })
+        }
+    }
+
+    #[test]
+    fn two_tier_mixed_roots_and_fake_large_wrap() {
+        let f = fixture();
+        let mut shape = f.shape;
+        shape.arity = 3;
+        shape.claims = Some(ClaimShape {
+            capacity: Capacity { claims: 24, groups: 8 },
+            small: Some(Tier {
+                arity: 2,
+                capacity: Capacity { claims: 8, groups: 4 },
+            }),
+        });
+        let tree = Tree::mixed(f.class, shape).unwrap();
+        let first = tree.aggregate_programs(&f.leaves(), None).unwrap();
+        let large = tree.aggregate(&[&first, &first, &first], None).unwrap();
+        let subset = f.leaves()[0].claims();
+        let wrap = tree.aggregate(&[&large], Some(&subset)).unwrap();
+        let prover = tree.seal_prover().unwrap();
+        let roots = prover.roots();
+        assert_eq!(roots.0.len(), 2);
+        let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
+        let loaded = Tree::mixed_from_bytes(f.class, shape, &bytes, &Tree::mixed_class_key_digest(&bytes)).unwrap();
+        for root in [&first, &large, &wrap] {
+            let seal = tree.seal(&prover, &root.proof).unwrap();
+            for verifier in [&tree, &loaded] {
+                verifier.verify_claims(&root.proof, &root.claims).unwrap();
+                verifier
+                    .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                    .unwrap();
+            }
+        }
+        let mut forged = subset;
+        forged.groups[0].members[0][0] ^= 1;
+        super::super::tests::claim_sets::assert_fake_large_wrap_refused(&tree, &large, &forged);
+    }
+
+    #[test]
+    fn mixed_verifier_refuses_other_modes_and_classes_direct_and_sealed() {
+        let f = fixture();
+        let receiver_roots = f.tree.seal_prover().unwrap().roots();
+        let mut output_shape = f.shape;
+        output_shape.claims = None;
+        let outputs = Tree::new(&f.programs[0], output_shape).unwrap();
+        let leaf = Leaf::new(&f.runs[0].proof, f.runs[0].output);
+        let output_root = outputs.prove_first(&[leaf, leaf]).unwrap();
+        outputs
+            .verify(&output_root, &[f.runs[0].output, f.runs[0].output])
+            .unwrap();
+        let output_sealer = outputs.seal_prover().unwrap();
+        let output_seal = outputs.seal(&output_sealer, &output_root).unwrap();
+        assert!(f.tree.verify_claims(&output_root, &f.leaves()[0].claims()).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&output_root, &f.leaves()[0].claims(), &receiver_roots, &output_seal)
+                .is_err()
+        );
+
+        let set = f.leaves()[0].claims();
+        let text = Asm::new()
+            .li(Reg::T0, Region::ADVICE.base())
+            .load(Ld, Reg::A0, 0, Reg::T0)
+            .load(Ld, Reg::A1, 8, Reg::T0)
+            .load(Ld, Reg::A2, 16, Reg::T0)
+            .load(Ld, Reg::A3, 24, Reg::T0)
+            .exit()
+            .finish();
+        let p = Program::new(&text, Region::TEXT.base(), vec![], 0, 2).unwrap();
+        let p = f.class.normalize(&p).unwrap();
+        let run = f.class.prover(f.shape.leaf).prove(&p, &chain(&set.digest())).unwrap();
+        let guest = Tree::new(&p, f.shape).unwrap();
+        let leaf = ClaimLeaf::new(Leaf::new(&run.proof, run.output), &set);
+        let root = guest.aggregate_leaves(&[leaf, leaf], None).unwrap();
+        guest.verify_claims(&root.proof, &root.claims).unwrap();
+        let sealer = guest.seal_prover().unwrap();
+        let seal = guest.seal(&sealer, &root.proof).unwrap();
+        guest
+            .verify_claims_sealed(&root.proof, &root.claims, &sealer.roots(), &seal)
+            .unwrap();
+        assert!(f.tree.verify_claims(&root.proof, &root.claims).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&root.proof, &root.claims, &receiver_roots, &seal)
+                .is_err()
+        );
+
+        let mut class = f.class;
+        class.log_advice += 1;
+        let other = Tree::mixed(class, f.shape).unwrap();
+        let p = class.normalize(&f.programs[0]).unwrap();
+        let run = class.prover(f.shape.leaf).prove(&p, &[2700]).unwrap();
+        let leaf = MixedLeaf {
+            key: p.verifying_key(),
+            proof: &run.proof,
+            output: run.output,
+        };
+        let root = other.aggregate_programs(&[leaf, leaf], None).unwrap();
+        other.verify_claims(&root.proof, &root.claims).unwrap();
+        let sealer = other.seal_prover().unwrap();
+        let seal = other.seal(&sealer, &root.proof).unwrap();
+        other
+            .verify_claims_sealed(&root.proof, &root.claims, &sealer.roots(), &seal)
+            .unwrap();
+        assert!(f.tree.verify_claims(&root.proof, &root.claims).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&root.proof, &root.claims, &receiver_roots, &seal)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn mixed_entry_rows_refuse_alignment_range_and_halt_without_decoding() {
+        let f = fixture();
+        let key = f.programs[0].verifying_key();
+        let run = &f.runs[0];
+        let openings = key.verify_recording(run.output, &run.proof).unwrap();
+        let halt = Region::TEXT.address((1 << f.class.log_bytecode) - 1);
+        for entry in [
+            key.entry_pc(),
+            key.entry_pc() + 1,
+            Region::TEXT.base() - 4,
+            Region::TEXT.address(1 << f.class.log_bytecode),
+            halt,
+        ] {
+            let key = key.with_unchecked_entry(entry);
+            let mut b = Builder::new();
+            let output = run.output.words().map(|w| b.free_k(w));
+            f.tree
+                .design
+                .leaf
+                .verify_mixed(&mut b, output, ProofSource::Proof(&run.proof.0, &openings), Some(&key));
+            let failures = b.finish().failures;
+            if entry == f.programs[0].verifying_key().entry_pc() {
+                assert!(failures.is_empty());
+            } else {
+                assert!(
+                    failures.iter().any(|f| f.scope().first().is_some_and(|s| s == "entry")),
+                    "entry {entry:#x}: {failures:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_union_rows_refuse_uncovered_and_swapped_claims() {
+        let f = fixture();
+        let leaves = f.leaves();
+        let sets: Vec<_> = leaves.iter().map(|l| l.claims()).collect();
+        let refs: Vec<_> = sets.iter().collect();
+        let items: Vec<_> = leaves
+            .iter()
+            .zip(&sets)
+            .map(|(leaf, set)| LeafWitness {
+                key: Some(leaf.key),
+                proof: &leaf.proof.0,
+                openings: leaf.key.verify_recording(leaf.output, leaf.proof).unwrap(),
+                output: *leaf.output.words(),
+                set: set.digest(),
+            })
+            .collect();
+        let shape = f.tree.design.union_shape(0).unwrap();
+        let honest = ClaimSet::from_claims(sets.iter().flat_map(ClaimSet::claims));
+        let mut uncovered = sets[0].clone();
+        uncovered.groups[0].label[0] ^= 1;
+        let mut swapped = sets[0].clone();
+        swapped.groups[0].members[0] = *leaves[1].output.words();
+        for (declared, good) in [(&honest, true), (&uncovered, false), (&swapped, false)] {
+            let fill = super::super::union::tests::unbacked(&shape, &refs, declared);
+            let rows = f.tree.design.first_rows(&NodeInputs::Prove {
+                items: &items,
+                tables: &f.tree.tables,
+                union: Some(&fill),
+            });
+            let reduction = rows
+                .claim_values()
+                .prove(&f.tree.design.session(), &f.tree.design.vars, &f.tree.tables);
+            let result = rows.reduce(&f.tree.design, ProofSource::Proof(&reduction, &[]));
+            assert_eq!(result.failures.is_empty(), good, "{:#?}", result.failures);
         }
     }
 
@@ -473,11 +655,10 @@ mod tests {
         for at in [0, 40, 72] {
             let mut bytes = leaves[0].key.to_bytes();
             bytes[at] ^= 4;
-            if let Some(key) = VerifyingKey::from_bytes(&bytes) {
-                let mut forged = leaves;
-                forged[0].key = &key;
-                assert!(f.tree.aggregate_programs(&forged, None).is_err());
-            }
+            let key = VerifyingKey::from_bytes(&bytes).expect("the tamper keeps valid metadata");
+            let mut forged = leaves;
+            forged[0].key = &key;
+            assert!(f.tree.aggregate_programs(&forged, None).is_err());
         }
         let zk = TreeShape {
             leaf: f.shape.leaf.zero_knowledge(),
@@ -517,9 +698,8 @@ mod tests {
         for at in [0, 40, 72] {
             let mut bytes = key.to_bytes();
             bytes[at] ^= 4;
-            if let Some(key) = VerifyingKey::from_bytes(&bytes) {
-                assert!(!check(&key, output).0.is_empty());
-            }
+            let key = VerifyingKey::from_bytes(&bytes).expect("the tamper keeps valid metadata");
+            assert!(!check(&key, output).0.is_empty());
         }
     }
 }

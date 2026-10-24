@@ -92,19 +92,22 @@ impl<'p> ProofShape<'p> {
         let template = self.program.verifying_key();
         let root = b.free_d(key.map_or([0; 4], |k| primitives::hash::digest_words(k.root())));
         let entry = b.free_k(key.map_or_else(|| template.entry_pc(), crate::VerifyingKey::entry_pc));
-        let bits = b.split(entry);
         let bc = template.sizes().log_bytecode;
-        for (i, &bit) in bits.iter().enumerate() {
-            if i < 2 || i >= bc + 2 {
-                b.eq_k_const(bit, crate::rv::Region::TEXT.base() >> i & 1);
+        let entry_e = b.scope("entry", |b| {
+            let bits = b.split(entry);
+            for (i, &bit) in bits.iter().enumerate() {
+                if i < 2 || i >= bc + 2 {
+                    b.eq_k_const(bit, crate::rv::Region::TEXT.base() >> i & 1);
+                }
             }
-        }
-        let entry_e = b.k_to_e1(entry);
-        let halt = b.e_const(primitives::field::F192::from(primitives::field::F64(
-            crate::rv::Region::TEXT.address((1 << bc) - 1),
-        )));
-        let gap = b.add(entry_e, halt);
-        b.inv(gap);
+            let entry_e = b.k_to_e1(entry);
+            let halt = b.e_const(primitives::field::F192::from(primitives::field::F64(
+                crate::rv::Region::TEXT.address((1 << bc) - 1),
+            )));
+            let gap = b.add(entry_e, halt);
+            b.inv(gap);
+            entry_e
+        });
         let image: Vec<_> = (0..template.image().len())
             .map(|i| b.free_k(key.map_or(0, |k| k.image()[i])))
             .collect();

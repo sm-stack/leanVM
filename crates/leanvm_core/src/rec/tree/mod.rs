@@ -1530,7 +1530,7 @@ mod tests {
         );
     }
 
-    mod claim_sets {
+    pub(crate) mod claim_sets {
         //! Claim-set trees: proofs anyone combines, each declaring the union of its children's sets or part of it.
 
         use crate::cpu::Prover;
@@ -2351,11 +2351,14 @@ mod tests {
         #[test]
         fn a_fake_large_circuit_under_a_wrap_is_refused_at_the_root() {
             let t = tiered();
-            let d = &t.tree.design;
+            assert_fake_large_wrap_refused(&t.tree, &t.pair, &set(vec![group(7, 7, &[1, 2, 3])]));
+        }
+
+        pub(crate) fn assert_fake_large_wrap_refused(tree: &Tree<'_>, pair: &Aggregate, forged_set: &ClaimSet) {
+            let d = &tree.design;
             let large = d.place(LARGE, Level::Node(3)).expect("the large node");
             let wrap = d.place(SMALL, Level::Wrap).expect("a wrap");
             let taus = d.tiers[LARGE].taus;
-            let forged_set = set(vec![group(7, 7, &[1, 2, 3])]);
             let digest = forged_set.digest();
             let halves = [F192::new(digest[0], digest[1], 0), F192::new(digest[2], digest[3], 0)];
             let rest = d.statement.range(Section::Digest).end;
@@ -2366,7 +2369,7 @@ mod tests {
                 let mut b = Builder::new();
                 let mut words = vec![b.e_const(F192::new(d.code(large) as u64, 0, 0))];
                 words.extend(halves.map(|h| b.free_e(h)));
-                let mut claims = t.pair.proof.words[rest..].to_vec();
+                let mut claims = pair.proof.words[rest..].to_vec();
                 claims[wide - rest] = wide_value;
                 words.extend(claims.iter().map(|&w| b.free_e(w)));
                 for w in words {
@@ -2382,9 +2385,9 @@ mod tests {
                 (circuit, assignment)
             };
             let columns = FixedColumns::new(&fake(F192::ZERO).0);
-            let mut tables = t.tree.tables.clone();
+            let mut tables = tree.tables.clone();
             tables.0[DensePoly::Wide as usize] = d.tiers[LARGE].fixed.polynomial(&[&columns]);
-            let point = &t.pair.proof.words[d.statement.range(Section::DensePoint)];
+            let point = &pair.proof.words[d.statement.range(Section::DensePoint)];
             let value = mle_eval_par(
                 &tables.0[DensePoly::Wide as usize],
                 &point[..d.vars.0[DensePoly::Wide as usize]],
@@ -2398,10 +2401,7 @@ mod tests {
                 circuit.prove(&assignment, &d.session(), d.rate),
                 d.rate,
             );
-            assert!(
-                t.tree.read(&child, large).is_err(),
-                "natively, the fake is no large node"
-            );
+            assert!(tree.read(&child, large).is_err(), "natively, the fake is no large node");
             let limbs = child.limbs();
             let openings =
                 (circuit.verify(&limbs, &d.session(), d.rate, &child.proof)).expect("the fake proves its own circuit");
@@ -2419,7 +2419,7 @@ mod tests {
             };
 
             // An honest reduction over the tree's polynomials fails on the fake's hints.
-            let honest = t.tree.prove_rows(d.node_rows(&inputs(&t.tree.tables), wrap));
+            let honest = tree.prove_rows(d.node_rows(&inputs(&tree.tables), wrap));
             assert!(
                 matches!(&honest, Err(TreeError::Unsatisfied(check)) if check.scope()[0] == "reduction"),
                 "{honest:?}"
@@ -2435,25 +2435,24 @@ mod tests {
             let root = TreeProof::new(
                 d.code(wrap),
                 &assignment,
-                t.tree.keys[wrap].prove(&assignment, &d.session(), d.rate),
+                tree.keys[wrap].prove(&assignment, &d.session(), d.rate),
                 d.rate,
             );
-            t.tree.read(&root, wrap).expect("the wrap's recursion proof verifies");
+            tree.read(&root, wrap).expect("the wrap's recursion proof verifies");
             assert_eq!(
-                t.tree.verify_claims(&root, &forged_set),
+                tree.verify_claims(&root, forged_set),
                 Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Wide)))
             );
-            let prover = t.tree.seal_prover().unwrap();
-            let seal = t.tree.seal(&prover, &root).unwrap();
+            let prover = tree.seal_prover().unwrap();
+            let seal = tree.seal(&prover, &root).unwrap();
             assert_eq!(
-                t.tree.verify_claims_sealed(&root, &forged_set, &prover.roots(), &seal),
+                tree.verify_claims_sealed(&root, forged_set, &prover.roots(), &seal),
                 Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Wide)))
             );
-            let forged = t.tree.seal_prover_over(&tables).unwrap();
-            let forged_seal = t.tree.seal(&forged, &root).unwrap();
+            let forged = tree.seal_prover_over(&tables).unwrap();
+            let forged_seal = tree.seal(&forged, &root).unwrap();
             assert!(
-                t.tree
-                    .verify_claims_sealed(&root, &forged_set, &prover.roots(), &forged_seal)
+                tree.verify_claims_sealed(&root, forged_set, &prover.roots(), &forged_seal)
                     .is_err()
             );
         }

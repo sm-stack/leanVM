@@ -252,6 +252,39 @@ mod tests {
     }
 
     #[test]
+    fn sealed_roots_agree_with_direct_settlement_and_bind_their_inputs() {
+        let f = fixture();
+        let prover = f.tree.seal_prover().unwrap();
+        let roots = prover.roots();
+        assert_eq!(roots.0.len(), 1, "one tier: Fixed only");
+        let first = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
+        let node = f.tree.aggregate(&[&first, &first], None).unwrap();
+        for a in [&first, &node] {
+            f.tree.verify_claims(&a.proof, &a.claims).unwrap();
+            let seal = f.tree.seal(&prover, &a.proof).unwrap();
+            f.tree.verify_claims_sealed(&a.proof, &a.claims, &roots, &seal).unwrap();
+        }
+        let node_seal = f.tree.seal(&prover, &node.proof).unwrap();
+        assert!(!node_seal.narg.is_empty(), "a node root has a fixed claim to open");
+
+        // Other roots, another root's seal, a truncated or altered seal: all refused.
+        let mut other = roots.clone();
+        other.0[0][0] ^= 1;
+        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &other, &node_seal).is_err());
+        let first_seal = f.tree.seal(&prover, &first.proof).unwrap();
+        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &roots, &first_seal).is_err());
+        let mut short = node_seal.clone();
+        short.narg.truncate(short.narg.len() - 1);
+        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &roots, &short).is_err());
+        for at in [0, node_seal.narg.len() / 2, node_seal.narg.len() - 1] {
+            let mut bad = node_seal.clone();
+            bad.narg[at] ^= 1;
+            assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &roots, &bad).is_err(), "byte {at}");
+        }
+        assert!(f.tree.verify_claims_sealed(&node.proof, &node.claims, &SealRoots(vec![]), &node_seal).is_err());
+    }
+
+    #[test]
     fn mixed_guests_union_discard_and_keep_class_fixed_keys() {
         let f = fixture();
         let aggregate = f.tree.aggregate_programs(&f.leaves(), None).unwrap();

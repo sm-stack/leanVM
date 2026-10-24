@@ -48,6 +48,8 @@ use union::{FillError, UnionFill};
 
 mod design;
 mod embed;
+mod seal;
+pub use seal::{SEAL_LOG_INV_RATE, SealProver, SealRoots};
 mod mixed;
 pub use mixed::{MixedLeaf, ProgramClass};
 
@@ -750,6 +752,12 @@ impl<'p> Tree<'p> {
     /// A tree of outputs only. Returns the first check that refuses.
     #[tracing::instrument(name = "Verify tree", skip_all)]
     pub fn verify(&self, root: &TreeProof, outputs: &[Output]) -> Result<(), TreeError> {
+        let position = self.verify_unsettled(root, outputs)?;
+        self.settle(&root.statement(self.design.statement), position)
+    }
+
+    /// Everything [`Tree::verify`] checks before settling the root's claims; the root's position.
+    fn verify_unsettled(&self, root: &TreeProof, outputs: &[Output]) -> Result<usize, TreeError> {
         self.outputs()?;
         let d = &self.design;
         self.check_rate(root)?;
@@ -767,7 +775,7 @@ impl<'p> Tree<'p> {
         if statement.digest_words() != self.digest(outputs) {
             return Err(TreeError::Outputs);
         }
-        self.settle(&statement, position)
+        Ok(position)
     }
 
     /// Verify the root of a claim-set tree: its recursion proof, that its set is canonical and within the capacity,
@@ -781,6 +789,12 @@ impl<'p> Tree<'p> {
     /// A tree of outputs. Otherwise the first check that refuses.
     #[tracing::instrument(name = "Verify claim-set tree", skip_all)]
     pub fn verify_claims(&self, root: &TreeProof, claims: &ClaimSet) -> Result<(), TreeError> {
+        let position = self.verify_claims_unsettled(root, claims)?;
+        self.settle(&root.statement(self.design.statement), position)
+    }
+
+    /// Everything [`Tree::verify_claims`] checks before settling the root's claims; the root's position.
+    fn verify_claims_unsettled(&self, root: &TreeProof, claims: &ClaimSet) -> Result<usize, TreeError> {
         let capacity = self.capacity()?;
         let d = &self.design;
         self.check_rate(root)?;
@@ -791,7 +805,7 @@ impl<'p> Tree<'p> {
         if statement.digest_words() != claims.digest() {
             return Err(TreeError::Claims);
         }
-        self.settle(&statement, position)
+        Ok(position)
     }
 
     /// The digest the root over these leaf outputs states.
@@ -833,9 +847,17 @@ impl<'p> Tree<'p> {
     /// Evaluate every claim a root's statement carries.
     #[tracing::instrument(name = "Settle claims", skip_all)]
     fn settle(&self, s: &TreeStatement, position: usize) -> Result<(), TreeError> {
+        self.settle_with(s, position, true)
+    }
+
+    /// [`Tree::settle`], the fixed polynomials evaluated only if `fixed`: otherwise the caller settles them.
+    fn settle_with(&self, s: &TreeStatement, position: usize, fixed: bool) -> Result<(), TreeError> {
         let vars = &self.design.vars.0;
         for &poly in self.design.statement.polys() {
             if self.design.mixed && !poly.is_fixed() {
+                continue;
+            }
+            if poly.is_fixed() && !fixed {
                 continue;
             }
             // A first-level node reduces no claim on a fixed polynomial.
@@ -1295,6 +1317,24 @@ mod tests {
             f.tree.verify(&root, &outputs),
             Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))
         );
+
+        // Sealed: the tree's own commitments cannot open the false claim.
+        let prover = f.tree.seal_prover().unwrap();
+        let roots = prover.roots();
+        let seal = f.tree.seal(&prover, &root).unwrap();
+        assert_eq!(
+            f.tree.verify_sealed(&root, &outputs, &roots, &seal),
+            Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))
+        );
+        // A prover committing the forged polynomial opens the claim, but only under its own roots.
+        let forged = f.tree.seal_prover_over(&tables).unwrap();
+        let forged_seal = f.tree.seal(&forged, &root).unwrap();
+        assert_ne!(forged.roots(), roots);
+        assert_eq!(
+            f.tree.verify_sealed(&root, &outputs, &roots, &forged_seal),
+            Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))
+        );
+        assert_eq!(f.tree.verify_sealed(&root, &outputs, &forged.roots(), &forged_seal), Ok(()));
     }
 
     // A first-level node whose reduction a cheating prover forged: its rows hold, its claims are false.
@@ -1347,6 +1387,13 @@ mod tests {
                 f.tree.verify(&forged, outputs),
                 Err(TreeError::Claim(refusal)),
                 "{forge:?}"
+            );
+            let prover = f.tree.seal_prover().unwrap();
+            let seal = f.tree.seal(&prover, &forged).unwrap();
+            assert_eq!(
+                f.tree.verify_sealed(&forged, outputs, &prover.roots(), &seal),
+                Err(TreeError::Claim(refusal)),
+                "{forge:?}, sealed"
             );
             let carried = f.tree.prove_node(&[forged, f.firsts[1].clone()]);
             assert!(
@@ -2381,6 +2428,15 @@ mod tests {
                 t.tree.verify_claims(&root, &forged_set),
                 Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Wide)))
             );
+            let prover = t.tree.seal_prover().unwrap();
+            let seal = t.tree.seal(&prover, &root).unwrap();
+            assert_eq!(
+                t.tree.verify_claims_sealed(&root, &forged_set, &prover.roots(), &seal),
+                Err(TreeError::Claim(FalseClaim::Dense(DensePoly::Wide)))
+            );
+            let forged = t.tree.seal_prover_over(&tables).unwrap();
+            let forged_seal = t.tree.seal(&forged, &root).unwrap();
+            assert!(t.tree.verify_claims_sealed(&root, &forged_set, &prover.roots(), &forged_seal).is_err());
         }
 
         // At a capacity of many chunks, a lone child of more than half of it is narrowed and republished: its set needs room in

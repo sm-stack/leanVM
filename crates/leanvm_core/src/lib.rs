@@ -154,7 +154,7 @@ pub(crate) const PAR_THRESHOLD: usize = 1 << 11;
 pub mod aggregate {
     pub use crate::rec::tree::{
         Aggregate, Capacity, CircuitStats, Claim, ClaimGroup, ClaimLeaf, ClaimSet, ClaimSetError, ClaimShape,
-        DensePoly, FalseClaim, Kind, Leaf, LeafShape, MixedLeaf, Part, ProgramClass, TableStats, Tier, Tree, TreeError,
+        DensePoly, FalseClaim, Kind, Leaf, LeafShape, MixedLeaf, Part, ProgramClass, SEAL_LOG_INV_RATE, SealProver, SealRoots, TableStats, Tier, Tree, TreeError,
         TreeProof, TreeShape, Unsatisfied,
     };
 }

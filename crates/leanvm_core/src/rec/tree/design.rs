@@ -295,6 +295,11 @@ impl<'p> Design<'p> {
 
     /// The session under a protocol version's tag.
     pub(super) fn session_under(&self, domain: &[u8]) -> SessionId {
+        SessionId::new(&self.session_tag(domain))
+    }
+
+    /// The bytes of the session's tag under a domain: everything that fixes the circuits.
+    pub(super) fn session_tag(&self, domain: &[u8]) -> Vec<u8> {
         let mut tag = domain.to_vec();
         tag.extend_from_slice(self.leaf.program().digest());
         if self.mixed {
@@ -313,7 +318,7 @@ impl<'p> Design<'p> {
             tag.extend_from_slice(&(x as u64).to_le_bytes());
         }
         tag.extend_from_slice(&[leaf.rate().log_inv_rate(), self.rate.log_inv_rate()]);
-        SessionId::new(&tag)
+        tag
     }
 
     /// The kind a circuit's proofs state: its index within its tier, the tier above it.

@@ -190,6 +190,12 @@ impl CircuitKey {
         Ok(Self { circuit, layout, fixed })
     }
 
+    /// The key of a circuit whose fixed columns were computed before.
+    pub(crate) fn from_parts(circuit: Circuit, fixed: FixedColumns) -> Result<Self, RecError> {
+        let layout = RecLayout::new(&circuit)?;
+        Ok(Self { circuit, layout, fixed })
+    }
+
     /// The circuit.
     pub(crate) const fn circuit(&self) -> &Circuit {
         &self.circuit

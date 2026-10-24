@@ -41,7 +41,8 @@ pub struct Program {
     /// Where each fill block sits in the text.
     pub(super) filler: FillBlocks,
     pub(super) key: VerifyingKey,
-    pub(super) committed: Arc<ProgramCommitment>,
+    /// Absent for a program rebuilt from a known root, which only a verifier uses.
+    pub(super) committed: Option<Arc<ProgramCommitment>>,
 }
 
 impl Program {
@@ -122,7 +123,7 @@ impl Program {
         Ok(Self {
             digest: *key.digest(),
             key,
-            committed,
+            committed: Some(committed),
             rv,
             filler,
         })
@@ -143,7 +144,55 @@ impl Program {
             digest: *key.digest(),
             filler: self.filler.clone(),
             key,
-            committed,
+            committed: Some(committed),
+        })
+    }
+
+    /// Spike: this program padded like [`Self::padded`], its commitment's root given rather than computed.
+    ///
+    /// Only its key, digest and decoded form are meaningful: it cannot be proven. A wrong root names another program.
+    pub(crate) fn padded_with_root(
+        &self,
+        log_bytecode: usize,
+        log_ram: usize,
+        log_advice: usize,
+        image_words: usize,
+        root: pcs::merkle::Hash,
+    ) -> Result<Self, ProgramError> {
+        let rv = self.rv.padded(log_bytecode, log_ram, log_advice, image_words)?;
+        let key = VerifyingKey::new(root, Sizes::of(&rv), rv.entry_pc(), rv.image().to_vec());
+        Ok(Self {
+            rv,
+            digest: *key.digest(),
+            filler: self.filler.clone(),
+            key,
+            committed: None,
+        })
+    }
+
+    /// Spike: a program like [`Self::new`] without its commitment, only to be padded by [`Self::padded_with_root`].
+    pub(crate) fn uncommitted(
+        text: &[u32],
+        entry_pc: u64,
+        image: Vec<u64>,
+        log_ram: usize,
+        log_advice: usize,
+    ) -> Result<Self, ProgramError> {
+        RiscvProgram::validate(text.len(), entry_pc, image.len(), log_ram, log_advice)?;
+        if !Self::text_fits(text.len()) {
+            return Err(ProgramError::TextTooLarge);
+        }
+        let mut text = text.to_vec();
+        text.push(0);
+        let filler = FillBlocks::append(&mut text);
+        let rv = RiscvProgram::new(&text, entry_pc, image, log_ram, log_advice)?;
+        let key = VerifyingKey::new([0; 32], Sizes::of(&rv), entry_pc, rv.image().to_vec());
+        Ok(Self {
+            digest: *key.digest(),
+            key,
+            committed: None,
+            rv,
+            filler,
         })
     }
 
@@ -431,7 +480,7 @@ impl Program {
             #[cfg(not(test))]
             Err(error) => panic!("the prover's own core: {error}"),
         };
-        self.committed.open(ps, &self.key, &claims.program);
+        (self.committed.as_ref().expect("a program built for proving")).open(ps, &self.key, &claims.program);
     }
 
     /// The decoded text, memory image and region sizes.

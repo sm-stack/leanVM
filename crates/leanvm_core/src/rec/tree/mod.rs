@@ -47,6 +47,7 @@ use tracing::info_span;
 use union::{FillError, UnionFill};
 
 mod design;
+mod embed;
 mod mixed;
 pub use mixed::{MixedLeaf, ProgramClass};
 
@@ -116,6 +117,8 @@ pub struct Tree<'p> {
     keys: Vec<CircuitKey>,
     /// The dense polynomials the root's claims are settled against.
     tables: DenseTables,
+    /// Loaded from verifier data: its circuits are stubs, so it verifies and refuses to prove.
+    verifier_only: bool,
 }
 
 /// A leaf of a claim-set tree: a leaf proof, and the claim set whose digest's hash its output is.
@@ -356,6 +359,7 @@ impl<'p> Tree<'p> {
             design,
             keys,
             tables,
+            verifier_only: false,
         })
     }
 
@@ -812,6 +816,7 @@ impl<'p> Tree<'p> {
 
     /// Prove the rows of the circuit at `position`: its reduction, then its recursion proof.
     fn prove_rows(&self, rows: NodeRows) -> Result<TreeProof, TreeError> {
+        assert!(!self.verifier_only, "a tree loaded from verifier data cannot prove");
         let d = &self.design;
         let position = rows.position();
         let reduction = rows.claim_values().prove(&d.session(), &d.vars, &self.tables);
@@ -859,6 +864,16 @@ impl<'p> Tree<'p> {
                     part: f.part(),
                 }))
             })
+    }
+
+    /// Spike: the words a verifier-only key would hold (circuits, fixed columns, dense tables).
+    #[doc(hidden)]
+    pub fn verifier_data_words(&self) -> (usize, usize, Vec<usize>) {
+        let fixed: usize = (self.keys.iter())
+            .map(|k| k.fixed().columns_len())
+            .sum();
+        let dense = self.tables.0.iter().map(Vec::len).collect();
+        (self.keys.len(), fixed, dense)
     }
 
     /// What the circuit of one kind of node costs: of a claim-set tree's nodes, the one of the largest arity.

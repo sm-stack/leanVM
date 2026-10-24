@@ -123,6 +123,21 @@ impl FixedColumns {
     }
 
     /// A column.
+    /// Columns computed before, in stacking order.
+    pub(crate) const fn from_columns(columns: Vec<Arc<Vec<F64>>>) -> Self {
+        Self { columns }
+    }
+
+    /// The columns, in stacking order.
+    pub(crate) fn columns(&self) -> &[Arc<Vec<F64>>] {
+        &self.columns
+    }
+
+    /// Spike: the words of every column.
+    pub(crate) fn columns_len(&self) -> usize {
+        self.columns.iter().map(|c| c.len()).sum()
+    }
+
     pub(crate) fn get(&self, column: FixedColumn) -> &Arc<Vec<F64>> {
         &self.columns[column.index()]
     }

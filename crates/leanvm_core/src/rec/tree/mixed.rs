@@ -76,10 +76,26 @@ impl Tree<'static> {
         if shape.claims.is_none() || shape.leaf.is_zero_knowledge() {
             return Err(TreeError::MixedClass);
         }
+        Self::build(&Self::mixed_placeholder(class)?, shape, true)
+    }
+
+    /// The class's placeholder program, which fixes a mixed tree's layout and session.
+    pub(super) fn mixed_placeholder(class: ProgramClass) -> Result<Program, TreeError> {
         let text = Asm::new().li(Reg::A0, 0).exit().finish();
         let placeholder = Program::new(&text, Region::TEXT.base(), vec![], 0, 0).map_err(|_| TreeError::MixedClass)?;
-        let placeholder = class.normalize(&placeholder).map_err(|_| TreeError::MixedClass)?;
-        Self::build(&placeholder, shape, true)
+        class.normalize(&placeholder).map_err(|_| TreeError::MixedClass)
+    }
+
+    /// The class's placeholder rebuilt from its commitment's root, without encoding the program again.
+    pub(super) fn mixed_placeholder_with_root(class: ProgramClass, root: pcs::merkle::Hash) -> Result<Program, TreeError> {
+        if !class.image_words.is_power_of_two() {
+            return Err(TreeError::MixedClass);
+        }
+        let text = Asm::new().li(Reg::A0, 0).exit().finish();
+        let placeholder =
+            Program::uncommitted(&text, Region::TEXT.base(), vec![], 0, 0).map_err(|_| TreeError::MixedClass)?;
+        (placeholder.padded_with_root(class.log_bytecode, class.log_ram, class.log_advice, class.image_words, root))
+            .map_err(|_| TreeError::MixedClass)
     }
 }
 

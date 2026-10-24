@@ -267,6 +267,16 @@ impl Circuit {
         PerRecTable::from_fn(|t: Table| t.height_log(counts[t]).max(self.floor[t]))
     }
 
+    /// A circuit with no rows at these heights: what a verifier reads of a circuit, for keys loaded from verifier data.
+    pub(crate) fn verifier_stub(statement_len: usize, heights: PerRecTable<usize>) -> Self {
+        Self {
+            classes: TableSlots::default(),
+            pubs: Vec::new(),
+            statement_len,
+            floor: heights,
+        }
+    }
+
     /// The same circuit with each table at least the given height.
     #[must_use]
     pub(crate) fn with_floor(self, floor: PerRecTable<usize>) -> Self {

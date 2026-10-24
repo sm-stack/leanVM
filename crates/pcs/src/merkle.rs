@@ -26,6 +26,7 @@
 use parallel::SendPtr;
 use primitives::field::F64;
 use primitives::hash::{BATCH, BLOCK_LEN, ChainingValue, OUT_LEN, hash_many};
+use std::borrow::Cow;
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -234,7 +235,7 @@ impl MerkleBuilder {
     /// Panics unless the block is a power of two of whole rows, aligned and inside the tree.
     /// Also panics unless it is sized like every other block, and new.
     pub(crate) fn absorb(&self, first_leaf: usize, rows: &[F64]) {
-        self.absorb_bytes(first_leaf, words_as_bytes(rows));
+        self.absorb_bytes(first_leaf, &words_as_bytes(rows));
     }
 
     /// Absorb a block of rows given as bytes.
@@ -478,10 +479,23 @@ impl Progress {
 }
 
 /// The words' little-endian byte image, which is how a leaf hashes them.
-const fn words_as_bytes(words: &[F64]) -> &[u8] {
-    const _: () = assert!(cfg!(target_endian = "little"), "a leaf hashes its words little-endian");
-    // SAFETY: `F64` is `repr(transparent)` over `u64`, and the target is little-endian, so the bytes are the image.
-    unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) }
+#[cfg_attr(
+    target_endian = "little",
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the big-endian path allocates the little-endian encoding"
+    )
+)]
+fn words_as_bytes(words: &[F64]) -> Cow<'_, [u8]> {
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: F64 is transparent over u64, whose byte image is little-endian here.
+        Cow::Borrowed(unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) })
+    }
+    #[cfg(target_endian = "big")]
+    {
+        Cow::Owned(words.iter().flat_map(|w| w.0.to_le_bytes()).collect())
+    }
 }
 
 /// The digest slots as the bytes a hasher writes.
@@ -726,7 +740,7 @@ mod tests {
     fn merkle_tree_padded_rows(data: &[F64], num_leaves: usize, row_words: usize, leaf_words: usize) -> MerkleTree {
         assert_eq!(data.len(), row_words * num_leaves);
         let builder = MerkleBuilder::new(num_leaves, row_words, leaf_words);
-        absorb_all(&builder, words_as_bytes(data));
+        absorb_all(&builder, &words_as_bytes(data));
         builder.finish()
     }
 
@@ -807,7 +821,7 @@ mod tests {
                 .collect();
             let want = merkle_tree_sequential(data.chunks(row_words).map(|row| {
                 let mut image = vec![0u8; 8 * (leaf_words - row_words)];
-                image.extend_from_slice(words_as_bytes(row));
+                image.extend_from_slice(&words_as_bytes(row));
                 hash_leaf(&image)
             }));
             assert_eq!(

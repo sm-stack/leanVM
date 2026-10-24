@@ -7,14 +7,15 @@ use parallel::ChunkView;
 use primitives::stream::Stream;
 
 /// The bytes of packed words, on a little-endian target.
+#[cfg(target_endian = "little")]
 pub(crate) const fn packed_bytes(words: &[u64]) -> &[u8] {
-    const _: () = assert!(
-        cfg!(target_endian = "little"),
-        "packed witness bytes assume little-endian"
-    );
-    // SAFETY: `u64` has no padding or invalid bit patterns, and `u8`'s alignment divides `u64`'s.
-    // So the words are a valid byte slice of eight times their length.
+    // SAFETY: u64 has no padding, and u8's alignment divides u64's.
     unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 8) }
+}
+
+#[cfg(target_endian = "big")]
+pub(crate) fn packed_bytes(_words: &[u64]) -> &[u8] {
+    unimplemented!("packed witness generation requires a little-endian target")
 }
 
 /// The factor tables of a witness whose bits live in the caller's buffer.

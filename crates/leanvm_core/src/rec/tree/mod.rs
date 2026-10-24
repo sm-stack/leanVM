@@ -37,11 +37,12 @@ use crate::rec::table::{PerRecTable, Table};
 use crate::rec::transcript::ProofSource;
 use crate::tables::CircuitId;
 use design::{ChildWitness, Design, LARGE, LeafWitness, Level, NodeInputs, NodeRows, SMALL};
-use pcs::merkle::Openings;
+use pcs::merkle::{Hash, Openings};
 use primitives::field::{F64, F192};
 use primitives::multilinear::{eq_table, mle_eval_par};
 use reduce::DenseTables;
 use statement::TreeStatement;
+use std::sync::OnceLock;
 use thiserror::Error;
 use tracing::info_span;
 use union::{FillError, UnionFill};
@@ -121,6 +122,7 @@ pub struct Tree<'p> {
     tables: DenseTables,
     /// Loaded from verifier data: its circuits are stubs, so it verifies and refuses to prove.
     verifier_only: bool,
+    class_key: OnceLock<(SealRoots, Hash)>,
 }
 
 /// A leaf of a claim-set tree: a leaf proof, and the claim set whose digest's hash its output is.
@@ -160,6 +162,9 @@ pub enum FalseClaim {
 /// Why a tree cannot be built, a tree proof cannot be made, or a root is refused.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum TreeError {
+    /// The supplied class key or roots do not match the authenticated identity.
+    #[error("the class key does not match the pinned digest or seal roots")]
+    ClassKeyDigest,
     /// The tree has verifier data only.
     #[error("a verifier-only tree cannot prove")]
     VerifierOnly,
@@ -373,6 +378,7 @@ impl<'p> Tree<'p> {
             keys,
             tables,
             verifier_only: false,
+            class_key: OnceLock::new(),
         })
     }
 
@@ -902,14 +908,6 @@ impl<'p> Tree<'p> {
                     part: f.part(),
                 }))
             })
-    }
-
-    /// Spike: the words a verifier-only key would hold (circuits, fixed columns, dense tables).
-    #[doc(hidden)]
-    pub fn verifier_data_words(&self) -> (usize, usize, Vec<usize>) {
-        let fixed: usize = (self.keys.iter()).map(|k| k.fixed().columns_len()).sum();
-        let dense = self.tables.0.iter().map(Vec::len).collect();
-        (self.keys.len(), fixed, dense)
     }
 
     /// What the circuit of one kind of node costs: of a claim-set tree's nodes, the one of the largest arity.

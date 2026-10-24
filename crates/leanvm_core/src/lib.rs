@@ -83,6 +83,8 @@ mod rv;
 mod stacking;
 mod tables;
 
+pub use fiat_shamir::ProofTranscript;
+
 pub use commitment::{InvalidRate, Rate, SECURITY_BITS};
 pub use cpu::{DecodeError, Output, Program, Proof, ProveError, ProvenRun, Prover, Stats, VerifyError, VerifyingKey};
 #[doc(hidden)]

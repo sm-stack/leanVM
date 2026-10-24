@@ -5,7 +5,8 @@ use leanvm::aggregate::{
     Capacity, ClaimSet, ClaimShape, Leaf, LeafShape, MixedLeaf, ProgramClass, Tree, TreeProof, TreeShape,
 };
 use leanvm::asm::{Asm, Reg};
-use leanvm::{PerTable, Program, Rate, Region, TableId};
+use leanvm::{PerTable, Program, ProofTranscript, Rate, Region, TableId};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::Duration;
 
@@ -68,19 +69,32 @@ fn read_class(path: &Path) -> (ProgramClass, TreeShape) {
 }
 
 fn main() {
+    parallel::init_with_threads(NonZeroUsize::new(16).unwrap()).unwrap();
     let args: Vec<_> = std::env::args().collect();
     let plan = Plan::new(3, Duration::ZERO);
     if args.get(1).is_some_and(|a| a == "--verify") {
         let path = Path::new(args.get(2).expect("directory"));
-        let (class, shape) = read_class(&path.join("class.bin"));
-        let (tree, setup) = plan.warm_then_measure(|| Tree::mixed(class, shape).unwrap());
+        let parent = path.parent().expect("case directory inside class directory");
+        let (class, shape) = read_class(&parent.join("class.bin"));
+        let key = std::fs::read(parent.join("class-key.bin")).unwrap();
+        let hex = args.get(3).expect("pinned class-key digest (64 hex characters)");
+        assert_eq!(hex.len(), 64);
+        let pin: [u8; 32] = std::array::from_fn(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap());
+        let (tree, load) = plan.warm_then_measure(|| Tree::mixed_from_bytes(class, shape, &key, &pin).unwrap());
         let proof = TreeProof::from_bytes(&std::fs::read(path.join("root.bin")).unwrap()).unwrap();
         let claims = ClaimSet::from_bytes(&std::fs::read(path.join("claims.bin")).unwrap()).unwrap();
-        let (_, verify) = plan.warm_then_measure(|| tree.verify_claims(&proof, &claims).unwrap());
+        let seal = ProofTranscript::from_bytes(&std::fs::read(path.join("seal.bin")).unwrap()).unwrap();
+        let (_, direct) = plan.warm_then_measure(|| tree.verify_claims(&proof, &claims).unwrap());
+        let (_, sealed) = plan.warm_then_measure(|| {
+            tree.verify_claims_sealed(&proof, &claims, tree.seal_roots().unwrap(), &seal)
+                .unwrap();
+        });
         println!(
-            "class_setup_ms={:.4} root_verify_ms={:.4}",
-            setup.mean() * 1000.0,
-            verify.mean() * 1000.0
+            "class_key_bytes={} load_ms={:.4} direct_ms={:.4} sealed_ms={:.4}",
+            key.len(),
+            load.mean() * 1000.0,
+            direct.mean() * 1000.0,
+            sealed.mean() * 1000.0
         );
         return;
     }
@@ -133,6 +147,22 @@ fn main() {
         tree.stats(leanvm::aggregate::Kind::First).committed,
         tree.stats(leanvm::aggregate::Kind::Node).committed
     );
+    let (sealer, commitment_time) = plan.warm_then_measure(|| tree.seal_prover().unwrap());
+    let roots = sealer.roots();
+    let key = tree.mixed_verifier_bytes(&roots).unwrap();
+    let pin = Tree::mixed_class_key_digest(&key);
+    let pin_hex: String = pin.iter().map(|b| format!("{b:02x}")).collect();
+    let (verifier, load) = plan.warm_then_measure(|| Tree::mixed_from_bytes(class, shape, &key, &pin).unwrap());
+    std::fs::create_dir_all(directory).unwrap();
+    write_class(&directory.join("class.bin"), class, shape);
+    std::fs::write(directory.join("class-key.bin"), &key).unwrap();
+    std::fs::write(directory.join("class-key.digest"), &pin_hex).unwrap();
+    println!(
+        "class_key_bytes={} load_ms={:.4} seal_commit_ms={:.4} class_digest={pin_hex}",
+        key.len(),
+        load.mean() * 1000.0,
+        commitment_time.mean() * 1000.0
+    );
     for distinct in [1, 2, 4] {
         let indices: Vec<_> = (0..4).map(|i| i % distinct).collect();
         let runs: Vec<_> = indices
@@ -163,11 +193,25 @@ fn main() {
             ]
         });
         let (root, node_time) = plan.warm_then_measure(|| tree.aggregate(&[&firsts[0], &firsts[1]], None).unwrap());
-        let (_, verify) =
-            Plan::new(7, Duration::ZERO).warm_then_measure(|| tree.verify_claims(&root.proof, &root.claims).unwrap());
+        let (_, verify) = Plan::new(7, Duration::ZERO)
+            .warm_then_measure(|| verifier.verify_claims(&root.proof, &root.claims).unwrap());
         let path = directory.join(format!("distinct-{distinct}"));
         std::fs::create_dir_all(&path).unwrap();
-        write_class(&path.join("class.bin"), class, shape);
+        let (seal, seal_time) = plan.warm_then_measure(|| tree.seal(&sealer, &root.proof).unwrap());
+        let (_, sealed_time) = plan.warm_then_measure(|| {
+            verifier
+                .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                .unwrap();
+        });
+        let seal_bytes = seal.to_bytes();
+        std::fs::write(path.join("seal.bin"), &seal_bytes).unwrap();
+        println!(
+            "distinct={distinct} seal_ms={:.4} seal_bytes={} direct_ms={:.4} sealed_ms={:.4}",
+            seal_time.mean() * 1000.0,
+            seal_bytes.len(),
+            verify.mean() * 1000.0,
+            sealed_time.mean() * 1000.0
+        );
         std::fs::write(path.join("root.bin"), root.proof.to_bytes()).unwrap();
         std::fs::write(path.join("claims.bin"), root.claims.to_bytes()).unwrap();
         println!(

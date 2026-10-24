@@ -197,6 +197,7 @@ mod tests {
     use crate::rec::circuit::Finished;
     use crate::tables::TableId;
     use std::sync::OnceLock;
+    use zk::Randomness;
 
     struct Fixture {
         tree: Tree<'static>,
@@ -262,10 +263,77 @@ mod tests {
     }
 
     #[test]
+    fn class_keys_authenticate_shape_columns_and_seal_roots() {
+        let f = fixture();
+        let roots = f.tree.seal_prover().unwrap().roots();
+        let bytes = f.tree.mixed_verifier_bytes(&roots).unwrap();
+        let pin = Tree::mixed_class_key_digest(&bytes);
+        let loaded = Tree::mixed_from_bytes(f.class, f.shape, &bytes, &pin).unwrap();
+        assert_eq!(loaded.mixed_verifier_bytes(&roots).unwrap(), bytes);
+        let mut other_class = f.class;
+        other_class.log_advice += 1;
+        assert!(Tree::mixed_from_bytes(other_class, f.shape, &bytes, &pin).is_err());
+        let mut other_shape = f.shape;
+        other_shape.arity += 1;
+        assert!(Tree::mixed_from_bytes(f.class, other_shape, &bytes, &pin).is_err());
+        for at in [8, bytes.len() / 2, bytes.len() - 1] {
+            let mut bad = bytes.clone();
+            bad[at] ^= 1;
+            assert!(matches!(
+                Tree::mixed_from_bytes(f.class, f.shape, &bad, &pin),
+                Err(TreeError::ClassKeyDigest)
+            ));
+        }
+        // Re-pin malformed encodings to exercise the parser rather than only authentication.
+        let header = 8 + (4 + crate::N_TABLES + 7 + 1) * 8;
+        let tier_count = header + 8 + 32 + 32;
+        let tier_heights = tier_count + 8;
+        let key_count = tier_heights + Table::ALL.len() * 8;
+        let column_count = key_count + 8 + 8 + Table::ALL.len() * 8;
+        for at in [
+            header,
+            tier_count,
+            tier_heights,
+            key_count,
+            column_count,
+            column_count + 8,
+        ] {
+            let mut bad = bytes.clone();
+            bad[at..at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+            let result = std::panic::catch_unwind(|| {
+                Tree::mixed_from_bytes(f.class, f.shape, &bad, &Tree::mixed_class_key_digest(&bad))
+            });
+            assert!(result.is_ok_and(|r| r.is_err()), "malformed word at {at}");
+        }
+        for end in [0, 7, 8, header, column_count, bytes.len() - 1] {
+            let short = &bytes[..end];
+            assert!(Tree::mixed_from_bytes(f.class, f.shape, short, &Tree::mixed_class_key_digest(short)).is_err());
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(Tree::mixed_from_bytes(f.class, f.shape, &trailing, &Tree::mixed_class_key_digest(&trailing)).is_err());
+        let root = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
+        let sealer = f.tree.seal_prover().unwrap();
+        let seal = f.tree.seal(&sealer, &root.proof).unwrap();
+        loaded.verify_claims(&root.proof, &root.claims).unwrap();
+        loaded
+            .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+            .unwrap();
+        let mut wrong_roots = roots;
+        wrong_roots.0[0][0] ^= 1;
+        assert!(
+            loaded
+                .verify_claims_sealed(&root.proof, &root.claims, &wrong_roots, &seal)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn loaded_verifiers_refuse_every_prover_entry_point() {
         let f = fixture();
-        let bytes = f.tree.mixed_verifier_bytes().unwrap();
-        let tree = Tree::mixed_from_bytes(f.class, f.shape, &bytes).unwrap();
+        let roots = f.tree.seal_prover().unwrap().roots();
+        let bytes = f.tree.mixed_verifier_bytes(&roots).unwrap();
+        let tree = Tree::mixed_from_bytes(f.class, f.shape, &bytes, &Tree::mixed_class_key_digest(&bytes)).unwrap();
         let aggregate = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
         let prover = f.tree.seal_prover().unwrap();
         assert!(matches!(tree.prove(&[]), Err(TreeError::VerifierOnly)));
@@ -284,6 +352,12 @@ mod tests {
         ));
         assert!(matches!(
             Prover::new(Rate::MIN).prove(tree.design.leaf.program(), &[]),
+            Err(crate::ProveError::VerifierOnly)
+        ));
+        assert!(matches!(
+            Prover::new(Rate::MIN)
+                .zero_knowledge(Randomness::Fixed([0; 32]))
+                .prove(tree.design.leaf.program(), &[]),
             Err(crate::ProveError::VerifierOnly)
         ));
     }

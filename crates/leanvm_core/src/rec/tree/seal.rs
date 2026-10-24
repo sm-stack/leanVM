@@ -1,11 +1,12 @@
-//! Spike: settle a mixed root's fixed-polynomial claims by PCS openings, not by evaluating the polynomials.
+//! Settle a mixed root's fixed-polynomial claims by PCS openings, not by evaluating the polynomials.
 //!
 //! A mixed tree's fixed polynomials (`Fixed`, and `Wide` for a tree of two tiers) are functions of its class. Each is
 //! committed once, at [`SEAL_LOG_INV_RATE`]; the roots are class data, authenticated with the class. A root's fixed
 //! claims (`W(r) = v`, read from its verified statement) are then proven by one opening per polynomial, in a
 //! transcript of its own:
 //!
-//! - session: [`SEAL_DOMAIN`], the tree's session tag (the class), and the commitment roots;
+//! - session: [`SEAL_DOMAIN`] and the authenticated class-key digest for mixed trees;
+//!   the tree's session tag and commitment roots for same-program trees;
 //! - instance: the root's statement words, which carry every `r` and `v` the openings prove.
 //!
 //! So the claims are bound before the opening's challenges, and the verifier builds them from the root it verified,
@@ -19,7 +20,7 @@ use pcs::stack::{CommittedStack, StackClaim, StackCommitment, Statement};
 use pcs::whir::Config;
 
 /// The seal transcript's domain.
-const SEAL_DOMAIN: &[u8] = b"leanvm/mixed-tree-seal/v1";
+const SEAL_DOMAIN: &[u8] = b"leanvm/mixed-tree-seal/v2";
 
 /// The rate the fixed polynomials are committed at, a base-two logarithm: lower than the trees' own rate keeps the
 /// prover's codeword small, higher would shorten the opening.
@@ -57,13 +58,19 @@ impl SealProver {
     }
 }
 
-/// The seal's transcript session: the domain, the class's session tag, then the roots.
-fn session(design: &Design<'_>, roots: &SealRoots) -> SessionId {
-    let mut tag = design.session_tag(SEAL_DOMAIN);
+/// The seal's session binds the class key, or the same-program tree's session tag and roots.
+fn session(tree: &Tree<'_>, roots: &SealRoots) -> Result<SessionId, TreeError> {
+    if roots.0.len() != tree.design.tiers.len() {
+        return Err(TreeError::MixedClass);
+    }
+    if tree.design.mixed {
+        return Ok(SessionId::tagged(SEAL_DOMAIN, &tree.class_key_digest_for(roots)?));
+    }
+    let mut tag = tree.design.session_tag(SEAL_DOMAIN);
     for root in &roots.0 {
         tag.extend_from_slice(root);
     }
-    SessionId::new(&tag)
+    Ok(SessionId::new(&tag))
 }
 
 impl Tree<'_> {
@@ -80,6 +87,7 @@ impl Tree<'_> {
     /// Commitments to the fixed polynomials of `tables`, which a test may forge.
     pub(super) fn seal_prover_over(&self, tables: &DenseTables) -> Result<SealProver, TreeError> {
         self.require_prover()?;
+        let _span = info_span!("seal commitments").entered();
         let n_fixed = self.design.statement.polys().iter().filter(|p| p.is_fixed()).count();
         let stacks = (DensePoly::ALL.iter().copied().filter(|p| p.is_fixed()).take(n_fixed))
             .map(|poly| {
@@ -104,11 +112,12 @@ impl Tree<'_> {
     )]
     pub fn seal(&self, prover: &SealProver, root: &TreeProof) -> Result<ProofTranscript, TreeError> {
         self.require_prover()?;
+        let _span = info_span!("seal").entered();
         let d = &self.design;
         let position = self.known(root)?;
         let statement = root.statement(d.statement);
         let mut ps = ProverState::new(
-            &session(d, &prover.roots()),
+            &session(self, &prover.roots())?,
             &LengthPrefixed(root.limbs().as_flattened()),
         );
         for poly in fixed_polys(d, position) {
@@ -165,28 +174,11 @@ impl Tree<'_> {
         self.settle_sealed(root, position, roots, seal)
     }
 
-    /// Spike: [`Tree::verify_claims_sealed`] stopped after `stages`: 1 the root's recursion proof and claim set, 2 the
-    /// claims other than the fixed polynomials', 3 the seal. For measuring each stage's cost.
-    #[doc(hidden)]
-    pub fn verify_claims_sealed_stages(
-        &self,
-        root: &TreeProof,
-        claims: &ClaimSet,
-        roots: &SealRoots,
-        seal: &ProofTranscript,
-        stages: u8,
-    ) -> Result<(), TreeError> {
-        let position = self.verify_claims_unsettled(root, claims)?;
-        if stages == 1 {
-            return Ok(());
-        }
-        if stages == 2 {
-            return self.settle_with(&root.statement(self.design.statement), position, false);
-        }
-        self.settle_sealed(root, position, roots, seal)
-    }
-
     /// Settle a verified root's claims: the fixed polynomials' by `seal`, every other as [`Tree::settle`] does.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "every claim is constructed from the verified root statement, bound as the instance before challenges"
+    )]
     fn settle_sealed(
         &self,
         root: &TreeProof,
@@ -197,7 +189,11 @@ impl Tree<'_> {
         let d = &self.design;
         let statement = root.statement(d.statement);
         self.settle_with(&statement, position, false)?;
-        let mut v = VerifierState::new(&session(d, roots), &LengthPrefixed(root.limbs().as_flattened()), seal);
+        let mut v = VerifierState::new(
+            &session(self, roots)?,
+            &LengthPrefixed(root.limbs().as_flattened()),
+            seal,
+        );
         let fixed: Vec<DensePoly> = fixed_polys(d, position).collect();
         let n_fixed = d.statement.polys().iter().filter(|p| p.is_fixed()).count();
         if roots.0.len() != n_fixed {

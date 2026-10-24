@@ -97,7 +97,7 @@ impl LeafShape {
     }
 
     /// The commitment's rate.
-    pub(crate) const fn rate(&self) -> Rate {
+    pub const fn rate(&self) -> Rate {
         self.rate
     }
 

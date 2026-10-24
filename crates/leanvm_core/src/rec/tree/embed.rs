@@ -162,7 +162,9 @@ impl Tree<'static> {
         digest(bytes)
     }
 
-    /// A verifier-only mixed tree of this class and shape, from [`Tree::mixed_verifier_bytes`].
+    /// Authenticate and load a verifier-only mixed tree from [`Tree::mixed_verifier_bytes`].
+    ///
+    /// This is the recommended loader for class-key bytes.
     ///
     /// # Errors
     ///
@@ -178,6 +180,41 @@ impl Tree<'static> {
         if &digest(bytes) != expected_digest {
             return Err(TreeError::ClassKeyDigest);
         }
+        Self::mixed_from_trusted_bytes(class, shape, bytes, expected_digest)
+    }
+
+    /// Load a verifier-only mixed tree from bytes already authenticated by the caller, without hashing them.
+    ///
+    /// Prefer [`Tree::mixed_from_bytes`], which checks the digest. This method performs the same structural
+    /// validation but takes `digest` as given for the seal session, in both debug and release builds.
+    ///
+    /// # Security
+    ///
+    /// Use only when an outer mechanism guarantees that `bytes` are exactly the class key whose BLAKE2s
+    /// class-key digest is `digest`. For example, bind both the bytes and this digest in a trusted binary or
+    /// prestate, or pin a content-addressed oracle key together with the corresponding class-key digest.
+    /// An oracle's keccak256 key authenticates the bytes, but does not by itself authenticate their mapping
+    /// to the supplied BLAKE2s digest. The caller must establish that association through trusted setup.
+    ///
+    /// Soundness rests entirely on the bytes being genuine. The supplied digest is assumed correct and
+    /// is not checked against the bytes, including in release builds. It only binds the seal session;
+    /// rejection of a wrong digest is a misconfiguration check, not the source of soundness.
+    /// With untrusted bytes this accepts forged verifier data, even when `digest` is a genuine pinned digest.
+    /// Structural validation cannot establish circuit authenticity. A wrong digest may load successfully;
+    /// it changes the seal session and is not checked by direct verification. Existing seals with PCS
+    /// openings then fail, but a first-level root's empty v2 seal cannot detect a wrong digest.
+    ///
+    /// # Errors
+    ///
+    /// A mismatched class or shape, or malformed data. All proving methods on the returned tree refuse
+    /// with [`TreeError::VerifierOnly`].
+    pub fn mixed_from_trusted_bytes(
+        class: ProgramClass,
+        shape: TreeShape,
+        bytes: &[u8],
+        digest: &Hash,
+    ) -> Result<Self, TreeError> {
+        let _span = info_span!("load trusted mixed class key").entered();
         if shape.claims.is_none() || shape.leaf.is_zero_knowledge() {
             return Err(TreeError::MixedClass);
         }
@@ -276,7 +313,7 @@ impl Tree<'static> {
             keys,
             tables,
             verifier_only: true,
-            class_key: OnceLock::from((roots, *expected_digest)),
+            class_key: OnceLock::from((roots, *digest)),
         })
     }
 }

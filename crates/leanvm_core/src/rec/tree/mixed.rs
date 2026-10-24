@@ -279,15 +279,31 @@ mod tests {
         let first = tree.aggregate_programs(&f.leaves(), None).unwrap();
         let large = tree.aggregate(&[&first, &first, &first], None).unwrap();
         let subset = f.leaves()[0].claims();
-        let wrap = tree.aggregate(&[&large], Some(&subset)).unwrap();
+        let wrap = tree.wrap(0, &large).unwrap();
+        assert_eq!(tree.design.places[tree.known(&wrap.proof).unwrap()].level, Level::Wrap);
+        let narrowed = tree.aggregate(&[&large], Some(&subset)).unwrap();
         let prover = tree.seal_prover().unwrap();
         let roots = prover.roots();
         assert_eq!(roots.0.len(), 2);
         let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
-        let loaded = Tree::mixed_from_bytes(f.class, shape, &bytes, &Tree::mixed_class_key_digest(&bytes)).unwrap();
-        for root in [&first, &large, &wrap] {
+        let digest = Tree::mixed_class_key_digest(&bytes);
+        let loaded = Tree::mixed_from_bytes(f.class, shape, &bytes, &digest).unwrap();
+        let trusted = Tree::mixed_from_trusted_bytes(f.class, shape, &bytes, &digest).unwrap();
+        let mut wrong_digest = digest;
+        wrong_digest[0] ^= 1;
+        let wrong_session = Tree::mixed_from_trusted_bytes(f.class, shape, &bytes, &wrong_digest).unwrap();
+        for (index, root) in [&first, &large, &wrap, &narrowed].into_iter().enumerate() {
             let seal = tree.seal(&prover, &root.proof).unwrap();
-            for verifier in [&tree, &loaded] {
+            wrong_session.verify_claims(&root.proof, &root.claims).unwrap();
+            let result = wrong_session.verify_claims_sealed(&root.proof, &root.claims, &roots, &seal);
+            if index == 0 {
+                assert!(seal.narg.is_empty());
+                result.unwrap();
+            } else {
+                assert!(!seal.narg.is_empty(), "node and wrap roots carry fixed claims");
+                assert!(result.is_err(), "a wrong digest must refuse the node or wrap seal");
+            }
+            for verifier in [&tree, &loaded, &trusted] {
                 verifier.verify_claims(&root.proof, &root.claims).unwrap();
                 verifier
                     .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
@@ -455,9 +471,11 @@ mod tests {
         let mut other_class = f.class;
         other_class.log_advice += 1;
         assert!(Tree::mixed_from_bytes(other_class, f.shape, &bytes, &pin).is_err());
+        assert!(Tree::mixed_from_trusted_bytes(other_class, f.shape, &bytes, &pin).is_err());
         let mut other_shape = f.shape;
         other_shape.arity += 1;
         assert!(Tree::mixed_from_bytes(f.class, other_shape, &bytes, &pin).is_err());
+        assert!(Tree::mixed_from_trusted_bytes(f.class, other_shape, &bytes, &pin).is_err());
         for at in [8, bytes.len() / 2, bytes.len() - 1] {
             let mut bad = bytes.clone();
             bad[at] ^= 1;
@@ -486,13 +504,17 @@ mod tests {
                 Tree::mixed_from_bytes(f.class, f.shape, &bad, &Tree::mixed_class_key_digest(&bad))
             });
             assert!(result.is_ok_and(|r| r.is_err()), "malformed word at {at}");
+            let result = std::panic::catch_unwind(|| Tree::mixed_from_trusted_bytes(f.class, f.shape, &bad, &pin));
+            assert!(result.is_ok_and(|r| r.is_err()), "trusted malformed word at {at}");
         }
         for end in [0, 7, 8, header, column_count, bytes.len() - 1] {
             let short = &bytes[..end];
+            assert!(Tree::mixed_from_trusted_bytes(f.class, f.shape, short, &pin).is_err());
             assert!(Tree::mixed_from_bytes(f.class, f.shape, short, &Tree::mixed_class_key_digest(short)).is_err());
         }
         let mut trailing = bytes.clone();
         trailing.push(0);
+        assert!(Tree::mixed_from_trusted_bytes(f.class, f.shape, &trailing, &pin).is_err());
         assert!(Tree::mixed_from_bytes(f.class, f.shape, &trailing, &Tree::mixed_class_key_digest(&trailing)).is_err());
         let root = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
         let sealer = f.tree.seal_prover().unwrap();
@@ -511,37 +533,125 @@ mod tests {
     }
 
     #[test]
+    fn trusted_loader_agrees_with_checked_direct_and_sealed_verification() {
+        let f = fixture();
+        let sealer = f.tree.seal_prover().unwrap();
+        let roots = sealer.roots();
+        let bytes = f.tree.mixed_verifier_bytes(&roots).unwrap();
+        let digest = Tree::mixed_class_key_digest(&bytes);
+        let checked = Tree::mixed_from_bytes(f.class, f.shape, &bytes, &digest).unwrap();
+        let trusted = Tree::mixed_from_trusted_bytes(f.class, f.shape, &bytes, &digest).unwrap();
+        assert_eq!(checked.seal_roots(), trusted.seal_roots());
+        assert_eq!(trusted.mixed_verifier_bytes(&roots).unwrap(), bytes);
+        let first = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
+        let node = f.tree.aggregate(&[&first, &first], None).unwrap();
+        for root in [&first, &node] {
+            let seal = f.tree.seal(&sealer, &root.proof).unwrap();
+            let mut wrong_claims = root.claims.clone();
+            wrong_claims.groups[0].members[0][0] ^= 1;
+            let mut bad_proof = root.proof.clone();
+            bad_proof.words[1] += F192::ONE;
+            let mut bad_seal = seal.clone();
+            bad_seal.narg.push(0);
+            let mut bad_roots = roots.clone();
+            bad_roots.0[0][0] ^= 1;
+            for verifier in [&checked, &trusted] {
+                verifier.verify_claims(&root.proof, &root.claims).unwrap();
+                verifier
+                    .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                    .unwrap();
+                assert!(verifier.verify_claims(&root.proof, &wrong_claims).is_err());
+                assert!(verifier.verify_claims(&bad_proof, &root.claims).is_err());
+                assert!(
+                    verifier
+                        .verify_claims_sealed(&root.proof, &wrong_claims, &roots, &seal)
+                        .is_err()
+                );
+                assert!(
+                    verifier
+                        .verify_claims_sealed(&bad_proof, &root.claims, &roots, &seal)
+                        .is_err()
+                );
+                assert!(
+                    verifier
+                        .verify_claims_sealed(&root.proof, &root.claims, &roots, &bad_seal)
+                        .is_err()
+                );
+                assert!(
+                    verifier
+                        .verify_claims_sealed(&root.proof, &root.claims, &bad_roots, &seal)
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trusted_loader_wrong_digest_rejects_node_seals_but_not_empty_first_seals() {
+        let f = fixture();
+        let sealer = f.tree.seal_prover().unwrap();
+        let roots = sealer.roots();
+        let bytes = f.tree.mixed_verifier_bytes(&roots).unwrap();
+        let mut digest = Tree::mixed_class_key_digest(&bytes);
+        digest[0] ^= 1;
+        assert!(matches!(
+            Tree::mixed_from_bytes(f.class, f.shape, &bytes, &digest),
+            Err(TreeError::ClassKeyDigest)
+        ));
+        let trusted = Tree::mixed_from_trusted_bytes(f.class, f.shape, &bytes, &digest).unwrap();
+        let first = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
+        // A v2 first-level seal has no opening, so no challenge-dependent check binds its session.
+        let first_seal = f.tree.seal(&sealer, &first.proof).unwrap();
+        assert!(first_seal.narg.is_empty() && first_seal.hints.is_empty());
+        trusted
+            .verify_claims_sealed(&first.proof, &first.claims, &roots, &first_seal)
+            .unwrap();
+        let node = f.tree.aggregate(&[&first, &first], None).unwrap();
+        let seal = f.tree.seal(&sealer, &node.proof).unwrap();
+        trusted.verify_claims(&node.proof, &node.claims).unwrap();
+        assert!(
+            trusted
+                .verify_claims_sealed(&node.proof, &node.claims, &roots, &seal)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn loaded_verifiers_refuse_every_prover_entry_point() {
         let f = fixture();
         let roots = f.tree.seal_prover().unwrap().roots();
         let bytes = f.tree.mixed_verifier_bytes(&roots).unwrap();
-        let tree = Tree::mixed_from_bytes(f.class, f.shape, &bytes, &Tree::mixed_class_key_digest(&bytes)).unwrap();
+        let digest = Tree::mixed_class_key_digest(&bytes);
+        let checked = Tree::mixed_from_bytes(f.class, f.shape, &bytes, &digest).unwrap();
+        let trusted = Tree::mixed_from_trusted_bytes(f.class, f.shape, &bytes, &digest).unwrap();
         let aggregate = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
         let prover = f.tree.seal_prover().unwrap();
-        assert!(matches!(tree.prove(&[]), Err(TreeError::VerifierOnly)));
-        assert!(matches!(tree.prove_first(&[]), Err(TreeError::VerifierOnly)));
-        assert!(matches!(tree.prove_node(&[]), Err(TreeError::VerifierOnly)));
-        assert!(matches!(tree.aggregate(&[], None), Err(TreeError::VerifierOnly)));
-        assert!(matches!(tree.aggregate_leaves(&[], None), Err(TreeError::VerifierOnly)));
-        assert!(matches!(
-            tree.aggregate_programs(&[], None),
-            Err(TreeError::VerifierOnly)
-        ));
-        assert!(matches!(tree.seal_prover(), Err(TreeError::VerifierOnly)));
-        assert!(matches!(
-            tree.seal(&prover, &aggregate.proof),
-            Err(TreeError::VerifierOnly)
-        ));
-        assert!(matches!(
-            Prover::new(Rate::MIN).prove(tree.design.leaf.program(), &[]),
-            Err(crate::ProveError::VerifierOnly)
-        ));
-        assert!(matches!(
-            Prover::new(Rate::MIN)
-                .zero_knowledge(Randomness::Fixed([0; 32]))
-                .prove(tree.design.leaf.program(), &[]),
-            Err(crate::ProveError::VerifierOnly)
-        ));
+        for tree in [&checked, &trusted] {
+            assert!(matches!(tree.prove(&[]), Err(TreeError::VerifierOnly)));
+            assert!(matches!(tree.prove_first(&[]), Err(TreeError::VerifierOnly)));
+            assert!(matches!(tree.prove_node(&[]), Err(TreeError::VerifierOnly)));
+            assert!(matches!(tree.aggregate(&[], None), Err(TreeError::VerifierOnly)));
+            assert!(matches!(tree.aggregate_leaves(&[], None), Err(TreeError::VerifierOnly)));
+            assert!(matches!(
+                tree.aggregate_programs(&[], None),
+                Err(TreeError::VerifierOnly)
+            ));
+            assert!(matches!(tree.seal_prover(), Err(TreeError::VerifierOnly)));
+            assert!(matches!(
+                tree.seal(&prover, &aggregate.proof),
+                Err(TreeError::VerifierOnly)
+            ));
+            assert!(matches!(
+                Prover::new(Rate::MIN).prove(tree.design.leaf.program(), &[]),
+                Err(crate::ProveError::VerifierOnly)
+            ));
+            assert!(matches!(
+                Prover::new(Rate::MIN)
+                    .zero_knowledge(Randomness::Fixed([0; 32]))
+                    .prove(tree.design.leaf.program(), &[]),
+                Err(crate::ProveError::VerifierOnly)
+            ));
+        }
     }
 
     #[test]

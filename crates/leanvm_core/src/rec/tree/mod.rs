@@ -47,6 +47,8 @@ use tracing::info_span;
 use union::{FillError, UnionFill};
 
 mod design;
+mod mixed;
+pub use mixed::{MixedLeaf, ProgramClass};
 
 mod multiset;
 mod proof;
@@ -153,6 +155,9 @@ pub enum FalseClaim {
 /// Why a tree cannot be built, a tree proof cannot be made, or a root is refused.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum TreeError {
+    /// A mixed tree requires claim sets and plain leaves of its program class.
+    #[error("mixed trees require claim sets and plain leaves matching the program class")]
+    MixedClass,
     /// The arities make no tree: a first level takes at least one leaf, a node at least two children.
     #[error("a first level of {arity_0} leaves and nodes of {arity} children make no tree")]
     Arity {
@@ -318,9 +323,17 @@ impl<'p> Tree<'p> {
     /// - A leaf shape no proof of the program has.
     /// - Circuits that fit no commitment.
     pub fn new(program: &'p Program, shape: TreeShape) -> Result<Self, TreeError> {
+        Self::build(program, shape, false)
+    }
+
+    fn build(program: &Program, shape: TreeShape, mixed: bool) -> Result<Self, TreeError> {
         shape.check()?;
         let tiers = shape.claims.map_or(1, |c| c.tiers());
-        let (design, circuits) = Self::converge(tiers, |taus| Design::new(program, &shape, taus))?;
+        let (design, circuits) = Self::converge(tiers, |taus| {
+            let mut d = Design::new(program, &shape, taus)?;
+            d.mixed = mixed;
+            Ok(d)
+        })?;
         let keys: Vec<CircuitKey> = (circuits.into_iter().map(CircuitKey::new))
             .collect::<Result<_, _>>()
             .map_err(|_| TreeError::TooLarge)?;
@@ -458,6 +471,7 @@ impl<'p> Tree<'p> {
                 let openings =
                     (program.verify_recording(output, proof)).map_err(|error| TreeError::Leaf { index, error })?;
                 Ok(LeafWitness {
+                    key: None,
                     proof: &proof.0,
                     openings,
                     output: *output.words(),
@@ -536,6 +550,9 @@ impl<'p> Tree<'p> {
         declare: Option<&ClaimSet>,
     ) -> Result<Aggregate, TreeError> {
         self.capacity()?;
+        if self.design.mixed {
+            return Err(TreeError::MixedClass);
+        }
         let digests: Vec<[u64; 4]> = leaves.iter().map(|l| l.claims.digest()).collect();
         let plain: Vec<Leaf<'_>> = leaves.iter().map(|l| l.leaf).collect();
         let items = self.leaf_witnesses(&plain, |index| {
@@ -813,6 +830,9 @@ impl<'p> Tree<'p> {
     fn settle(&self, s: &TreeStatement, position: usize) -> Result<(), TreeError> {
         let vars = &self.design.vars.0;
         for &poly in self.design.statement.polys() {
+            if self.design.mixed && !poly.is_fixed() {
+                continue;
+            }
             // A first-level node reduces no claim on a fixed polynomial.
             if poly.is_fixed() && position == 0 {
                 continue;
@@ -1118,6 +1138,7 @@ mod tests {
         let d = &f.tree.design;
         let leaves: Vec<LeafWitness> = (f.leaves[..2].iter())
             .map(|(proof, output)| LeafWitness {
+                key: None,
                 proof: &proof.0,
                 openings: program().verify_recording(*output, proof).expect("an honest leaf"),
                 output: *output.words(),
@@ -1266,6 +1287,7 @@ mod tests {
         let d = &f.tree.design;
         let items: Vec<LeafWitness> = (f.leaves[..2].iter())
             .map(|(proof, output)| LeafWitness {
+                key: None,
                 proof: &proof.0,
                 openings: program().verify_recording(*output, proof).expect("an honest leaf"),
                 output: *output.words(),

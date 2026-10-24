@@ -69,6 +69,19 @@ impl LeafShape {
         Self { taus, rate, kind }
     }
 
+    /// A plain leaf shape from public table heights and its rate.
+    ///
+    /// Refuses heights outside the VM's per-table ranges.
+    pub fn plain(taus: PerTable<usize>, rate: Rate) -> Result<Self, crate::CpuError> {
+        crate::cpu::Layout::check_heights(&taus)?;
+        Ok(Self::new(taus, rate, ProofKind::Plain))
+    }
+
+    /// Public table heights, in schema order.
+    pub const fn heights(self) -> PerTable<usize> {
+        self.taus
+    }
+
     /// The same shape, of zero-knowledge proofs.
     #[must_use]
     pub const fn zero_knowledge(self) -> Self {

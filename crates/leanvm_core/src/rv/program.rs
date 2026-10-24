@@ -89,6 +89,36 @@ impl RiscvProgram {
         })
     }
 
+    pub(crate) fn padded(
+        &self,
+        log_bytecode: usize,
+        log_ram: usize,
+        log_advice: usize,
+        image_words: usize,
+    ) -> Result<Self, ProgramError> {
+        if log_bytecode < self.entries.len().ilog2() as usize
+            || log_bytecode
+                > Region::TEXT
+                    .max_log_words()
+                    .min(crate::commitment::MAX_MU - crate::bus::N_TUPLE_BITS)
+        {
+            return Err(ProgramError::TextTooLarge);
+        }
+        if log_ram < self.log_ram || image_words < self.image.len() {
+            return Err(ProgramError::RamSize);
+        }
+        if log_advice < self.log_advice {
+            return Err(ProgramError::AdviceSize);
+        }
+        Self::validate((1 << log_bytecode) - 1, self.entry_pc, image_words, log_ram, log_advice)?;
+        let mut padded = self.clone();
+        padded.entries.resize(1 << log_bytecode, Entry::ILLEGAL);
+        padded.image.resize(image_words, 0);
+        padded.log_ram = log_ram;
+        padded.log_advice = log_advice;
+        Ok(padded)
+    }
+
     /// Check a program's shape from its sizes alone.
     ///
     /// # Errors

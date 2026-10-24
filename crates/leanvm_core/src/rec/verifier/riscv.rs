@@ -6,7 +6,8 @@ use crate::rec::circuit::{Builder, Dw, Ew, Kw};
 use crate::rec::transcript::{ProofSource, Transcript};
 use crate::rec::tree::LeafShape;
 use crate::tables::Clock;
-use fiat_shamir::arith::Verifier;
+use fiat_shamir::arith::{Arith, Verifier};
+use std::marker::PhantomData;
 use zk::{Recorder, Value};
 
 /// What fixes the rows of a RISC-V proof's verifier: the program, and the shape its proofs announce.
@@ -14,7 +15,8 @@ use zk::{Recorder, Value};
 /// Two proofs of one shape are verified by one circuit.
 pub struct ProofShape<'p> {
     /// The program.
-    program: &'p Program,
+    program: Program,
+    lifetime: PhantomData<&'p Program>,
     /// Each table's height, the commitment's rate, and whether the proofs are zero knowledge.
     shape: LeafShape,
     /// The layout the shape announces.
@@ -35,14 +37,19 @@ impl<'p> ProofShape<'p> {
     /// # Errors
     ///
     /// Refuses what the native verifier refuses of an announcement: a height out of range, or a witness the commitment does not take.
-    pub fn new(program: &'p Program, shape: LeafShape) -> Result<Self, CpuError> {
+    pub fn new(program: &Program, shape: LeafShape) -> Result<Self, CpuError> {
         let layout = Layout::announced(program.rv(), *shape.taus(), shape.kind())?;
-        Ok(Self { program, shape, layout })
+        Ok(Self {
+            program: program.clone(),
+            lifetime: PhantomData,
+            shape,
+            layout,
+        })
     }
 
     /// The program.
-    pub const fn program(&self) -> &'p Program {
-        self.program
+    pub const fn program(&self) -> &Program {
+        &self.program
     }
 
     /// The shape the proofs announce.
@@ -66,13 +73,70 @@ impl<'p> ProofShape<'p> {
         let root =
             r.b.d_const(primitives::hash::digest_words(self.program.verifying_key().root()));
         r.scope("program opening", |r| {
-            infallible(self.program.verifying_key().verify_program(r, root, &claims.program))
+            infallible(self.program.verifying_key().verify_program(r, root, &claims.program));
         });
         infallible(r.check_eof());
         CoreRows {
             claims,
             state: t.digest(b),
         }
+    }
+
+    pub(crate) fn verify_mixed(
+        &self,
+        b: &mut Builder,
+        output: [Kw; 4],
+        source: ProofSource<'_>,
+        key: Option<&crate::VerifyingKey>,
+    ) -> (CoreRows, Dw) {
+        let template = self.program.verifying_key();
+        let root = b.free_d(key.map_or([0; 4], |k| primitives::hash::digest_words(k.root())));
+        let entry = b.free_k(key.map_or_else(|| template.entry_pc(), crate::VerifyingKey::entry_pc));
+        let bits = b.split(entry);
+        let bc = template.sizes().log_bytecode;
+        for (i, &bit) in bits.iter().enumerate() {
+            if i < 2 || i >= bc + 2 {
+                b.eq_k_const(bit, crate::rv::Region::TEXT.base() >> i & 1);
+            }
+        }
+        let entry_e = b.k_to_e1(entry);
+        let halt = b.e_const(primitives::field::F192::from(primitives::field::F64(
+            crate::rv::Region::TEXT.address((1 << bc) - 1),
+        )));
+        let gap = b.add(entry_e, halt);
+        b.inv(gap);
+        let image: Vec<_> = (0..template.image().len())
+            .map(|i| b.free_k(key.map_or(0, |k| k.image()[i])))
+            .collect();
+        let mut words = b.d_to_k(root).to_vec();
+        words.push(b.k_const(bc as u64));
+        words.push(entry);
+        words.push(b.k_const(template.sizes().log_ram as u64));
+        words.push(b.k_const(template.sizes().log_advice as u64));
+        words.push(b.k_const(template.image().len() as u64));
+        words.extend_from_slice(&image);
+        let digest = b.hash_prefixed(Program::DIGEST_DOMAIN, &words);
+        let session = b.session_tagged(Program::SESSION_TAG, digest);
+        let mut t = Transcript::dynamic(b, session, &output, source);
+        let mut r = Rows::new(b, &mut t);
+        let clock = r.scope("announcement", |r| self.read_announcement(r));
+        let output = output.map(|o| r.b.k_to_e1(o));
+        let claims = infallible(
+            self.layout
+                .verify_core_at(&mut r, clock, &output, self.shape.rate(), Some(entry_e)),
+        );
+        let image: Vec<_> = image.into_iter().map(|w| r.b.k_to_e1(w)).collect();
+        r.scope("program opening", |r| {
+            infallible(template.verify_program_with_image(r, root, &claims.program, &image));
+        });
+        infallible(r.check_eof());
+        (
+            CoreRows {
+                claims,
+                state: t.digest(b),
+            },
+            digest,
+        )
     }
 
     /// The verifier's core of a zero-knowledge proof, as rows: the native recorder's own code over the rows' arithmetic.

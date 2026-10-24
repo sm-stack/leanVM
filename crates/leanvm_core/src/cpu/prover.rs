@@ -34,9 +34,15 @@ pub struct Prover {
     rate: Rate,
     /// Where a zero-knowledge prover draws its randomness; none for a plain prover.
     randomness: Option<Randomness>,
+    floor: crate::tables::PerTable<usize>,
 }
 
 impl Prover {
+    pub(crate) const fn with_floor(mut self, floor: crate::tables::PerTable<usize>) -> Self {
+        self.floor = floor;
+        self
+    }
+
     /// A prover at this commitment rate.
     ///
     /// It also spawns the process's worker pool, which every prover shares.
@@ -44,7 +50,11 @@ impl Prover {
     pub fn new(rate: Rate) -> Self {
         // Spawning up front keeps the spawn cost out of the first proof.
         crate::init_prover();
-        Self { rate, randomness: None }
+        Self {
+            rate,
+            randomness: None,
+            floor: crate::tables::PerTable::default(),
+        }
     }
 
     /// The commitment rate every proof is made at.
@@ -99,7 +109,7 @@ impl Prover {
         fields(log_inv_rate = self.rate.log_inv_rate(), zk = self.is_zero_knowledge())
     )]
     pub fn prove(&self, program: &Program, advice: &[u64]) -> Result<ProvenRun, ProveError> {
-        let exec = info_span!("Execute program").in_scope(|| program.execute(advice))?;
+        let exec = info_span!("Execute program").in_scope(|| program.execute_at(advice, self.floor))?;
         program.committed_size(exec.trace.row_counts(), self.kind())?;
         let (proof, stats) = program.prove_execution(&exec, self);
         Ok(ProvenRun {

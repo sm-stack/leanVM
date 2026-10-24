@@ -128,6 +128,25 @@ impl Program {
         })
     }
 
+    pub(crate) fn padded(
+        &self,
+        log_bytecode: usize,
+        log_ram: usize,
+        log_advice: usize,
+        image_words: usize,
+    ) -> Result<Self, ProgramError> {
+        let rv = self.rv.padded(log_bytecode, log_ram, log_advice, image_words)?;
+        let committed = Arc::new(ProgramCommitment::new(&rv));
+        let key = VerifyingKey::new(committed.root(), Sizes::of(&rv), rv.entry_pc(), rv.image().to_vec());
+        Ok(Self {
+            rv,
+            digest: *key.digest(),
+            filler: self.filler.clone(),
+            key,
+            committed,
+        })
+    }
+
     /// Run the program on `advice`, recording every row, then write out the padding rows.
     ///
     /// The padding rows bring each table to a power of two.
@@ -137,6 +156,10 @@ impl Program {
     /// Refuses more advice than the program's region holds, a run that traps, and one too long for one proof.
     #[doc(hidden)]
     pub fn execute(&self, advice: &[u64]) -> Result<Execution, ProveError> {
+        self.execute_at(advice, PerTable::default())
+    }
+
+    pub(super) fn execute_at(&self, advice: &[u64], floor: PerTable<usize>) -> Result<Execution, ProveError> {
         let p = &self.rv;
         let mut m = self.machine(advice)?;
         let mut trace = TraceBuilder::new(p, m.memory().advice());
@@ -145,7 +168,9 @@ impl Program {
 
         // The padding rows, written out rather than executed.
         let base_counts = trace.row_counts();
-        for (first, size, traversals) in self.filler.cycles(&Plan::solve(base_counts)) {
+        let plan = Plan::solve_with_floor(base_counts, floor);
+        self.committed_size(plan.filled(base_counts), ProofKind::Plain)?;
+        for (first, size, traversals) in self.filler.cycles(&plan) {
             for _ in 0..traversals {
                 for index in first..=first + size {
                     trace.pad(p, index);

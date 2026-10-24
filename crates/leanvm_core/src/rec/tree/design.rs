@@ -39,7 +39,7 @@ use primitives::multilinear::mle_eval_par;
 use std::ops::Range;
 
 /// The protocol half of every recursion proof's session tag.
-const DOMAIN: &[u8] = b"leanvm-tree-16";
+const DOMAIN: &[u8] = b"leanvm-tree-17";
 
 /// The tier of a tree of one tier, or of a claim-set tree's small tier: the first level's.
 pub(crate) const SMALL: usize = 0;
@@ -87,6 +87,8 @@ pub(crate) struct TierDesign {
 pub(crate) struct Design<'p> {
     /// The leaves' shape: the program, its tables' heights, its rate.
     pub(crate) leaf: ProofShape<'p>,
+    /// Leaf keys are witnesses and their program claims close in the first level.
+    pub(crate) mixed: bool,
     /// The leaves a first-level node verifies.
     pub(crate) arity_0: usize,
     /// The children a node verifies: the only arity of a tree of outputs, the largest of a claim-set tree.
@@ -117,6 +119,8 @@ struct KindBits {
 
 /// A leaf as a first-level node's prover holds it: its proof, which the native verifier accepted, and its output.
 pub(crate) struct LeafWitness<'a> {
+    /// The witnessed key in mixed mode, absent for same-program leaves.
+    pub(crate) key: Option<&'a crate::VerifyingKey>,
     /// The proof.
     pub(crate) proof: &'a ProofTranscript,
     /// Every opening its native verifier authenticated, phase by phase.
@@ -224,7 +228,7 @@ impl<'p> Design<'p> {
     /// # Errors
     ///
     /// Returns an error if no proof of the program has the leaves' shape, or the heights admit no recursion proof.
-    pub(crate) fn new(program: &'p Program, shape: &TreeShape, taus: &[PerRecTable<usize>]) -> Result<Self, TreeError> {
+    pub(crate) fn new(program: &Program, shape: &TreeShape, taus: &[PerRecTable<usize>]) -> Result<Self, TreeError> {
         let TreeShape {
             leaf,
             arity_0,
@@ -266,6 +270,7 @@ impl<'p> Design<'p> {
         let n_polys = DensePoly::COUNT - usize::from(tiers.len() == 1);
         let statement = StatementLayout::new(vars.0.into_iter().max().unwrap_or(0), n_polys);
         Ok(Self {
+            mixed: false,
             leaf,
             arity_0,
             arity,
@@ -292,6 +297,9 @@ impl<'p> Design<'p> {
     pub(super) fn session_under(&self, domain: &[u8]) -> SessionId {
         let mut tag = domain.to_vec();
         tag.extend_from_slice(self.leaf.program().digest());
+        if self.mixed {
+            tag.extend_from_slice(b"/mixed-program/1");
+        }
         let large = self.claims.map(|c| c.capacity);
         let semantics = large.map_or([0; 3], |c| [1, c.claims, c.groups]);
         let small = (self.claims.and_then(|c| c.small)).map(|s| [s.arity, s.capacity.claims, s.capacity.groups]);
@@ -349,7 +357,7 @@ impl<'p> Design<'p> {
         for i in 0..self.arity_0 {
             let leaf = inputs.item(i);
             // A claim-set leaf's output is the hash of its set's digest, which the union reads.
-            let output = if self.claims.is_some() {
+            let output = if self.claims.is_some() && !self.mixed {
                 let set = b.free_d(leaf.map_or([0; 4], |l| l.set));
                 sets.push(set);
                 let words = b.d_to_k(set);
@@ -359,11 +367,21 @@ impl<'p> Design<'p> {
                 leaf.map_or([0; 4], |l| l.output).map(|o| b.free_k(o))
             };
             let source = leaf.map_or(ProofSource::Shape, |l| ProofSource::Proof(l.proof, &l.openings));
-            let core = b.scope(format!("leaf {i}"), |b| self.leaf.verify_core(b, output, source));
+            let core = if self.mixed {
+                let (core, digest) = b.scope(format!("leaf {i}"), |b| {
+                    self.leaf.verify_mixed(b, output, source, leaf.and_then(|l| l.key))
+                });
+                sets.push(super::mixed::singleton_rows(&mut b, digest, output));
+                core
+            } else {
+                b.scope(format!("leaf {i}"), |b| self.leaf.verify_core(b, output, source))
+            };
             claims.bind_state(&mut b, core.state);
-            b.scope(format!("leaf {i} program"), |b| {
-                self.program_claims(b, &core.claims.program, inputs, &mut claims);
-            });
+            if !self.mixed {
+                b.scope(format!("leaf {i} program"), |b| {
+                    self.program_claims(b, &core.claims.program, inputs, &mut claims);
+                });
+            }
             let fresh = CircuitId::ALL.into_iter().zip(&core.claims.circuits);
             claims.matrices.extend(fresh.map(|(f, c)| MatrixClaim::fresh(f, c)));
             outputs.push(output);
@@ -573,6 +591,9 @@ impl<'p> Design<'p> {
     fn carried(&self, statement: &TreeStatement<Ew>, is_node: Ew, claims: &mut NodeClaims<Ew>) {
         let point = statement.dense_point();
         for &poly in self.statement.polys() {
+            if self.mixed && !poly.is_fixed() {
+                continue;
+            }
             let n = self.vars.0[poly as usize];
             let scale = poly.is_fixed().then_some(is_node);
             claims.dense.push(DenseClaim::at(

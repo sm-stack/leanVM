@@ -79,9 +79,27 @@ impl<'a> Transcript<'a> {
         let seed = [sid[0], sid[1], sid[2], sid[3], 0, 0, 0, 0];
         let cv = Compression::new(PARAM_IV, seed, Role::Seed.counter(0, 0), true).output();
 
+        let cv = b.d_const(cv);
+        Self::from_cv(b, cv, instance, source)
+    }
+
+    pub(crate) fn dynamic(b: &mut Builder, session: Dw, instance: &[Kw], source: ProofSource<'a>) -> Self {
+        let sid = b.d_to_k(session);
+        let zero = b.k_const(0);
+        let iv = b.d_const(PARAM_IV);
+        let cv = b.leaf_block(
+            iv,
+            [sid[0], sid[1], sid[2], sid[3], zero, zero, zero, zero],
+            Role::Seed.counter(0, 0),
+            true,
+        );
+        Self::from_cv(b, cv, instance, source)
+    }
+
+    fn from_cv(b: &mut Builder, cv: Dw, instance: &[Kw], source: ProofSource<'a>) -> Self {
         let zero = b.k_const(0);
         let mut t = Self {
-            cv: b.d_const(cv),
+            cv,
             pending: [zero; 8],
             n_pending: 0,
             first: true,

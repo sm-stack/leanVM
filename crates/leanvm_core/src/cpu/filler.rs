@@ -193,7 +193,11 @@ impl Plan {
     ///
     /// Counting those first makes it one decomposition rather than a fixpoint.
     pub fn solve(base: PerTable<usize>) -> Self {
-        let height = |t: TableId, rows: usize| t.spec().provable_height(rows);
+        Self::solve_with_floor(base, PerTable::default())
+    }
+
+    pub(super) fn solve_with_floor(base: PerTable<usize>, floor: PerTable<usize>) -> Self {
+        let height = |t: TableId, rows: usize| t.spec().provable_height(rows.max(floor[t]));
         let mut plan = Self(PerTable::default());
         for t in TableId::ALL.into_iter().filter(|&t| t != JUMP) {
             plan.0[t] = Traversals::delivering(height(t, base[t]) - base[t]);

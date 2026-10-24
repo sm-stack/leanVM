@@ -543,6 +543,7 @@ pub struct Layout {
     pub producers: Vec<Producer>,
     /// The proof-of-work bits before the bus's fingerprint challenges, fixed by the program alone.
     pub grinding: u32,
+    pub(crate) entry_pc: u64,
     /// Where each column sits in the stacked witness, from the columns' sizes alone.
     pub placements: Vec<Placement>,
     /// The stacked witness's shape: its announced size, and how many lane blocks are committed.
@@ -564,7 +565,7 @@ impl Layout {
             Sizes::of(p),
             p.entry_pc(),
             p.image(),
-            Lookup::Bytecode.tuple(p),
+            &Lookup::Bytecode.tuple(p),
             taus,
             ts_final,
         )
@@ -576,11 +577,11 @@ impl Layout {
             base: F64(Region::TEXT.base()),
             shift: 2,
         };
-        let coords = [Separator::Bytecode.coordinate(), pc]
+        let coords: Vec<_> = [Separator::Bytecode.coordinate(), pc]
             .into_iter()
             .chain((0..10).map(|_| Coord::Public(PublicColumn::new(Arc::new(Vec::new())))))
             .collect();
-        Self::build(key.sizes(), key.entry_pc(), key.image(), coords, taus, 0)
+        Self::build(key.sizes(), key.entry_pc(), key.image(), &coords, taus, 0)
             .of_kind(kind)
             .fits()
     }
@@ -589,7 +590,7 @@ impl Layout {
         sizes: Sizes,
         entry_pc: u64,
         image: &[u64],
-        coords: Vec<Coord>,
+        coords: &[Coord],
         taus: PerTable<usize>,
         ts_final: u64,
     ) -> Self {
@@ -617,7 +618,7 @@ impl Layout {
             .into_iter()
             .map(|lookup| Producer {
                 kappa: lookup.log_rows(sizes),
-                coords: coords.clone(),
+                coords: coords.to_vec(),
                 col: lookup.multiplicity().col(),
                 bits: lookup.multiplicity_bits(&taus),
             })
@@ -629,6 +630,7 @@ impl Layout {
             pull,
             producers,
             grinding: Lookup::Bytecode.grinding_bits(sizes),
+            entry_pc,
             placements,
             shape,
             registers: RegisterWord::of(&taus),
@@ -903,7 +905,7 @@ impl Layout {
     /// Check each table's height lies between flock's instance floor and the public cap.
     ///
     /// A table's rows are its class's runs, unbounded by the program's size, so it has a cap of its own.
-    fn check_heights(taus: &PerTable<usize>) -> Result<(), CpuError> {
+    pub(crate) fn check_heights(taus: &PerTable<usize>) -> Result<(), CpuError> {
         for (t, &log_rows) in taus.iter() {
             let min = t.spec().n_blocks_log(1);
             if !(min..=MAX_LOG_ROWS).contains(&log_rows) {

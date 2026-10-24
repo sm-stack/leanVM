@@ -65,9 +65,19 @@ impl Layout {
         output: &[V::E; 4],
         rate: Rate,
     ) -> Result<DeferredClaims<V::E>, CpuError> {
+        self.verify_core_at(v, clock, output, rate, None)
+    }
+
+    pub(crate) fn verify_core_at<V: OpeningVerifier + PublicColumns>(
+        &self,
+        v: &mut V,
+        clock: V::E,
+        output: &[V::E; 4],
+        rate: Rate,
+        entry: Option<V::E>,
+    ) -> Result<DeferredClaims<V::E>, CpuError> {
         let commitment = Commitment::read(v, self.shape, rate)?;
-        let claims = self.verify_committed(v, &commitment, clock, output)?;
-        Ok(claims)
+        self.verify_committed_at(v, &commitment, clock, output, entry)
     }
 
     /// The verifier's core past the commitment's root: the flock reductions, the bus and the tables, and the opening.
@@ -82,6 +92,17 @@ impl Layout {
         clock: V::E,
         output: &[V::E; 4],
     ) -> Result<DeferredClaims<V::E>, CpuError> {
+        self.verify_committed_at(v, commitment, clock, output, None)
+    }
+
+    fn verify_committed_at<V: OpeningVerifier + PublicColumns>(
+        &self,
+        v: &mut V,
+        commitment: &Commitment<V::Root>,
+        clock: V::E,
+        output: &[V::E; 4],
+        entry: Option<V::E>,
+    ) -> Result<DeferredClaims<V::E>, CpuError> {
         // Flock's reductions, batched over every class circuit then every clock circuit, each leaving its matrices' form to its circuit.
         // They read only the commitment; their claims wait for the opening, whose challenges follow every claim.
         let batches = CircuitId::batches(&self.taus);
@@ -91,7 +112,7 @@ impl Layout {
         let (slices, circuits): (Vec<_>, Vec<_>) = (replays.into_iter())
             .map(|replay| (replay.claim, replay.matrices.into()))
             .unzip();
-        let reduced = v.scope("bus and tables", |v| self.reduce_tables(v, clock, output))?;
+        let reduced = v.scope("bus and tables", |v| self.reduce_tables_at(v, clock, output, entry))?;
 
         // The one opening, its ring-switched regions each packed witness, each producer's multiplicity column and each table's register numbers.
         v.scope("opening", |v| {
@@ -117,11 +138,12 @@ impl Layout {
     /// # Errors
     ///
     /// Returns the bus's or the table sumcheck's refusal.
-    pub(crate) fn reduce_tables<V: Verifier + PublicColumns>(
+    fn reduce_tables_at<V: Verifier + PublicColumns>(
         &self,
         v: &mut V,
         clock: V::E,
         output: &[V::E; 4],
+        entry: Option<V::E>,
     ) -> Result<TableReduction<V::E>, CpuError> {
         let mut bus = bus::verify_balance(
             v,
@@ -132,6 +154,15 @@ impl Layout {
             Schema::get().spans.as_slice(),
         )
         .map_err(CpuError::Bus)?;
+        // Replace the template entry's share of the seeded state tuple.
+        if let Some(entry) = entry {
+            let delta = v.add_const(
+                entry,
+                primitives::field::F192::from(primitives::field::F64(self.entry_pc)),
+            );
+            let weight = v.mul(bus.selectors[0][Framework::State as usize], bus.weights[1]);
+            bus.totals[0] = v.mul_add(weight, delta, bus.totals[0]);
+        }
         let per_tick = v.mul(
             bus.selectors[1][Framework::State as usize],
             bus.weights[Framework::FINAL_CLOCK],

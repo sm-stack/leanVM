@@ -842,6 +842,49 @@ impl Builder {
         self.hash_row(head, m.map(|w| w.0), compression).0
     }
 
+    pub(crate) fn prefixed_words(&mut self, prefix: &[u8], words: &[Kw]) -> Vec<Kw> {
+        let mut bits = Vec::with_capacity(8 * prefix.len() + 64 * words.len());
+        for &byte in prefix {
+            for i in 0..8 {
+                bits.push(self.k_const(u64::from(byte >> i & 1)));
+            }
+        }
+        for &word in words {
+            bits.extend(self.split(word));
+        }
+        bits.chunks(64).map(|chunk| self.pack(chunk)).collect()
+    }
+
+    pub(crate) fn hash_prefixed(&mut self, prefix: &[u8], words: &[Kw]) -> Dw {
+        let bytes = prefix.len() + 8 * words.len();
+        let words = self.prefixed_words(prefix, words);
+        let mut h = self.d_const(PARAM_IV);
+        let zero = self.k_const(0);
+        for (i, chunk) in words.chunks(8).enumerate() {
+            let block = std::array::from_fn(|j| chunk.get(j).copied().unwrap_or(zero));
+            h = self.leaf_block(h, block, ((i + 1) * 64).min(bytes) as u64, (i + 1) * 64 >= bytes);
+        }
+        h
+    }
+
+    pub(crate) fn session_tagged(&mut self, protocol: &[u8], relation: Dw) -> Dw {
+        use fiat_shamir::Role;
+        let iv = primitives::hash::digest_words(b"irtf-cfrg-fiat-shamir/session-id");
+        let seed = [iv[0], iv[1], iv[2], iv[3], 0, 0, 0, 0];
+        let cv = Compression::new(PARAM_IV, seed, Role::Seed.counter(0, 0), true).output();
+        let mut h = self.d_const(cv);
+        let relation = self.d_to_k(relation);
+        let words = self.prefixed_words(protocol, &relation);
+        let bytes = protocol.len() + 32;
+        let zero = self.k_const(0);
+        for (i, chunk) in words.chunks(8).enumerate() {
+            let block = std::array::from_fn(|j| chunk.get(j).copied().unwrap_or(zero));
+            let n = (bytes - 64 * i).min(64);
+            h = self.leaf_block(h, block, Role::absorb(i == 0, 64 * i + n == bytes).counter(n, 0), true);
+        }
+        self.leaf_block(h, [zero; 8], Role::Output.counter(0, 0), true)
+    }
+
     /// The hash of `words` in rows, as the native chain computes it.
     pub fn chain(&mut self, words: &[Kw]) -> Dw {
         let n_blocks = words.len().div_ceil(8).max(1);

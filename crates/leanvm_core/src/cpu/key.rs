@@ -182,15 +182,27 @@ impl VerifyingKey {
     }
 
     /// Close the bytecode terms against the key's commitment and the image term against its public words.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "each opening value is read as a prover message before batching"
-    )]
     pub(crate) fn verify_program<V: OpeningVerifier>(
         &self,
         v: &mut V,
         root: V::Root,
         claim: &Claim<ProgramPoint<V::E>, V::E>,
+    ) -> Result<(), CpuError> {
+        let mut image: Vec<_> = self.image.iter().map(|&w| v.constant(F192::from(F64(w)))).collect();
+        image.resize(self.image.len().max(1).next_power_of_two(), v.zero());
+        self.verify_program_with_image(v, root, claim, &image)
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "each point value is read from the transcript before batching"
+    )]
+    pub(crate) fn verify_program_with_image<V: OpeningVerifier>(
+        &self,
+        v: &mut V,
+        root: V::Root,
+        claim: &Claim<ProgramPoint<V::E>, V::E>,
+        image: &[V::E],
     ) -> Result<(), CpuError> {
         let points = self.points(v, &claim.point);
         let mut claims = Vec::new();
@@ -205,11 +217,10 @@ impl VerifyingKey {
                 value,
             });
         }
-        let mut image_words: Vec<_> = self.image.iter().copied().map(F64).collect();
-        let width = image_words.len().max(1).next_power_of_two();
-        image_words.resize(width, F64::ZERO);
-        let m = width.ilog2() as usize;
-        let mut image = v.public_mle(&image_words, &claim.point.image_point[..m]);
+        let m = image.len().ilog2() as usize;
+        let eq = v.eq_table(&claim.point.image_point[..m]);
+        let zero = v.zero();
+        let mut image = image.iter().zip(eq).fold(zero, |sum, (&w, e)| v.mul_add(w, e, sum));
         for &x in &claim.point.image_point[m..] {
             let factor = v.add_const(x, F192::ONE);
             image = v.mul(image, factor);

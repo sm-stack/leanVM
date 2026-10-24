@@ -337,7 +337,7 @@ impl Alu {
         let mut rows = Products::new([z, az, bz], 8);
         rows.push(1, 1, 1);
         rows.push(v1 ^ carries, y ^ carries, 64);
-        let below = diff.isolate_lowest_one().wrapping_neg();
+        let below = (diff & diff.wrapping_neg()).wrapping_neg();
         rows.push(below & (u64::MAX >> 1), diff >> 1, 63);
         rows.push(word >> 32, sext_diff, 32);
         rows.push(all(none), extended, 64);

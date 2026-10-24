@@ -106,7 +106,7 @@ impl Product for Shuffle {
         for (rows, w) in rows.as_chunks_mut::<16>().0.iter_mut().zip(w.as_chunks::<4>().0) {
             let mut sum = [F192::ZERO; 16];
             for v in 1..16usize {
-                let low = v.isolate_lowest_one();
+                let low = v & v.wrapping_neg();
                 sum[v] = sum[v ^ low] + w[low.trailing_zeros() as usize];
             }
             for (row, s) in rows.iter_mut().zip(sum) {

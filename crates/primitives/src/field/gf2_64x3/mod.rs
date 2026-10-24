@@ -712,9 +712,9 @@ pub mod x86_64;
 /// Portable fallback, and the reference every accelerated path is tested against.
 mod software {
     use super::{F192, F192Unreduced};
-    use crate::field::gf2_64::software::clmul;
+    use crate::field::gf2_64::software::clmul_fast;
 
-    /// Schoolbook: nine base products into the five coefficients of `y^0..y^4`, then the `y`-fold.
+    /// Karatsuba: six base products into the five coefficients of `y^0..y^4`, then the `y`-fold.
     #[cfg_attr(
         any(
             all(target_arch = "aarch64", target_feature = "aes"),
@@ -726,14 +726,13 @@ mod software {
         )
     )]
     pub(super) fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {
-        let (a, b) = ([a.c0, a.c1, a.c2], [b.c0, b.c1, b.c2]);
-        let mut e = [0u128; 5];
-        // a_i * b_j lands on y^(i + j).
-        for i in 0..3 {
-            for j in 0..3 {
-                e[i + j] ^= clmul(a[i], b[j]);
-            }
-        }
+        let d0 = clmul_fast(a.c0, b.c0);
+        let d1 = clmul_fast(a.c1, b.c1);
+        let d2 = clmul_fast(a.c2, b.c2);
+        let d01 = clmul_fast(a.c0 ^ a.c1, b.c0 ^ b.c1);
+        let d02 = clmul_fast(a.c0 ^ a.c2, b.c0 ^ b.c2);
+        let d12 = clmul_fast(a.c1 ^ a.c2, b.c1 ^ b.c2);
+        let e = [d0, d01 ^ d0 ^ d1, d02 ^ d0 ^ d1 ^ d2, d12 ^ d1 ^ d2, d2];
         // y^3 = y + 1 and y^4 = y^2 + y.
         F192Unreduced::from_wide([e[0] ^ e[3], e[1] ^ e[3] ^ e[4], e[2] ^ e[4]])
     }
@@ -817,6 +816,22 @@ mod tests {
             assert_eq!(software_mul(a, b), F192::new(c[0], c[1], c[2]));
         }
         assert_eq!(F192::Y * F192::Y * F192::Y, F192::Y + F192::ONE);
+    }
+
+    #[test]
+    fn portable_karatsuba_matches_schoolbook() {
+        use crate::field::gf2_64::software::clmul;
+        for (a, b) in operand_pairs(42) {
+            let (a_words, b_words) = ([a.c0, a.c1, a.c2], [b.c0, b.c1, b.c2]);
+            let mut e = [0u128; 5];
+            for i in 0..3 {
+                for j in 0..3 {
+                    e[i + j] ^= clmul(a_words[i], b_words[j]);
+                }
+            }
+            let want = F192Unreduced::from_wide([e[0] ^ e[3], e[1] ^ e[3] ^ e[4], e[2] ^ e[4]]);
+            assert_eq!(software::mul_unreduced(a, b), want);
+        }
     }
 
     #[test]

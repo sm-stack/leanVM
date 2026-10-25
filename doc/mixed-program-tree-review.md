@@ -1,71 +1,56 @@
-# Mixed-program tree review packet
+# Mixed member-list trees: review packet
 
-This packet covers the OP Stack fork's mixed-program construction and the class-key/seal hardening on `op-stack/mixed-program-tree`. It is a review aid, not a formal soundness proof or independent audit. The format and measurements are in [mixed-program-tree.md](mixed-program-tree.md).
+Scope: the member-list SDK and guest, multi-class first-level circuits, class-key v2, running-root API, and migration from `da5c9648`. This is an implementation review packet, not a formal soundness proof.
 
-## Threat model and trust boundary
+## Threat model and authorization
 
-The attacker chooses leaf programs, bytecode commitments, initial images, entries, advice, proofs, declared claim sets, recursion witnesses, root proofs, class-key bytes and seals. It can combine or discard claims and construct fake circuits with the same heights as genuine circuits. It may supply a forged fixed polynomial and a perfectly valid PCS opening against that polynomial's own root. It cannot choose the application's expected class-key digest or authorized program identities. The verifier must reject malformed proofs or any output not justified by an authorized normalized program execution, subject to upstream proof-system soundness.
+The attacker chooses leaf keys, images, entries, advice, proofs, member lists, labels, declared sets, recursion witnesses, fake same-height circuits, class-key bytes and seals. A valid PCS opening under an attacker-chosen polynomial does not authenticate that polynomial. The application separately authorizes the genuine class-key artifact and each normalized program identity. Neither parsing nor a self-reported digest supplies that authorization.
 
-There are two separate authorization decisions. A trusted class setup generates the genuine circuits, verifier columns and seal roots, and distributes the class-key digest. The application regenerates each program key from its intended ELF and the same class and authorizes that key digest. Parsing a class key or a program key does not establish either authorization. In particular, a perfectly well-formed attacker-generated circuit key is not trusted merely because its digest can be computed. Normalization expands RAM and advice bounds and can make formerly trapping accesses valid; normalization also relocates the halt slot, so a formerly trapping computed jump can terminate there if the exit-register checks hold. Identity is `(ELF, class)`.
+The trusted-byte loader adds an explicit caller obligation: authenticate the exact bytes and their association with the supplied digest outside the loader. Soundness rests on genuine bytes. A wrong digest changes the seal session and breaks existing node/wrap seals, but an empty first-level seal does not detect it, for any leaf class. First-level roots have no fixed claims; program claims close in-circuit and the recursion proof checks the authenticated circuit key. Keep the checked loader as default.
 
-## Binding inventory
+## Bindings to trace
 
-| Binding | Enforcement and review target |
+| Binding | Enforcement |
 | --- | --- |
-| Program commitment and metadata to key digest | `cpu/key.rs`: versioned canonical little-endian encoding includes root, dimensions, entry and padded image. |
-| Key digest to leaf session | `rec/verifier/riscv.rs`: rows compute the digest and dynamic session from witnessed key words; class dimensions are constants. Entry alignment, range and halt exclusion are constrained. |
-| Key root to executed bytecode | `cpu/program.rs` and `rec/verifier/riscv.rs`: PCS opening closes the bytecode claim against that root; image evaluation uses the same constrained image as the digest. |
-| Verified leaf to singleton | `rec/tree/mixed.rs`: label is the four digest words followed by two zeros; member is the verified output. The singleton digest is built in rows. |
-| Children to declared set | `rec/tree/union/`: coverage rows enforce that each declared claim belongs to a verified child's set. Discard is permitted; invention or key/output reassociation is not. |
-| Root statement to public claims | `rec/tree/mod.rs`, `statement.rs`, `multiset.rs`: root circuit/mode validation and canonical set digest equality precede settlement. |
-| Genuine recursive circuit to deferred claims | `rec/fixed.rs`, `tree/design.rs`, `tree/reduce/`: fixed columns name wiring and constants; tier and circuit selectors route claims into Fixed or Wide. |
-| Complete class artifact to trusted identity | `tree/embed.rs`: BLAKE2s over domain and every encoding byte; expected class/shape and exact lengths checked; loaded roots cannot be replaced. |
-| Seal to class key and root | `tree/seal.rs`: v2 mixed session contains the class-key digest; complete root statement is the instance before challenges. Opening claims and commitment configurations are rebuilt by the verifier. |
-| Root to genuine Fixed/Wide polynomials | `tree/seal.rs`: WHIR openings under authenticated roots replace only direct deferred fixed evaluations. Matrix and other claims still settle natively; root recursion proof still checks its own columns. |
+| Label ↔ witnessed key digest | `riscv.rs::verify_mixed` hashes the constrained root/entry/image under class-fixed dimensions; `mixed.rs::member_rows` puts those digest wires into the group header. |
+| Member list ↔ leaf output | One domain-separated list convention, bounded monotone presence bits, zero absent words, shared member wires for list and group; list digest is hashed into the verified execution output. There is no witness mode selector. |
+| Leaf proof ↔ leaf shape ↔ kind | Each `ProofShape` checks its announcement; `Level::First(class)` selects that shape; the kind selects its authenticated fixed-polynomial block. Complete kind codes are constrained to legal values. |
+| Member ↔ public key/message | Signature guest verifies every triple, then hashes `sphmem01 || root || public_param || message`, all fixed-width little-endian words, into the member. |
+| Child claims ↔ published union | Existing union rows bind digests, label/member tuples and selections before random challenges; canonical root sets deduplicate. `fold` offers no narrowing override. |
+| First/node classification ↔ carried fixed claims | Kind low bit says first versus node/wrap; native position lookup checks it and rows constrain the entire kind. Every first-level class suppresses absent fixed claims, not just position zero. |
+| Circuit columns ↔ trusted class | Built roots are derived/cache-pinned; loaded columns and roots are authenticated by the class-key v2 digest. Seal openings close Fixed/Wide against these roots. |
 
-A fake large circuit under a genuine small wrap is the key adversarial case. A forged Wide polynomial lets all local rows hold and the wrap's core proof verify. The final direct settlement refuses it. An opening of the forged Wide polynomial also fails under genuine class roots. This is why checking only the wrap's core proof is insufficient.
+A VK does not contain execution-table heights or K. Classes can share a VK when their normalization bounds coincide. Therefore a proof's VK cannot substitute for the class/kind checks. Normalization enlarges memory/advice bounds and moves halt; authorize the ELF together with the intended class. The kind-code change also changes same-program tree sessions and envelopes.
 
-The optional `Tree::mixed_from_trusted_bytes` introduces an explicit caller obligation: the outer mechanism must authenticate both the exact class-key bytes and their association with the supplied BLAKE2s class-key digest, including when transport uses a pinned keccak256 oracle key. It shares structural validation but does not authenticate verifier data; keep `mixed_from_bytes` for untrusted inputs. A wrong supplied digest invalidates existing node and wrap seals carrying fixed claims, but direct verification and a first-level root's empty v2 seal do not detect it. The first-level exception is harmless: there are no fixed claims to settle, program claims close in-circuit, and the root recursion proof is verified against the circuit keys from the outer-authenticated bytes. Soundness rests entirely on genuine bytes; the supplied digest is assumed correct, is not checked against those bytes in release builds, and only binds the seal session. Its mismatch is a misconfiguration check, not a soundness requirement. Seal v2 is preserved.
+## Concentrated signature trust
 
-## Inherited assumptions
+Every signature user trusts the authorized leanSPHINCS member guest. Review its raw triple layout, public-key field order, signature verification and failure path, exact member hash, list append for every successful signature, and the sole final commitment. The host's `member` helper is convenience, not the authority: the guest must execute the same relation. Consumers must recompute members from their intended keys/messages and authorize the normalized guest VK. A signature hash alone does not establish application freshness, message semantics, or replay protection.
 
-The argument assumes the upstream RISC-V arithmetization enforces execution, bus consistency, initial state and exits; the flock reductions and circuit matrices are sound; ring switching, stacked WHIR and the PCS are binding/opening-sound with their configured parameters; BLAKE2s and Fiat-Shamir framing give the required collision resistance and challenge unpredictability; and the recursive claim reduction remains sound through arbitrary depth and both tiers. Review the reduction's degree bounds and challenge ordering rather than treating passing tests as a proof. The seal adds another PCS use and therefore its error probability must be included in a composed soundness bound.
+## Regression coverage
 
-The trusted artifact setup must generate roots for the exact fixed polynomials described by the verifier columns and class. Loading does not recompute those commitments or reconstruct the circuits. Digest authentication replaces that work. Consumers must keep the trusted pin distinct from untrusted artifact transport. The seal is public computation, not an attestation by a trusted prover.
+- `signature_members_match_bytes_and_guest_execution`: independent standard BLAKE2s byte encoding; two signatures; altered public key, message and signature trap. The prior signer-set guest remains unchanged.
+- `member_classes_fold_deduplicate_close_and_load`: K-member list with repetitions, one-member list, two leaf classes including actual leanSPHINCS proofs, repeated leaves of one program merging into one group, multiple folds including the large-tier wrap path, capacity rollback, empty/single-child close, checked/trusted v2 reload, reordered/missing/modified classes refused; wrong-digest empty seals remain valid for both first-level kinds, while the node seal fails; direct and sealed verification.
+- `member_list_forgeries_fail_union_rows_and_both_root_paths`: native prechecks deliberately bypassed; unlisted members, different label, wrong list-output digest, list/set domain confusion, and over-K lists execute the union and reduction rows and fail. Claimed forged sets also fail direct and sealed root verification. Empty lists are disallowed by circuit prefix constraints.
+- `leaf_shape_is_bound_by_its_kind_and_fixed_polynomial`: same VK with a different valid proof announcement fails in rows; fake same-height first-level circuit under another class's kind passes its own proof and the upper node's local rows, but authenticated root settlement rejects it on both direct and sealed paths.
+- Existing singleton-era mixed tamper tests now use member-list guests. Parser tests use v2 offsets and exercise both loaders on truncated, malformed, substituted and trailing data. Wrong-digest node/wrap rejection and the empty-seal exception remain covered.
+- `member_list_rows_match_sdk_for_odd_even_and_empty_boundaries`: SDK/row agreement for every nonempty length up to five across bounds 1–5; empty lists fail the circuit constraints.
+- Same-program session pins were updated for the explicit `leanvm-tree-18` protocol change, retaining exact layout checks and exact child-index error checks.
 
-## Review scope and commits
+## Design decisions and limits
 
-The initial implementation is based on upstream `06e5c9cd6981103786f9d0a17324241b559a50d3`. Review `045d3dd0` and `8559b374` for the committed-program port; `e6e97311` and `10ee3515` for endian and portable field arithmetic; `362b2a0e` for mixed first-level verification and union binding. `e6780cb8` is the previously pushed baseline and report.
+All classes use one output convention. The alternative of a label-authenticated mode is unnecessary here; a prover-controlled mode would be unsound. All first-level circuits live in the small recursion tier and share padded heights. This keeps fixed-polynomial selection and two-tier wrapping contained, but the largest leaf verifier may raise costs for smaller classes. Separate recursion tiers or a large-subtree wrapper were alternatives, not implemented. All classes currently share first-level arity.
 
-The supplied spikes are preserved as `8eb5f992` (verifier embedding) and `926f050a` (Fixed/Wide seal). `6d8600f4` guards verifier-only proving paths, including plain and zero-knowledge Program helpers. `a50e234c` authenticates class keys and seal sessions; `a6e3c109` adds row-level and two-tier adversarial coverage. The main report gives the full hardening commit table; review the complete `e6780cb8..HEAD` diff as well as each topic.
+Member order and duplicates are bound by the execution output, while declared root sets are canonical unions/subsets. The general aggregation API still supports intentional narrowing; only the running-root `fold` API promises full retention. The claim capacity is exclusive. An accumulator's failed fold retains its previous root; closing empty state returns no proof.
 
-Start at `crates/leanvm_core/src/rec/tree/embed.rs` and `seal.rs`, then follow the verifier into `rec/proof.rs`, `bus/coord.rs`, `rec/fixed.rs`, `rec/verifier/recursion.rs` and `rec/tree/reduce/`. Program identity and first-level checks are in `cpu/key.rs`, `cpu/program.rs`, `rec/verifier/riscv.rs` and `rec/tree/mixed.rs`. `cpu/prover.rs`, `cpu/program.rs` and `cpu/zero_knowledge.rs` contain proving guards. Serialization dependencies include `crates/fiat_shamir/src/` codecs/session framing and `crates/pcs/src/stack.rs`. Other abbreviated core paths above are relative to `crates/leanvm_core/src/`.
+Class-key v1, tree-envelope v20 and previous circuit keys are not compatible with this revision. Consumers must port the list relation, v2 descriptors, all first-level kinds, the kind low bit, and the new tree session/envelope before accepting roots. Standalone proof/key formats remain unchanged. No Go, Cannon or OP Stack changes were made. Big-endian validation is compile-only; proof production on big-endian machines remains unsupported. Small adversarial tests do not establish a composed quantitative soundness bound.
 
-## Adversarial evidence
+## Upstream interactions
 
-New regression tests in `rec::tree::mixed::tests`:
+Checked read-only via GitHub on 2026-10-25; all remain open:
 
-- `class_keys_authenticate_shape_columns_and_seal_roots`: trusted-pin mismatch, expected class/shape mismatch, repinned malformed dimensions/lengths, truncation/trailing data, direct/sealed load agreement, substituted roots.
-- `loaded_verifiers_refuse_every_prover_entry_point`: all public tree proving paths and plain/zero-knowledge Program proving return verifier-only errors.
-- `mixed_entry_rows_refuse_alignment_range_and_halt_without_decoding`: direct in-crate key construction bypasses the decoder and requires an entry-scope row failure.
-- `mixed_union_rows_refuse_uncovered_and_swapped_claims`: bypasses native union validation and checks reduction/union rows, with an honest control.
-- `mixed_verifier_refuses_other_modes_and_classes_direct_and_sealed`: valid output-tree, guest-claim-set and other-class roots are refused by the mixed verifier.
-- `two_tier_mixed_roots_and_fake_large_wrap`: first, large and narrowed/wrapped roots agree on direct/sealed and built/loaded verification; the existing fake-large-circuit attack is reused for mixed mode.
+- [Issue #417](https://github.com/leanEthereum/leanVM/issues/417): committed-program/mixed aggregation design discussion. This branch chooses committed keys and in-circuit closure for mixed programs; its claim-list convention and multi-class encoding are fork-specific.
+- [PR #418](https://github.com/leanEthereum/leanVM/pull/418), head `ad897fd6bb0f1e2f788898796f6115d8c5ee0d8b`: the original committed-key change is already ported into this fork's later verifier. A future merge must reconcile key/session/PCS framing, not reapply the old implementation mechanically.
+- [PR #522](https://github.com/leanEthereum/leanVM/pull/522), head `461ab229da3a2f1232dce68e74756ee26ca142d6`: conditional guest proof verification requires resolving authenticated assumptions before publishing unconditional members. This branch has no assumption-resolution extension.
+- [PR #553](https://github.com/leanEthereum/leanVM/pull/553), head `0c5a8f3dc422b0e8ef4947fb62a579603fb8ae24`: replaces the recursion machine and changes ISA/proof semantics. The member-list, class-kind, key and seal bindings require a semantic port into its generated verifier, with new artifacts and pins.
 
-The trusted-loader follow-up adds `trusted_loader_agrees_with_checked_direct_and_sealed_verification` (genuine first/node roots plus altered claims, proofs, seals and roots) and `trusted_loader_wrong_digest_rejects_node_seals_but_not_empty_first_seals` (the explicit v2 exception). `two_tier_mixed_roots_and_fake_large_wrap` also compares both loaders on large nodes, an actual `Level::Wrap` root and a narrowed small node, and checks that their seals fail under a wrong digest on the trusted path. The class-key parser and verifier-only guard tests above now exercise the trusted loader too.
-
-The spike's `sealed_roots_agree_with_direct_settlement_and_bind_their_inputs` also covers node roots, changed roots, swapped seals, truncation and byte tampering. Existing same-program fixed/wide forgery tests remain in `rec/tree/mod.rs`. Tamper loops now require valid decoding rather than silently skipping a malformed candidate.
-
-## Known gaps and integration risks
-
-There is no formal cryptographic audit, no composed quantitative soundness bound in this patch, and no Go port or OP Stack integration. Mixed zero-knowledge leaves remain refused. Resource policy for very large but trusted classes belongs to the consumer; the loader hashes the complete input and structural checks do not replace a transport size limit. The small fixture tests are not proof of correctness at every admissible shape. Ignored architectural and long-running tests are reported separately from the normal workspace suite.
-
-Native root fixed-column evaluation remains: the sealed path still loads about 24 MiB for the example class. The stretch design is documented separately in the main report and is not implemented. New Cannon measurements must account for hashing the authenticated artifact and the changed seal session; the supplied spike counts cannot be assigned to this revision.
-
-[Upstream #522](https://github.com/leanEthereum/leanVM/pull/522) requires a separate treatment of conditional proofs: resolve authenticated assumptions before exposing an unconditional singleton. [Upstream #553](https://github.com/leanEthereum/leanVM/pull/553) removes this recursion machine and changes the ISA/proof format. Porting either is a protocol change requiring new artifact versions and trusted pins, not a mechanical merge of this key encoding.
-
-## Review fixes
-
-Built trees derive and cache genuine seal roots from their own fixed polynomials. Loaded trees retain the roots authenticated by the class key. Both refuse substitute roots before verifying a root proof or opening a seal; a foreign `SealProver` returns `TreeError::SealRoots`. `built_trees_refuse_foreign_seal_provers_and_roots` covers a foreign public prover, verification and export. The existing forged Fixed/Wide cases now require rejection even when the forged polynomial has its own valid commitment.
-
-Same-program rows defer Bytecode and Image to the root instead of also opening the program commitment. Their session is versioned with `/deferred-program/1`; session and layout pins are restored. `standalone_program_openings_are_deferred_in_same_program_rows` pins the prefix-only semantics for plain and zero-knowledge leaves and checks that full native verification rejects a corrupted suffix. The mixed path still consumes and verifies the full proof. Provers obtain program-opening points from their reductions, without a verifier self-replay or a test-only success branch.
+No upstream comments or PRs were made. Native root fixed-column openings remain the separate unimplemented design in the main document.

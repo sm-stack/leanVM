@@ -1,107 +1,183 @@
-# Mixed-program aggregation trees
+# Mixed-program member-list trees
 
-This branch starts from upstream `riscv-exploration` at `06e5c9cd6981103786f9d0a17324241b559a50d3`. It ports committed-program [PR #418](https://github.com/leanEthereum/leanVM/pull/418) into the current generic verifier and adds a mixed-program mode to the existing claim-set aggregation tree. The implementation is experimental and has no formal soundness proof.
+This fork extends the committed-program tree at `da5c9648`. A tree can now authenticate multiple leaf classes and carry both arbitrary-program statements and leanSPHINCS signature members. No OP Stack code or native root fixed-column-opening optimization is included.
 
-## Program identity
+## One output convention
 
-Previously `Program::digest` hashed the decoded bytecode table and initial RAM image, and a recursion circuit embedded that program's session as constants. Its deferred bytecode and image claims reached the root, which evaluated the program's tables itself. Building and verifying a tree therefore required one specific program.
+Every mixed leaf publishes an **ordered, nonempty list of at most K four-word members**. Its output is BLAKE2s-256 of the list digest's 32 little-endian bytes. There is no prover-controlled choice between interpreting an output as a member and interpreting it as a list digest. An old guest must be ported; a one-member leaf uses the same convention as a batch.
 
-`Program::new` now commits the stacked decoded table at inverse-rate logarithm 4. `VerifyingKey` contains the root, bytecode dimension, entry address, RAM and advice dimensions, and the image with its length. Its digest is BLAKE2s of the versioned domain separator and the canonical little-endian encoding. A standalone verifier needs that key, the output, and the proof. It reconstructs the proof layout from metadata without decoding or allocating bytecode. The extra program opening follows the witness opening. It opens the Frobenius-conjugate bytecode points used by the existing deferred program claim and combines their values with the image evaluation. Every value is bound into the transcript before the opening's batching challenges.
+The guest does not know its VK. It computes only the member-list digest. The first-level circuit reads the list, checks its output commitment, computes the VK digest from the witnessed key and constructs one group whose label is `(vk_digest_words[0..4], 0, 0)`. The very same member wires feed the list chain and the group chain. The union rows then authenticate and combine these groups. Order and repetitions matter to the leaf output; the root's canonical claim set sorts and deduplicates members and merges equal labels.
 
-The original PR's authorship is preserved in its two ported commits. The conflict resolutions retain the modern bus/table residual, generic arithmetic verifier, and zero-knowledge recorder instead of restoring the deleted Python verifier or the old public API crate. The moved stacked PCS accepts point-only statements. The recursion verifier consumes the additional opening. New proof-envelope versions refuse proofs of the previous statement format.
+We chose one convention instead of a label mode bit. A mode chosen by the prover would permit reinterpretation of arbitrary program hashes. A mode authenticated in the label could be sound, but would introduce two application statement types without a benefit here.
 
-## Shape classes and normalization
+### Exact list digest
 
-`ProgramClass` specifies the bytecode dimension, RAM dimension, advice dimension, and padded image length. The image length is a nonzero power of two. `TreeShape` additionally fixes every leaf table's height, the leaf and tree rates, arities, and claim-set capacities and tiers. These together are the class. No leaf program or key is an input to `Tree::mixed`.
+Use BLAKE2s compression with the ordinary unkeyed 32-byte parameter IV. Each message block is eight little-endian u64 words. The counter below is a framing code, **not a byte length**. Only the end block has the final flag set.
 
-`ProgramClass::normalize` pads shorter decoded programs with illegal entries and smaller images with zeros before key generation. It can enlarge the RAM and advice regions to the class dimensions. The resulting normalized VK digest is the identity to claim; an existing proof under an unnormalized key cannot be relabeled. This deliberately chooses explicit normalization over circuits supporting many different byte lengths and dynamic hash counters. Enlarged advice and memory bounds are part of that identity: a memory access that trapped under the original bounds can succeed after normalization. Normalization also moves the halt slot to the end of the class-sized text. A computed jump that formerly trapped may now reach that slot and terminate, subject to the final `a7 = 93` check. The authorized identity is therefore `(ELF, class)`, not ELF alone. An authorizer must regenerate the normalized key from the intended ELF and class and compare its digest with the authorized claim label. A prover can pad table heights through the existing filler planner; the ALU floor must allow the other tables' closing jumps. Proofs that announce a different final shape are refused.
+| Block | Eight words | Counter |
+| --- | --- | ---: |
+| Header | `u64::from_le_bytes(*b"members1"), 0, 0, 0, 0, 0, 0, 0` | 17 (`16 | START`) |
+| Two members | first four words, second four words | 26 (`16 | MEMBER | PAIR`) |
+| Odd last member | four member words, four zeros | 18 (`16 | MEMBER`) |
+| End | same words as Header | 20 (`16 | END`), final |
 
-## First-level checks
+Counter bit 4 is set on every list compression and clear on every claim-set compression. Thus a list cannot be parsed as a set, or a set as a list, without breaking the hash binding. `Members` can hash an empty list, but mixed first-level circuits require at least one member.
 
-A mixed first-level circuit reads the key's root, entry address and image as witness words. All size fields and the image length are class constants. It constrains the entry's alignment, address range and exclusion of the halt slot, hashes the complete canonical key encoding in rows, derives its Fiat-Shamir `SessionId` with the same duplex framing as the native implementation, and seeds the leaf transcript from that computed identifier and the claimed output.
+The group uses the existing written form: VK-label header at counter 1, member blocks at 10 or 2, and a `claimset` end at counter 4 with final set. Its first four header words are the constrained VK digest, followed by four zeros. The first-level circuit constrains presence bits to a nonempty prefix of at most K members, zeros every absent word, and binds whether the last block contains one or two members. It does not trust a native precheck to impose this relation.
 
-The shared core verifies the leaf proof. Its initial-state bus contribution is adjusted for the constrained entry address rather than the class placeholder's address. The halt address and memory dimensions are class constants. The first-level circuit closes the bytecode claim against the witnessed key's root using the same PCS verifier, evaluates the image term from the constrained image words, and checks EOF. It carries only the circuit matrix claims upward. Neither the bytecode nor image claim is deferred to the root in mixed mode.
+### Guest and native APIs
 
-The root commitment and metadata are collision-bound to the claim's VK digest. Substituting another key changes the session and therefore every dependent challenge. Keeping the session while substituting the bytecode opening or image requires breaking the hash binding, opening soundness, or the checked residual identity. As with any committed-program key, an application must associate an authorized digest with a key generated from its intended validated guest; an arbitrary unauthenticated commitment does not establish that an external ELF has that identity.
+The SDK exposes `members::Members::{new,push,finish}`, `members::{digest,output}`, and guest-only `members::{commit_members,commit_member}`. A guest must commit the list digest exactly once. A one-member port retaining an old public-value digest can use:
 
-## Claim sets
+```rust,ignore
+let mut values = leanvm_guest::PublicValues::new();
+values.commit(&application_values);
+leanvm_guest::members::commit_member(&values.digest());
+```
 
-A mixed leaf publishes exactly one claim. Its six-word label is `(vk_digest[0], vk_digest[1], vk_digest[2], vk_digest[3], 0, 0)`, and its four-word member is the program's output. The circuit computes this singleton's claim-set digest from the same key digest and output it verified. Native verification is a prover convenience; the first-level rows impose these bindings themselves.
+`programs/fibonacci-members` and `programs/preimage-members` demonstrate this port; the original guests and signer-set guest remain available. A `MixedLeaf` contains `key`, `proof`, `output` and `members: &[[u64; 4]]`. Its `claims()` returns the VK-labelled group. Native aggregation checks the list bound, output, key dimensions and proof announcement before recording the proof. The rows independently enforce the cryptographic bindings.
 
-The existing union rows prove that every declared claim is selected from the children's canonical claim sets. A node may publish their union or a subset, so included statements can be discarded. A claim discarded from a proof cannot be restored using that proof alone. Swapping complete leaf triples is an allowed reordering of a set. Swapping an output or key between their claims is a false statement and is refused. A root binds the canonical set passed to `verify_claims`.
+## Leaf classes and circuit kinds
 
-## Root work
+`LeafClass { program: ProgramClass, shape: LeafShape }` describes one leaf circuit. `ProgramClass` contains `log_bytecode`, `log_ram`, `log_advice`, `image_words` (a nonzero power of two), and `max_members` (K, at least one). `Tree::mixed_classes(&classes, shape)` takes an ordered, nonempty list; `shape.leaf` must equal `classes[0].shape`. `Tree::mixed(class, shape)` remains a single-class convenience constructor. Mixed zero-knowledge leaves are refused.
 
-A mixed tree's node reduction omits bytecode and image polynomials. Its root verifier checks the root recursion proof, the canonical claim set and its digest, the class's fixed recursion polynomial or polynomials, and the fixed flock circuit matrices. It receives no leaf key or decoded program. Its polynomial work depends on the class and tier, not on the number of distinct leaf programs. Processing the supplied claim set naturally depends on that set's length.
+There is one first-level circuit per class, verifying `shape.arity_0` leaves of that class. `aggregate_programs_at(class_index, leaves, declare)` chooses it; `aggregate_programs` chooses class zero. Each circuit pins its own announcement, normalized key dimensions and K. Nodes accept any first-level kind and other nodes. The class key includes every circuit's verifier columns, and the fixed-polynomial opening binds the selected kind to those columns. A valid proof from another class cannot replace them even if the recursion heights match.
 
-Same-program output trees and guest-published claim-set trees remain available. Their zero-knowledge leaves remain supported. Mixed trees currently refuse zero-knowledge leaves with `TreeError::MixedClass`; extending the dynamic metadata path through the recorder is a separate task.
+All first-level circuits share the small recursion tier's padded heights. This is the contained design: it reuses the existing Fixed/Wide reduction and wrapping protocol, rather than nesting separately authenticated subtree verifiers. Its tradeoff is that a larger leaf-verifier circuit can raise the shared tier's cost. Different first-level arities per class and independent recursion tiers per class are not implemented. `first_stats(class_index)` reports each first-level circuit's row counts and shared padded heights.
 
-## Upstream interactions and future setup
+A kind code is `(((tier << tier_shift) | local_circuit_index) << 1) | is_node`. `is_node` is zero for every first-level class and one for Node/Wrap. `tier_shift` is the maximum `ceil(log2(circuit_count))` over the recursion tiers. Native decoding checks that the low bit agrees with the circuit position; rows constrain the complete code to a valid kind and use the remaining local bits to select the fixed-polynomial block. First-level roots carry no deferred Fixed/Wide claims, regardless of class index.
 
-[PR #522](https://github.com/leanEthereum/leanVM/pull/522) adds guest assumptions and same-program assumption resolution. It changes the leaf statement and first-level witness construction; any port must bind each assumption to its own authenticated key and resolve it before publishing the unconditional singleton. Treating an unresolved conditional output as an unconditional application claim would be unsound.
+### Normalization and identity
 
-[PR #553](https://github.com/leanEthereum/leanVM/pull/553) replaces the recursion machine with a generated RISC-V verifier and changes the ISA and proof format. It deletes the row builder used here, so the mixed first-level implementation would require a semantic port into the generated verifier. The program commitment, class bounds, key witness binding, singleton claims, and root settlement requirements still apply.
+Normalize each program with its leaf class before proving. Padding adds illegal bytecode entries, zero image words and possibly larger RAM/advice bounds. It also moves halt to the last slot of the class-sized text: a computed jump that formerly trapped can terminate there, subject to the final `a7 = 93` check. Application authorization must regenerate the key from `(ELF, leaf class)` and authorize its VK digest, not an unauthenticated externally supplied commitment.
 
-The class-key and seal implementation below replaces setup and deferred fixed-polynomial evaluation. It does not remove the native recursion verifier's own fixed-column evaluations. No Go verifier or OP Stack integration is included. The upstream PRs were checked on 2026-10-25: #522 remains open at `461ab229da3a2f1232dce68e74756ee26ca142d6`, #553 at `0c5a8f3dc422b0e8ef4947fb62a579603fb8ae24`. Neither is merged into this branch.
+The VK digest binds the program commitment root, entry and normalization dimensions/image. It does **not** encode the leaf proof's table heights or K; two classes sharing normalization bounds can share a VK. Those additional constraints are authenticated by the class key and enforced by the class's circuit kind. This distinction is intentional.
 
-## Authenticated class keys
+## leanSPHINCS signature members
 
-`Tree::mixed_verifier_bytes(&roots)` serializes the complete class key. Generate the roots with `tree.seal_prover().roots()` from a trusted `Tree::mixed(class, shape)` setup. The consumer pins `BLAKE2s-256(b"leanvm/mixed-class-key/v1" || encoding)`, with no terminator, length prefix, keyed mode or personalization in this hash. `Tree::mixed_class_key_digest` computes it. A digest supplied beside untrusted data is not an authentication mechanism: distribute the expected digest through the application's trusted configuration. Authentication covers verifier columns and roots as well as dimensions. The loader does not regenerate the circuits or prove that supplied columns and roots are consistent with the intended circuits; the trusted setup must establish that.
+`programs/leansphincs-members` reads a count followed by triples in this order: public key, four-word message, signature. It checks every signature with the existing leanSPHINCS library before appending its member. One invalid signature aborts the run. The existing `programs/leansphincs` signer-set guest is unchanged.
 
-`Tree::mixed_from_bytes(class, shape, bytes, &expected_digest)` first checks this pin, then compares the encoded descriptor with the caller's expected class and shape, validates structural lengths and heights, and refuses trailing data. The same bytes encode identically on big-endian hosts. Loaded trees expose their authenticated roots through `seal_roots()`. Passing different roots to their sealed verifier is refused. Built trees compute and cache their own fixed-polynomial roots and reject a different root set with `TreeError::SealRoots`, before verifying the recursion proof or opening a seal. This applies to same-program trees too. A `SealProver` from another tree is rejected before its commitments are used.
+The member is standard BLAKE2s-256 of exactly 72 bytes:
 
-### Loading bytes authenticated by an outer mechanism
+```
+ASCII "sphmem01" (8 bytes)
+public key root[0..2] (16 bytes)
+public key public_param[0..2] (16 bytes)
+message[0..4] (32 bytes)
+```
 
-`Tree::mixed_from_bytes` remains the default and recommended path. `Tree::mixed_from_trusted_bytes(class: ProgramClass, shape: TreeShape, bytes: &[u8], digest: &Hash) -> Result<Tree<'static>, TreeError>` skips the BLAKE2s pass and uses the caller's digest as the seal-session identity. It shares the checked loader's entire structural parser: expected descriptor, lengths, heights, exact consumption and verifier-only restrictions. It does not hash the bytes in either debug or release builds.
+All words are little-endian; the 32-byte hash becomes four little-endian u64 member words. There are no length fields or terminators. `leansphincs_members_host::member(&key, &message)` recomputes it. `batch(&[(&key, &message, &signature), ...])` builds advice, expected output and the exact ordered member list. This function does not silently discard invalid signatures; the guest checks them. The guest's advice capacity is 2^16 words. K is enforced by the class circuit, not supplied by the guest as an authorization choice.
 
-Use the trusted loader only when an outer mechanism guarantees the exact bytes and their association with the supplied BLAKE2s class-key digest. Valid examples are bytes and their digest embedded together in a trusted binary or absolute prestate, or an oracle lookup under a pinned content hash whose association with this class-key digest was established during trusted setup. A keccak256-addressed oracle authenticates the bytes under its keccak256 key; it does not by itself prove their BLAKE2s digest equals the separately supplied seal identity. Pin that association as well. With untrusted bytes, this method accepts forged verifier data even if the supplied digest names a genuine class key. A correct seal is not a substitute for authenticating the artifact.
+Signature users all trust this one authorized guest: reviewers must check advice layout, the exact signature verification call and error handling, key/message field order and encoding, the member domain, list accumulation, and the one final commitment. A consumer must recompute the member from its intended key and message; seeing a hash alone does not establish which application message was authorized.
 
-Structural loading can succeed with an incorrect digest. Direct verification does not use that digest and cannot detect this mistake. Seals with PCS openings made under the genuine digest fail under the changed session. Node and wrap roots carry fixed claims, so their existing seals fail with the wrong digest. The explicit v2 exception is a first-level root: its seal has no opening and no challenge-dependent check, so it still verifies with a wrong digest. This is harmless when the class-key bytes are genuine: first-level roots carry no fixed claims, their program claims close in-circuit, and the root recursion proof is checked against circuit keys from those outer-authenticated bytes. Soundness rests entirely on the bytes being genuine. The supplied digest is assumed correct and is not checked against the bytes in release builds (or debug builds); it only binds the seal session. Detecting a wrong digest is a misconfiguration check, not a soundness requirement. Seal v2 is unchanged.
+## Folding and closing
 
-We measured the authenticated branch `4919edc3` in Cannon using the example's four-program class: `mixed_from_bytes` took **1.76B steps**, and loading plus `verify_claims_sealed` took **4.22B steps**, the same total for one and four distinct programs. Compared with the spike's 0.33B-step loader, approximately 1.43B steps were the BLAKE2s pass over the class key. These are our measurements on `4919edc3`, not measurements of the trusted loader. Native nodes can keep using the checked loader once at startup; the trusted path avoids a redundant pass when Cannon's prestate or pinned oracle already supplies the required authentication. Class-key v1 and seal v2 encodings are unchanged by the loader API.
+```rust,ignore
+let mut acc = Accumulator::default();
+let first = tree.aggregate_programs_at(class_index, &leaves, None)?;
+tree.fold(&mut acc, &first)?;
+let root = acc.close().expect("nonempty batch");
+let seal = tree.seal(&sealer, &root.proof)?;
+```
 
-### Class-key v1 wire format
+The first fold verifies and retains its child. Later folds prove the canonical union of the existing root and the next child, with no declaration override. Repeated members deduplicate. Capacity failure leaves the accumulator unchanged: close and seal it, then retry the child in a new batch. `close()` on an empty accumulator returns `None`, not a fabricated empty proof. A one-child batch closes to its verified child unchanged. Closing resets the accumulator.
 
-All integers below are unsigned 64-bit little-endian, without padding. Hashes are raw 32-byte BLAKE2s outputs, not word-reversed. Field words encode the polynomial-basis `GF(2^64)` element as a little-endian u64; every bit pattern is canonical. The format is mixed, plain-leaf mode only, so no variable mode or zero-knowledge flag is present. Changing circuit schemas or protocol semantics requires a new version and pin.
+`Capacity.claims` is an **exclusive** bound: use 4097 to hold 4096 claims. The group bound is inclusive. The general `aggregate(..., Some(subset))` API still supports deliberate narrowing; `fold` always retains the full union.
 
-| Offset | Bytes | Value |
+## Class-key v2 format
+
+This revision is incompatible with v1 artifacts. The pin is `BLAKE2s-256(b"leanvm/mixed-class-key/v2" || encoding)`. All integers are u64 little-endian, all hashes are raw 32-byte outputs, and there are no optional extensions, padding bytes or trailing data.
+
+| Order / offset | Bytes | Value |
 | --- | ---: | --- |
-| 0 | 8 | ASCII `LVMXCK01` |
-| 8 | 32 | bytecode log, RAM log, advice log, image word count |
-| 40 | 88 | eleven leaf table logs: ALU, LOAD, STORE, LD, SD, SHIFT, MUL, MULH, DIV, HASH, EXT |
-| 128 | 56 | leaf inverse-rate log, first arity, largest arity, tree inverse-rate log, claim capacity, group capacity, small-tier flag (0 or 1) |
-| 184 | 0 or 24 | if the flag is 1: small arity, small claim capacity, small group capacity |
-| 184 or 208 | 8 | seal inverse-rate log, exactly 2 |
-| 192 or 216 | 8 | root count, exactly the tier count (1 or 2) |
-| following | 32 per root | Fixed root, then Wide root if two tiers |
-| following | 32 | placeholder program's bytecode commitment root |
-| following | 8 | tier count, exactly 1 or 2 |
-| following | 48 per tier | recursion table logs in order EMUL, EXK, HASH, SPLIT, CAST, PUB; small tier first |
-| following | 8 | circuit count |
-| following | variable | circuit records below, concatenated |
+| 0 | 8 | ASCII `LVMXCK02` |
+| 8 | 8 | leaf-class count N, at least one |
+| 16 | 136 × N | ordered leaf-class records below |
+| next | 48 | first arity, largest node arity, tree inverse-rate log, claim bound, group bound, small-tier flag (0 or 1) |
+| next | 0 or 24 | if flag=1: small arity, small claim bound, small group bound |
+| next | 8 | seal inverse-rate log, exactly 2 |
+| next | 8 | seal root count T, exactly 1 or 2 according to the tier flag |
+| next | 32 × T | Fixed root, then Wide root if two tiers |
+| next | 32 × N | template program commitment roots, in leaf-class order |
+| next | 8 | recursion tier count, exactly T |
+| next | 48 × T | EMUL, EXK, HASH, SPLIT, CAST, PUB height logs per tier |
+| next | 8 | circuit count |
+| next | variable | circuit records, in order |
 
-The circuit order is First, small-tier Node(2) through Node(small arity), Wrap, then large-tier Node(largest arity) for two tiers. For one tier it is First then Node(2) through Node(largest arity), without Wrap. Thus the counts are small arity + 2 and largest arity respectively. Every circuit record has: statement length (8 bytes), its six table logs (48), column count (8, exactly 102), then 102 column records. A column record is its length (8) followed by exactly that many field words (8 bytes each). Every length must equal `2^table_log` for its column's table; circuit heights and statement length must equal the reconstructed design's.
+A leaf-class record is five words (bytecode log, RAM log, advice log, image word count, K), eleven leaf table logs (ALU, LOAD, STORE, LD, SD, SHIFT, MUL, MULH, DIV, HASH, EXT), and its inverse-rate log. It is exactly 136 bytes.
 
-The 102 columns are next-wire columns by global slot index, then four public constant limbs. Slot ranges are EMUL 0..3, EXK 4..7, HASH 8..23, SPLIT 24..88, CAST 89..96, PUB 97. Columns 98..101 are the four PUB constant limbs. There are no optional extensions, internal padding bytes, or trailing bytes. `embed.rs`, `table.rs` and `fixed.rs` are the authoritative definitions. Structural decoding is not circuit validation. All dimensions and layout conventions, including `FixedLayout` and the circuit ordering, are protocol data for a Go port.
+Circuit order is First(0)..First(N−1), small-tier Node(2)..Node(small arity), Wrap, large-tier Node(largest arity) for two tiers. The count is N + small arity + 1. With one tier it is First(0)..First(N−1), Node(2)..Node(largest arity), count N + largest arity − 1. Each circuit record contains statement length (8 bytes), six height logs (48), column count (8, exactly 102), then 102 column records: word count (8) followed by that many field words. Each count must be `2^table_log` for the column's table. Heights and statement length must equal the reconstructed design.
 
-### Seals
+The 102 columns are next-wire columns by slot index, then four PUB constant limbs. Slot ranges: EMUL 0..3, EXK 4..7, HASH 8..23, SPLIT 24..88, CAST 89..96, PUB 97; columns 98..101 hold PUB's constants. Field words are polynomial-basis GF(2^64) elements encoded as u64 little-endian.
 
-A seal opens a root's deferred Fixed and, for two tiers, Wide evaluations against the class's authenticated commitments. Mixed sessions are `SessionId::tagged(b"leanvm/mixed-tree-seal/v2", class_key_digest)`, using the existing Fiat-Shamir `SessionId` framing: concatenate the domain bytes and the 32 digest bytes, initialize the BLAKE2s duplex with `DERIVATION_IV` for `irtf-cfrg-fiat-shamir/session-id`, absorb that concatenation and squeeze 32 bytes. This is not a plain BLAKE2s hash; a Go port must match `fiat_shamir/src/lib.rs` and the duplex framing exactly. The digest covers the complete shape, roots and verifier data, so no independent tree tag is needed in mixed mode. Same-program trees use the v2 domain with their tree session tag and roots. This changes compatibility with the unversioned spike artifacts; regenerate their keys and seals.
+`mixed_classes_from_bytes(&classes, shape, bytes, &pin)` checks the complete digest and expected descriptors before loading. `mixed_classes_from_trusted_bytes` performs the same structural checks but skips hashing. Single-class loader APIs delegate to these. Reordering, removing or changing a class changes the expected artifact. Loaded objects are verifier-only; unpadded row counts are unavailable and reported as zero, while padded heights and committed word counts remain available.
 
-The instance is `LengthPrefixed(root.limbs().as_flattened())`, the complete root statement in existing transcript encoding. The native verifier first validates the root recursion proof, mode, claim-set digest and all non-fixed deferred claims, including the circuit matrices. It builds each opening statement itself from that authenticated root: the polynomial identifier, point prefix of the design's dimension, value, stack size, lane count and WHIR configuration. None of those is selected by the seal. It then verifies the openings in Fixed, Wide order and checks EOF. All claims are therefore bound before the seal's batching and query challenges. A root substitution or a different class key changes the transcript. The seal is not a signature or evidence that its creator owns a witness; anyone with the public polynomials can seal. A first-level root carries no deferred fixed claim, so its seal is empty and the root proof alone supplies the relevant authentication.
+## Authentication and seals
 
-This closes the recursive fixed claims, including the large circuit behind a wrap. A prover that substitutes a fake circuit's fixed polynomial can satisfy local recursion rows, but cannot open that polynomial under the authenticated class roots. Commitments to forged polynomials only yield another class key, which the consumer's pin refuses. The native root proof still evaluates its own fixed columns directly. The seal's soundness inherits PCS opening soundness, BLAKE2s binding, the transcript's challenge assumptions and the existing recursion reduction argument.
+A trusted setup must generate genuine circuits, columns and roots. Parsing does not prove that these are the intended circuits. Pin the complete class-key digest through trusted application configuration. Built trees derive/cache genuine roots from their own polynomials; loaded trees use their authenticated roots. Both reject substituted roots and foreign seal provers.
 
-### Verifier-only objects
+The trusted loader's soundness rests entirely on the bytes being genuine. The outer mechanism must authenticate the exact bytes and their association with the supplied class-key digest, for example a binary/prestate embedding both or a pinned content-addressed oracle with that association established during setup. A keccak256 oracle key alone does not prove the separately supplied BLAKE2s digest. The supplied digest is assumed correct and is not checked against bytes in debug or release builds. Prefer the checked loader.
 
-A loaded tree contains verifier stubs, not proving circuits. `prove`, `prove_first`, `prove_node`, `aggregate`, `aggregate_leaves`, `aggregate_programs`, `seal_prover` and `seal` return `TreeError::VerifierOnly` before touching their witnesses. Private proving paths enforce the same guard. A `Program` without its commitment returns `ProveError::VerifierOnly` from plain and zero-knowledge proving, including execution/witness/opening helpers. Executing or measuring a program is independent of owning its proving commitment.
+Seal v2 is retained: `SessionId::tagged(b"leanvm/mixed-tree-seal/v2", class_key_digest)`. Its instance is the root statement's length-prefixed limbs. Node and wrap roots open their fixed claims under this session. A wrong digest invalidates existing node/wrap seals. Every first-level root has an empty seal, including nonzero class indices, so a wrong digest is not detected there. This is harmless with genuine bytes: there are no fixed claims, program claims close in-circuit, and the recursion proof is verified against authenticated circuit keys. Digest mismatch detection is a configuration check, not the soundness foundation.
 
-## Exporting verification inputs
+The root proof still evaluates its own fixed columns natively. Sealing only replaces settlement of the recursive Fixed/Wide claims. It is public computation, not a signature or attestation.
 
-Run `rustup run 1.95 cargo run --release -p leanvm --example committed_program -- /tmp/leanvm-plain` for standalone inputs. Run `rustup run 1.95 cargo run --release -p leanvm --example mixed_program_tree -- /tmp/leanvm-mixed` for the mixed class. The parent directory contains `class-key.bin`, `class-key.digest` (hex text for distribution through a trusted channel), and `class.bin` (the example's convenience expected-class/shape descriptor). Each `distinct-1`, `distinct-2`, `distinct-4` directory contains `root.bin`, `claims.bin`, and `seal.bin`. The class key already contains everything authenticated, including seal roots; `class.bin` is not a second authority.
+## Migration and handoff
 
-Use `--verify /tmp/leanvm-mixed/distinct-4 <trusted-64-hex-digit-class-key-digest>` to load the class key and verify both direct and sealed paths using only files. Supply the pin from trusted configuration, not by trusting an attacker's accompanying digest file. This example's convenience descriptor supports its one-tier class; the library class-key format and loader support two tiers. The same-program comparison is a positional output tree and has no claim-set union.
+Regenerate all tree keys, tree proofs and seals. Tree envelopes now use version 21 and tree sessions use `leanvm-tree-18`; mixed sessions include `/mixed-members/2`, K and the ordered additional leaf descriptors. Standalone committed-program proof/key encodings are unchanged. Same-program recursion remains supported but its tree keys also change with the kind encoding.
 
+A consumer pins (1) the class-key v2 digest and expected ordered classes/tree shape, and (2) authorized normalized program VK digests, including the leanSPHINCS member guest. A claim is now `(VK digest padded to six words, four-word member)`, not `(VK digest, execution output)`. Port existing applications to the universal list-output convention. Keep signature-message authorization and any freshness/replay policy at the application layer.
+
+The sequencer calls the signature host's `batch`, normalizes the member guest with its `ProgramClass`, then uses `class.program.prover(class.shape).prove(&program, &batch.run.advice)`. It forms `MixedLeaf` with `batch.members`, proves first-level nodes with `aggregate_programs_at`, folds them, closes, and calls `seal`. Consumers verify with `verify_claims` or `verify_claims_sealed`. The file-based examples and review packet describe the exact formats; no monorepo integration is part of this branch.
+
+## Measurements
+
+`cargo run --release -p leanvm --example claim_set_leaves -- 100 4097 <directory>` measures a two-class tree and a common-class comparison on 16 threads, one warmup and one measured pass, without cooldown. The large guest verifies 100 raw signatures; capacity is 4096 claims and 16 groups. It exports class keys, root claims/proofs and seals, and reports each class-key part, setup/load, leaf/first/node proving and verification times. The shared-class comparison normalizes both programs to common bounds and a common leaf shape.
+
+### Native measurement, 2026-10-25
+
+Apple M4 Pro, 24 GiB RAM, Rust 1.95 release, `target-cpu=native`, jemalloc, 16 total pool threads. One warmup and one measured pass per operation, no cooldown, on a shared development machine: these are observed samples, not confidence intervals or a controlled speedup claim. In particular, the large leaf uses the same bounds/shape in both cases; its timing difference should not be attributed to the number of classes. No size fallback was needed.
+
+Both trees have first arity 1, node arity 2, inverse-rate log 1, a small tier of 256 claims and a large tier of 4096 claims, each with up to 16 groups. The final measured root has 357 claims in four groups: one Fibonacci member, 100 signature members and two untimed 128-member user-program groups, so the measured fold actually enters the large recursion tier. Fold time includes checking/seeding its prefix and the final node proof.
+
+| Measurement | Two leaf classes | One common leaf class |
+| --- | ---: | ---: |
+| Class key bytes | 60,027,800 | 50,016,128 |
+| Class setup (ms) | 130.594 | 113.728 |
+| Checked load (ms) | 104.405 | 85.151 |
+| Trusted load (ms) | 35.497 | 24.677 |
+| Seal commitment setup (ms) | 50.346 | 47.929 |
+| Small leaf prove (ms) | 28.696 | 592.292 |
+| Small leaf proof bytes | 331,434 | 448,070 |
+| 100-signature leaf prove (ms) | 1,112.221 | 748.614 |
+| Signature leaf proof bytes | 446,694 | 446,694 |
+| Small first-level node (ms) | 81.859 | 83.136 |
+| Signature first-level node (ms) | 79.605 | 79.777 |
+| Large-tier fold (ms) | 158.792 | 155.389 |
+| Root proof bytes | 278,615 | 278,295 |
+| Seal bytes | 338,952 | 339,048 |
+| Sealing (ms) | 57.503 | 46.150 |
+| Direct verification (ms) | 3.932 | 2.325 |
+| Sealed verification (ms) | 2.712 | 2.434 |
+
+Class-key byte breakdown (circuit records include their own lengths and headers):
+
+| Part | Two classes | One class |
+| --- | ---: | ---: |
+| Magic and descriptor | 368 | 232 |
+| Seal-root count and roots | 72 | 72 |
+| Template commitment roots | 64 | 32 |
+| Tier count and heights | 104 | 104 |
+| Circuit count | 8 | 8 |
+| First(0) | 10,011,504 | 10,011,504 |
+| First(1) | 10,011,504 | — |
+| Small Node(2) | 10,011,504 | 10,011,504 |
+| Wrap | 10,011,504 | 10,011,504 |
+| Large Node(2) | 19,981,168 | 19,981,168 |
+
+The small guest executes 16,437 cycles with one advice word. The signature guest executes 936,575 cycles with 62,501 advice words. Normalization bounds `(bytecode log, RAM log, advice log, image words, K)` are `(12,17,13,64,128)` and `(13,17,16,64,128)`. Leaf table logs in the wire-format order are `[15,4,4,6,7,4,4,4,4,3,3]` and `[20,4,15,18,18,16,4,4,4,16,3]`. The common-class comparison uses the latter bounds and heights for both programs. The ALU floor leaves room for padding other tables; the signature class has LD/SD at 2^18 as requested.
+
+Historical Cannon measurements supplied by the application team on `4919edc3`: checked load 1.76B steps, load plus sealed verify 4.22B steps for either one or four programs; the no-digest spike loader was 0.33B steps. These do not measure this revision. New class keys, list circuits and kinds require fresh Go/Cannon implementation and measurements.
 ## Stretch E: native root fixed-column openings, design only
 
 A-D's mixed, two-tier and forgery tests pass. E is deliberately a written design: removing the root's columns needs a new native arithmetic adapter, an explicit hint encoding, and a new class-key version, not just another point added to the existing seal. The current root statement does not carry these evaluations. Merely skipping `column_mle` would remove the root circuit's wiring checks and be unsound.
@@ -117,11 +193,3 @@ Use a new seal domain and a versioned sealed-root envelope containing the root p
 A v2 compact class key can then hold the descriptor, authenticated roots, tier heights and circuit statement/layout metadata, while a separate full proving artifact retains columns. The authenticated digest must cover every verifier layout and commitment parameter. Generate both from the same trusted setup and test agreement. The existing v1 direct verifier continues to require its full columns; compact sealed-only keys must explicitly refuse direct verification instead of fabricating zero columns. This separates capability by construction and avoids making direct verification accidentally depend on unauthenticated hints.
 
 Acceptance tests must compare direct and compact-sealed verification for every root kind in one and two tiers, with first-level roots now requiring native fixed-column openings too. Mutate each hint, point, column, circuit selector, tier selector and length; swap root proofs or class keys; replay an old seal; test truncated and extra hints. Reuse the fake child and fake large-under-wrap attacks, including commitments to forged columns. Check that the root proof's transcript remains identical and that all fixed-column evaluations were actually intercepted. Only then benchmark compact key bytes, load cost, total seal size and Cannon steps. No speedup or compact-key size is claimed by this delivery.
-
-## Same-program recursion and compatibility
-
-Same-program leaf circuits consume the witness-core prefix (including the zero-knowledge outer proof where applicable) and carry Bytecode and Image claims to the tree root. They do not consume or constrain the standalone program-opening suffix. The root must settle those deferred claims. Full native verification still checks the suffix and rejects trailing data; the tree prover also verifies complete leaf proofs before constructing witnesses. Mixed first-level circuits instead close program claims in-circuit and check exact transcript consumption.
-
-Same-program tree sessions include `/deferred-program/1` after the program digest under `leanvm-tree-17`. Regenerate their recursion keys and proofs when migrating from the earlier redundant-opening circuits. Mixed sessions, class-key v1 and seal v2 are unchanged. Standalone proofs still include the committed-program opening for key-only verification; making that opening optional would require a separate protocol design.
-
-For verifier-only loaded trees, `stats()` and `node_stats()` report zero for unavailable unpadded row counts; padded heights and committed word counts remain available.

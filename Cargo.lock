@@ -1458,6 +1458,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "leansphincs-members"
+version = "0.1.0"
+dependencies = [
+ "leansphincs",
+ "leanvm_guest",
+ "thiserror",
+]
+
+[[package]]
+name = "leansphincs-members-host"
+version = "0.1.0"
+dependencies = [
+ "leansphincs",
+ "leansphincs-members",
+ "leanvm",
+ "leanvm_guest",
+ "primitives",
+]
+
+[[package]]
 name = "leanvm"
 version = "0.1.0"
 dependencies = [

@@ -29,6 +29,7 @@ mod blake2s;
 pub mod ext;
 mod io;
 pub mod keccak;
+pub mod members;
 pub use blake2s::{Blake2s, Stream, Template, hash_prefix_with, hash_with};
 pub use io::{PublicValues, Words, as_words_unchecked};
 

@@ -52,7 +52,7 @@ mod embed;
 mod seal;
 pub use seal::{SEAL_LOG_INV_RATE, SealProver, SealRoots};
 mod mixed;
-pub use mixed::{MixedLeaf, ProgramClass};
+pub use mixed::{LeafClass, MixedLeaf, ProgramClass};
 
 mod multiset;
 mod proof;
@@ -328,6 +328,24 @@ impl<'a> ClaimLeaf<'a> {
     }
 }
 
+/// A running claim-set union. Failed folds leave the previous root intact.
+#[derive(Default)]
+pub struct Accumulator {
+    root: Option<Aggregate>,
+}
+
+impl Accumulator {
+    /// The current root, absent before the first fold or after closing.
+    pub const fn root(&self) -> Option<&Aggregate> {
+        self.root.as_ref()
+    }
+
+    /// Close this batch and begin an empty one. An empty batch has no proof.
+    pub const fn close(&mut self) -> Option<Aggregate> {
+        self.root.take()
+    }
+}
+
 impl<'p> Tree<'p> {
     const fn require_prover(&self) -> Result<(), TreeError> {
         if self.verifier_only {
@@ -348,15 +366,21 @@ impl<'p> Tree<'p> {
     /// - A leaf shape no proof of the program has.
     /// - Circuits that fit no commitment.
     pub fn new(program: &'p Program, shape: TreeShape) -> Result<Self, TreeError> {
-        Self::build(program, shape, false)
+        Self::build(program, shape, None, &[])
     }
 
-    fn build(program: &Program, shape: TreeShape, mixed: bool) -> Result<Self, TreeError> {
+    fn build(
+        program: &Program,
+        shape: TreeShape,
+        max_members: Option<usize>,
+        extra: &[(Program, LeafShape, usize)],
+    ) -> Result<Self, TreeError> {
         shape.check()?;
         let tiers = shape.claims.map_or(1, |c| c.tiers());
         let (design, circuits) = Self::converge(tiers, |taus| {
-            let mut d = Design::new(program, &shape, taus)?;
-            d.mixed = mixed;
+            let mut d = Design::new(program, &shape, taus, extra)?;
+            d.mixed = max_members.is_some();
+            d.max_members = max_members.unwrap_or(0);
             Ok(d)
         })?;
         let keys: Vec<CircuitKey> = (circuits.into_iter().map(CircuitKey::new))
@@ -501,6 +525,7 @@ impl<'p> Tree<'p> {
                     (program.verify_recording(output, proof)).map_err(|error| TreeError::Leaf { index, error })?;
                 Ok(LeafWitness {
                     key: None,
+                    members: &[],
                     proof: &proof.0,
                     openings,
                     output: *output.words(),
@@ -604,6 +629,23 @@ impl<'p> Tree<'p> {
         let rows = info_span!("Build circuit").in_scope(|| self.design.first_rows(&inputs));
         let proof = self.prove_rows(rows)?;
         Ok(Aggregate { proof, claims })
+    }
+
+    /// Fold a verified first-level node or root into a running union without discarding claims.
+    /// The first fold verifies and retains its child; later folds prove their exact canonical union.
+    /// Capacity errors leave the accumulator intact so the caller can close, seal, and retry in a new batch.
+    pub fn fold(&self, acc: &mut Accumulator, next: &Aggregate) -> Result<(), TreeError> {
+        self.require_prover()?;
+        self.capacity()?;
+        let root = match &acc.root {
+            Some(previous) => self.aggregate(&[previous, next], None)?,
+            None => {
+                self.verify_claims(&next.proof, &next.claims)?;
+                next.clone()
+            }
+        };
+        acc.root = Some(root);
+        Ok(())
     }
 
     /// Prove a node of a claim-set tree over any of its proofs, from one to the tree's arity, each with the set it
@@ -888,7 +930,7 @@ impl<'p> Tree<'p> {
                 continue;
             }
             // A first-level node reduces no claim on a fixed polynomial.
-            if poly.is_fixed() && position == 0 {
+            if poly.is_fixed() && matches!(self.design.places[position].level, Level::First(_)) {
                 continue;
             }
             let point = &s.dense_point()[..vars[poly as usize]];
@@ -925,6 +967,13 @@ impl<'p> Tree<'p> {
             Kind::First => 0,
             Kind::Node => self.design.places.len() - 1,
         })
+    }
+
+    /// Statistics of a mixed leaf class's first-level circuit.
+    pub fn first_stats(&self, class: usize) -> Option<CircuitStats> {
+        self.design
+            .place(SMALL, Level::First(class))
+            .map(|p| self.circuit_stats(p))
     }
 
     /// What the node circuit of this arity costs, if the tree has one: of a tree of two tiers, the large tier's.
@@ -1200,6 +1249,7 @@ mod tests {
         let leaves: Vec<LeafWitness> = (f.leaves[..2].iter())
             .map(|(proof, output)| LeafWitness {
                 key: None,
+                members: &[],
                 proof: &proof.0,
                 openings: program().verify_recording(*output, proof).expect("an honest leaf"),
                 output: *output.words(),
@@ -1331,7 +1381,7 @@ mod tests {
         } = rows.reduce(d, ProofSource::Proof(&reduction, &[]));
         assert!(failures.is_empty(), "{failures:?}");
         let root = TreeProof::new(
-            1,
+            d.code(1),
             &assignment,
             f.tree.keys[1].prove(&assignment, &d.session(), d.rate),
             d.rate,
@@ -1366,6 +1416,7 @@ mod tests {
         let items: Vec<LeafWitness> = (f.leaves[..2].iter())
             .map(|(proof, output)| LeafWitness {
                 key: None,
+                members: &[],
                 proof: &proof.0,
                 openings: program().verify_recording(*output, proof).expect("an honest leaf"),
                 output: *output.words(),
@@ -1451,12 +1502,12 @@ mod tests {
         //     | header: 6 | rate: 1 | n_words: 4 | kind word ...
         //     byte 6 = the rate, byte 11 = the kind word's low byte, byte 19 its second limb's
         let mut kind = bytes.clone();
-        kind[11] = 2;
+        kind[11] = 5;
         let foreign = TreeProof::from_bytes(&kind).expect("a kind is any index");
         let outputs: Vec<Output> = f.leaves.iter().map(|&(_, o)| o).collect();
         assert_eq!(
             f.tree.verify(&foreign, &outputs),
-            Err(TreeError::Circuit(2)),
+            Err(TreeError::Circuit(5)),
             "an index of no circuit"
         );
         let mut wide = bytes.clone();
@@ -1482,8 +1533,8 @@ mod tests {
         assert_eq!(
             d.session().0,
             [
-                213, 85, 243, 172, 46, 5, 111, 190, 136, 190, 78, 94, 184, 119, 183, 35, 221, 186, 126, 160, 37, 162,
-                214, 75, 170, 228, 66, 85, 251, 77, 33, 138
+                87, 89, 78, 170, 2, 197, 204, 195, 48, 116, 222, 158, 134, 82, 100, 134, 76, 68, 231, 51, 48, 12, 119,
+                186, 252, 77, 70, 211, 58, 210, 159, 170
             ]
         );
         assert_eq!(d.tiers.len(), 1);
@@ -1678,7 +1729,7 @@ mod tests {
         #[test]
         fn a_tree_has_a_node_circuit_for_each_arity() {
             let f = fixture();
-            let nodes = [Level::First, Level::Node(2), Level::Node(3)];
+            let nodes = [Level::First(0), Level::Node(2), Level::Node(3)];
             let places: Vec<Place> = nodes.map(|level| Place { tier: SMALL, level }).into();
             assert_eq!(f.tree.design.places, places);
             let d = &f.tree.design;
@@ -2046,7 +2097,7 @@ mod tests {
             assert_eq!(
                 d.places,
                 [
-                    small(Level::First),
+                    small(Level::First(0)),
                     small(Level::Node(2)),
                     small(Level::Wrap),
                     large(Level::Node(3)),
@@ -2504,8 +2555,8 @@ mod tests {
             assert_eq!(
                 d.session().0,
                 [
-                    109, 140, 201, 79, 78, 96, 167, 135, 145, 170, 72, 254, 52, 212, 215, 230, 25, 15, 30, 7, 36, 6,
-                    220, 34, 80, 204, 182, 2, 175, 132, 217, 180
+                    139, 216, 250, 146, 119, 39, 43, 220, 170, 158, 157, 121, 189, 131, 106, 199, 159, 23, 127, 85, 3,
+                    49, 194, 19, 133, 20, 160, 139, 191, 190, 220, 73
                 ]
             );
             let sections = [

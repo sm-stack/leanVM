@@ -53,11 +53,10 @@ mod tests {
         assert_eq!(batch.members, vec![digest_words(&h.finalize()); 2]);
         let program = Program::from_elf(ELF).unwrap();
         assert_eq!(program.execute(&batch.run.advice).unwrap().output, batch.run.expected);
-        let mut changed = batch.run.advice.clone();
-        changed[5] ^= 1;
-        assert!(program.execute(&changed).is_err());
-        let mut changed = batch.run.advice;
-        changed[9] ^= 1;
-        assert!(program.execute(&changed).is_err());
+        for at in [1, 5, 9] {
+            let mut changed = batch.run.advice.clone();
+            changed[at] ^= 1;
+            assert!(program.execute(&changed).is_err());
+        }
     }
 }

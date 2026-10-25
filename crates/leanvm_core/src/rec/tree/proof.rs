@@ -16,7 +16,7 @@ use primitives::field::F192;
 /// A higher node's proof covers tree proofs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeProof {
-    /// The kind of the circuit that made it, its statement's first word: its index within its tier, the tier above.
+    /// The authenticated kind: local index and tier above a low first/node bit.
     pub(super) circuit: usize,
     /// Its statement's words.
     pub(super) words: Vec<F192>,
@@ -30,12 +30,12 @@ impl TreeProof {
     /// The header of a tree proof's bytes: the magic `LVMT`, then the tree protocol's version.
     ///
     /// The version is bumped by every change to what a tree proof says.
-    const ENVELOPE: Envelope = Envelope::new(*b"LVMT", 20);
+    const ENVELOPE: Envelope = Envelope::new(*b"LVMT", 21);
 
     /// The kind of node that made the proof.
     #[must_use]
     pub const fn kind(&self) -> Kind {
-        if self.circuit == 0 { Kind::First } else { Kind::Node }
+        if self.circuit & 1 == 0 { Kind::First } else { Kind::Node }
     }
 
     /// The proof's bytes.

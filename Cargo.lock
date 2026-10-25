@@ -1484,6 +1484,8 @@ dependencies = [
  "bench",
  "fiat_shamir",
  "flock",
+ "leansphincs",
+ "leansphincs-members-host",
  "leanvm_guest",
  "parallel",
  "pcs",

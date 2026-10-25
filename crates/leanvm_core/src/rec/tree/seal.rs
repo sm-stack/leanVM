@@ -37,7 +37,8 @@ fn stack_shape(len: usize) -> Result<(usize, Config, usize), TreeError> {
 /// The fixed polynomials a root's statement carries claims on, as `settle` checks them.
 fn fixed_polys<'a>(design: &'a Design<'_>, position: usize) -> impl Iterator<Item = DensePoly> + 'a {
     // A first-level node reduces no claim on a fixed polynomial.
-    (design.statement.polys().iter().copied()).filter(move |poly| poly.is_fixed() && position != 0)
+    (design.statement.polys().iter().copied())
+        .filter(move |poly| poly.is_fixed() && !matches!(design.places[position].level, Level::First(_)))
 }
 
 /// The roots of a mixed class's committed fixed polynomials: `Fixed`, then `Wide` if the tree has two tiers.

@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+leanvm_guest.workspace = true
 parallel.workspace = true
 primitives.workspace = true
 fiat_shamir.workspace = true
@@ -20,9 +21,10 @@ zk.workspace = true
 rand_core.workspace = true
 
 [dev-dependencies]
+leansphincs-members-host = { path = "../../programs/leansphincs-members/host" }
+leansphincs = { path = "../../programs/leansphincs/guest" }
 flock = { workspace = true, features = ["test-util"] }
 proptest.workspace = true
-leanvm_guest.workspace = true
 bench.workspace = true
 primitives = { workspace = true, features = ["test-util"] }
 

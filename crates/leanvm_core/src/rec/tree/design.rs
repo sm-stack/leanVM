@@ -39,7 +39,7 @@ use primitives::multilinear::mle_eval_par;
 use std::ops::Range;
 
 /// The protocol half of every recursion proof's session tag.
-const DOMAIN: &[u8] = b"leanvm-tree-17";
+const DOMAIN: &[u8] = b"leanvm-tree-18";
 
 /// The tier of a tree of one tier, or of a claim-set tree's small tier: the first level's.
 pub(crate) const SMALL: usize = 0;
@@ -50,8 +50,8 @@ pub(crate) const LARGE: usize = 1;
 /// What one of a tree's circuits verifies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Level {
-    /// The tree's leaves: a first-level node.
-    First,
+    /// One leaf class: a first-level node.
+    First(usize),
     /// This many proofs of the first level's tier: a node above the first level.
     Node(usize),
     /// One proof of the large tier, whose set it states.
@@ -89,6 +89,10 @@ pub(crate) struct Design<'p> {
     pub(crate) leaf: ProofShape<'p>,
     /// Leaf keys are witnesses and their program claims close in the first level.
     pub(crate) mixed: bool,
+    /// Class zero's inclusive member-list bound.
+    pub(crate) max_members: usize,
+    /// Additional first-level leaf shapes and their inclusive member-list bounds.
+    pub(crate) extra_leaves: Vec<(ProofShape<'p>, usize)>,
     /// The leaves a first-level node verifies.
     pub(crate) arity_0: usize,
     /// The children a node verifies: the only arity of a tree of outputs, the largest of a claim-set tree.
@@ -121,6 +125,8 @@ struct KindBits {
 pub(crate) struct LeafWitness<'a> {
     /// The witnessed key in mixed mode, absent for same-program leaves.
     pub(crate) key: Option<&'a crate::VerifyingKey>,
+    /// The mixed leaf's ordered member-list witness.
+    pub(crate) members: &'a [[u64; 4]],
     /// The proof.
     pub(crate) proof: &'a ProofTranscript,
     /// Every opening its native verifier authenticated, phase by phase.
@@ -207,10 +213,10 @@ impl Place {
     /// A tree of outputs has one node, of its arity; a claim-set tree of one tier one of each arity up to its largest.
     /// A claim-set node takes from one child to its arity, the rest absent (in rows, any place may be), so the large
     /// tier needs one node and its fixed polynomial, which every proof above a wrap reduces, is of one circuit.
-    pub(crate) fn all(arity: usize, claims: Option<ClaimShape>) -> Vec<Self> {
+    pub(crate) fn all(arity: usize, claims: Option<ClaimShape>, firsts: usize) -> Vec<Self> {
         let place = |tier, level| Self { tier, level };
         let nodes = |tier, arities: std::ops::RangeInclusive<usize>| arities.map(move |a| place(tier, Level::Node(a)));
-        let first = std::iter::once(place(SMALL, Level::First));
+        let first = (0..firsts).map(|i| place(SMALL, Level::First(i)));
         match claims {
             None => first.chain(nodes(SMALL, arity..=arity)).collect(),
             Some(ClaimShape { small: None, .. }) => first.chain(nodes(SMALL, 2..=arity)).collect(),
@@ -228,7 +234,12 @@ impl<'p> Design<'p> {
     /// # Errors
     ///
     /// Returns an error if no proof of the program has the leaves' shape, or the heights admit no recursion proof.
-    pub(crate) fn new(program: &Program, shape: &TreeShape, taus: &[PerRecTable<usize>]) -> Result<Self, TreeError> {
+    pub(crate) fn new(
+        program: &Program,
+        shape: &TreeShape,
+        taus: &[PerRecTable<usize>],
+        extra: &[(Program, super::LeafShape, usize)],
+    ) -> Result<Self, TreeError> {
         let TreeShape {
             leaf,
             arity_0,
@@ -237,7 +248,7 @@ impl<'p> Design<'p> {
             claims,
         } = *shape;
         let leaf = ProofShape::new(program, leaf).map_err(|e| TreeError::LeafShape(e.into()))?;
-        let places = Place::all(arity, claims);
+        let places = Place::all(arity, claims, 1 + extra.len());
         let tiers = (0..taus.len())
             .map(|tier| {
                 let start = places.iter().position(|p| p.tier == tier).expect("a tier has circuits");
@@ -271,6 +282,16 @@ impl<'p> Design<'p> {
         let statement = StatementLayout::new(vars.0.into_iter().max().unwrap_or(0), n_polys);
         Ok(Self {
             mixed: false,
+            max_members: 0,
+            extra_leaves: extra
+                .iter()
+                .map(|(p, shape, max)| {
+                    Ok((
+                        ProofShape::new(p, *shape).map_err(|e| TreeError::LeafShape(e.into()))?,
+                        *max,
+                    ))
+                })
+                .collect::<Result<_, TreeError>>()?,
             leaf,
             arity_0,
             arity,
@@ -303,7 +324,16 @@ impl<'p> Design<'p> {
         let mut tag = domain.to_vec();
         tag.extend_from_slice(self.leaf.program().digest());
         if self.mixed {
-            tag.extend_from_slice(b"/mixed-program/1");
+            tag.extend_from_slice(b"/mixed-members/2");
+            tag.extend_from_slice(&(self.max_members as u64).to_le_bytes());
+            tag.extend_from_slice(&(self.extra_leaves.len() as u64).to_le_bytes());
+            for (leaf, max) in &self.extra_leaves {
+                tag.extend_from_slice(leaf.program().digest());
+                for value in leaf.shape().taus().values().copied().chain([*max]) {
+                    tag.extend_from_slice(&(value as u64).to_le_bytes());
+                }
+                tag.push(leaf.shape().rate().log_inv_rate());
+            }
         } else {
             tag.extend_from_slice(b"/deferred-program/1");
         }
@@ -323,18 +353,20 @@ impl<'p> Design<'p> {
         tag
     }
 
-    /// The kind a circuit's proofs state: its index within its tier, the tier above it.
+    /// Kind: local index and tier above a low first/node bit.
     pub(crate) fn code(&self, position: usize) -> usize {
         let tier = self.places[position].tier;
-        (tier << self.tier_shift) | (position - self.tiers[tier].places.start)
+        let slot = (tier << self.tier_shift) | (position - self.tiers[tier].places.start);
+        (slot << 1) | usize::from(!matches!(self.places[position].level, Level::First(_)))
     }
 
     /// The position of the circuit whose proofs state this kind, if the tree has one.
     pub(crate) fn position(&self, code: usize) -> Option<usize> {
-        let tier = code >> self.tier_shift;
+        let slot = code >> 1;
+        let tier = slot >> self.tier_shift;
         let t = self.tiers.get(tier)?;
-        let position = t.places.start + (code & ((1 << self.tier_shift) - 1));
-        t.places.contains(&position).then_some(position)
+        let position = t.places.start + (slot & ((1 << self.tier_shift) - 1));
+        (t.places.contains(&position) && self.code(position) == code).then_some(position)
     }
 
     /// The union a circuit runs, in a claim-set tree: none for a wrap, which states its child's set.
@@ -344,7 +376,7 @@ impl<'p> Design<'p> {
         let Place { tier, level } = self.places[position];
         let capacity = self.tiers[tier].capacity?;
         match level {
-            Level::First => Some(UnionShape::new(capacity, self.arity_0)),
+            Level::First(_) => Some(UnionShape::new(capacity, self.arity_0)),
             Level::Node(arity) => Some(UnionShape::optional(capacity, arity)),
             Level::Wrap => None,
         }
@@ -357,6 +389,19 @@ impl<'p> Design<'p> {
 
     /// The first level's rows, verifying its leaves.
     pub(crate) fn first_rows(&self, inputs: &NodeInputs<'_, LeafWitness<'_>>) -> NodeRows {
+        self.first_rows_at(0, inputs)
+    }
+
+    pub(crate) fn first_rows_at(&self, position: usize, inputs: &NodeInputs<'_, LeafWitness<'_>>) -> NodeRows {
+        let Level::First(class) = self.places[position].level else {
+            panic!("a first-level circuit")
+        };
+        let (leaf_shape, max_members) = if class == 0 {
+            (&self.leaf, self.max_members)
+        } else {
+            let (leaf, max) = &self.extra_leaves[class - 1];
+            (leaf, *max)
+        };
         let mut b = Builder::new();
         let mut claims = NodeClaims::default();
         let mut outputs = Vec::with_capacity(self.arity_0);
@@ -376,9 +421,15 @@ impl<'p> Design<'p> {
             let source = leaf.map_or(ProofSource::Shape, |l| ProofSource::Proof(l.proof, &l.openings));
             let core = if self.mixed {
                 let (core, digest) = b.scope(format!("leaf {i}"), |b| {
-                    self.leaf.verify_mixed(b, output, source, leaf.and_then(|l| l.key))
+                    leaf_shape.verify_mixed(b, output, source, leaf.and_then(|l| l.key))
                 });
-                sets.push(super::mixed::singleton_rows(&mut b, digest, output));
+                sets.push(super::mixed::member_rows(
+                    &mut b,
+                    digest,
+                    output,
+                    max_members,
+                    leaf.map(|l| l.members),
+                ));
                 core
             } else {
                 b.scope(format!("leaf {i}"), |b| self.leaf.verify_core(b, output, source))
@@ -393,13 +444,13 @@ impl<'p> Design<'p> {
             claims.matrices.extend(fresh.map(|(f, c)| MatrixClaim::fresh(f, c)));
             outputs.push(output);
         }
-        let digest = match self.union_shape(0) {
+        let digest = match self.union_shape(position) {
             Some(shape) => shape.rows(&mut b, &self.session(), &sets, inputs.union()),
             None => Kind::First.digest_rows(&mut b, &outputs),
         };
         NodeRows {
             b,
-            position: 0,
+            position,
             digest,
             claims,
         }
@@ -410,7 +461,7 @@ impl<'p> Design<'p> {
         let (arity, child_tier) = match self.places[position].level {
             Level::Node(arity) => (arity, SMALL),
             Level::Wrap => (1, LARGE),
-            Level::First => panic!("circuit {position} is a first-level node"),
+            Level::First(_) => panic!("circuit {position} is a first-level node"),
         };
         let tier = &self.tiers[child_tier];
         let session = self.session();
@@ -470,16 +521,8 @@ impl<'p> Design<'p> {
     /// A child's kind as the bits that select its circuit's block of its tier's fixed polynomial, and whether it is a
     /// node.
     ///
-    /// With two kinds the kind is that bit; with more it is held to a kind of the tier's circuits, then split.
+    /// The complete code is constrained to one circuit of this tier, then split into marker and selector bits.
     fn kind_bits(&self, b: &mut Builder, kind: Ew, tier: usize) -> KindBits {
-        if self.places.len() == 2 {
-            let square = b.square(kind);
-            b.eq(square, kind);
-            return KindBits {
-                top: vec![kind],
-                is_node: kind,
-            };
-        }
         let t = &self.tiers[tier];
         let (zero, one) = (b.zero(), b.one());
         let vanishing = t.places.clone().fold(one, |acc, position| {
@@ -488,30 +531,23 @@ impl<'p> Design<'p> {
             b.mul(acc, factor)
         });
         b.eq(vanishing, zero);
-        // A kind is its first limb: its index's bits, then the tier's.
+        // A kind is its first limb: first/node bit, local index, then tier.
         let [word, ..] = b.e_to_k(kind);
-        let bits = b.split(word);
+        let all_bits = b.split(word);
+        let is_node = b.k_to_e1(all_bits[0]);
+        let bits = &all_bits[1..];
         let above = (tier << self.tier_shift) >> t.kind_bits;
         for (j, &bit) in bits[t.kind_bits..].iter().enumerate() {
             b.eq_k_const(bit, (above >> j & 1) as u64);
         }
-        let top: Vec<Ew> = bits[..t.kind_bits].iter().map(|&bit| b.k_to_e1(bit)).collect();
-        // Only the small tier has a first level, at its index zero.
-        if tier != SMALL {
-            return KindBits { top, is_node: one };
-        }
-        let is_first = top.iter().fold(one, |acc, &t| {
-            let not = b.add(t, one);
-            b.mul(acc, not)
-        });
-        let is_node = b.add(is_first, one);
+        let top = bits[..t.kind_bits].iter().map(|&bit| b.k_to_e1(bit)).collect();
         KindBits { top, is_node }
     }
 
     /// A circuit built from the shapes alone.
     pub(crate) fn shape(&self, position: usize) -> Finished {
         let rows = match self.places[position].level {
-            Level::First => self.first_rows(&NodeInputs::Shape),
+            Level::First(_) => self.first_rows_at(position, &NodeInputs::Shape),
             Level::Node(_) | Level::Wrap => self.node_rows(&NodeInputs::Shape, position),
         };
         rows.reduce(self, ProofSource::Shape)

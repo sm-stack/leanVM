@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cpu::layout::Sizes;
-use crate::rec::circuit::{Builder, Dw, Kw, PARAM_IV};
+use crate::rec::circuit::{Builder, Dw, Ew, Kw, PARAM_IV};
 use crate::rv::asm::{Asm, Reg};
 use crate::{ProgramError, Prover, Region, VerifyingKey};
 
@@ -17,6 +17,17 @@ pub struct ProgramClass {
     pub log_advice: usize,
     /// The padded image length, a nonzero power of two.
     pub image_words: usize,
+    /// The maximum number of members in one leaf list, at least one.
+    pub max_members: usize,
+}
+
+/// One leaf class of a mixed tree. Its position chooses the first-level circuit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeafClass {
+    /// Program normalization bounds and member-list capacity.
+    pub program: ProgramClass,
+    /// The exact announcement accepted by this class's circuit.
+    pub shape: LeafShape,
 }
 
 /// A proof of an individual statement, identified by its program key.
@@ -28,6 +39,8 @@ pub struct MixedLeaf<'a> {
     pub proof: &'a Proof,
     /// The output the run claims.
     pub output: Output,
+    /// The ordered member list committed by the guest.
+    pub members: &'a [[u64; 4]],
 }
 
 impl ProgramClass {
@@ -56,13 +69,13 @@ impl ProgramClass {
 }
 
 impl MixedLeaf<'_> {
-    /// The singleton claim this leaf publishes: the VK digest labels its output.
+    /// The group this leaf publishes: its VK digest labels the committed members.
     pub fn claims(self) -> ClaimSet {
         let [a, b, c, d] = primitives::hash::digest_words(self.key.digest());
         ClaimSet {
             groups: vec![ClaimGroup {
                 label: [a, b, c, d, 0, 0],
-                members: vec![*self.output.words()],
+                members: self.members.to_vec(),
             }],
         }
     }
@@ -73,10 +86,36 @@ impl Tree<'static> {
     ///
     /// Zero-knowledge leaves are refused in this mode; same-program trees retain their zero-knowledge support.
     pub fn mixed(class: ProgramClass, shape: TreeShape) -> Result<Self, TreeError> {
-        if shape.claims.is_none() || shape.leaf.is_zero_knowledge() {
+        if shape.claims.is_none() || shape.leaf.is_zero_knowledge() || class.max_members == 0 {
             return Err(TreeError::MixedClass);
         }
-        Self::build(&Self::mixed_placeholder(class)?, shape, true)
+        Self::mixed_classes(
+            &[LeafClass {
+                program: class,
+                shape: shape.leaf,
+            }],
+            shape,
+        )
+    }
+
+    /// Build one tree with an ordered set of leaf classes. `shape.leaf` must equal the first class's shape.
+    /// All first-level circuits share the small recursion tier's heights; each has its own authenticated kind.
+    pub fn mixed_classes(classes: &[LeafClass], shape: TreeShape) -> Result<Self, TreeError> {
+        let first = classes.first().ok_or(TreeError::MixedClass)?;
+        if shape.claims.is_none()
+            || first.shape != shape.leaf
+            || classes
+                .iter()
+                .any(|c| c.shape.is_zero_knowledge() || c.program.max_members == 0)
+        {
+            return Err(TreeError::MixedClass);
+        }
+        let program = Self::mixed_placeholder(first.program)?;
+        let extra = classes[1..]
+            .iter()
+            .map(|c| Ok((Self::mixed_placeholder(c.program)?, c.shape, c.program.max_members)))
+            .collect::<Result<Vec<_>, TreeError>>()?;
+        Self::build(&program, shape, Some(first.program.max_members), &extra)
     }
 
     /// The class's placeholder program, which fixes a mixed tree's layout and session.
@@ -115,6 +154,16 @@ impl Tree<'_> {
         leaves: &[MixedLeaf<'_>],
         declare: Option<&ClaimSet>,
     ) -> Result<Aggregate, TreeError> {
+        self.aggregate_programs_at(0, leaves, declare)
+    }
+
+    /// Prove the first-level circuit of `class`, whose leaves must all have that class's exact shape.
+    pub fn aggregate_programs_at(
+        &self,
+        class: usize,
+        leaves: &[MixedLeaf<'_>],
+        declare: Option<&ClaimSet>,
+    ) -> Result<Aggregate, TreeError> {
         self.require_prover()?;
         if !self.design.mixed {
             return Err(TreeError::MixedClass);
@@ -125,9 +174,20 @@ impl Tree<'_> {
                 got: leaves.len(),
             });
         }
-        let key = self.design.leaf.program().verifying_key();
+        let position = self
+            .design
+            .place(SMALL, Level::First(class))
+            .ok_or(TreeError::MixedClass)?;
+        let (leaf_shape, max_members) = if class == 0 {
+            (&self.design.leaf, self.design.max_members)
+        } else {
+            let (leaf, max) = self.design.extra_leaves.get(class - 1).ok_or(TreeError::MixedClass)?;
+            (leaf, *max)
+        };
+        let key = leaf_shape.program().verifying_key();
         let sizes = key.sizes();
         let class = ProgramClass {
+            max_members,
             log_bytecode: sizes.log_bytecode,
             log_ram: sizes.log_ram,
             log_advice: sizes.log_advice,
@@ -136,7 +196,13 @@ impl Tree<'_> {
         let sets: Vec<_> = leaves.iter().map(|l| l.claims()).collect();
         let mut items = Vec::new();
         for (index, leaf) in leaves.iter().enumerate() {
-            if !class.accepts(leaf.key) || LeafShape::announced(leaf.proof) != Some(self.shape.leaf) {
+            if leaf.members.is_empty() || leaf.members.len() > class.max_members {
+                return Err(TreeError::Capacity);
+            }
+            if leanvm_guest::members::output(leaf.members) != *leaf.output.words() {
+                return Err(TreeError::LeafClaims { index });
+            }
+            if !class.accepts(leaf.key) || LeafShape::announced(leaf.proof) != Some(leaf_shape.shape()) {
                 return Err(TreeError::ForeignLeaf { index });
             }
             let openings = leaf
@@ -145,6 +211,7 @@ impl Tree<'_> {
                 .map_err(|error| TreeError::Leaf { index, error })?;
             items.push(LeafWitness {
                 key: Some(leaf.key),
+                members: leaf.members,
                 proof: &leaf.proof.0,
                 openings,
                 output: *leaf.output.words(),
@@ -152,13 +219,13 @@ impl Tree<'_> {
             });
         }
         let refs: Vec<_> = sets.iter().collect();
-        let (union, claims) = self.fill(0, &refs, declare)?;
+        let (union, claims) = self.fill(position, &refs, declare)?;
         let inputs = NodeInputs::Prove {
             items: &items,
             tables: &self.tables,
             union: Some(&union),
         };
-        let rows = self.design.first_rows(&inputs);
+        let rows = self.design.first_rows_at(position, &inputs);
         Ok(Aggregate {
             proof: self.prove_rows(rows)?,
             claims,
@@ -166,25 +233,89 @@ impl Tree<'_> {
     }
 }
 
-pub(super) fn singleton_rows(b: &mut Builder, digest: Dw, output: [Kw; 4]) -> Dw {
-    let [d0, d1, d2, d3] = b.d_to_k(digest);
+/// Read a bounded nonempty member list once, binding both its output and its VK-labelled group digest.
+pub(super) fn member_rows(
+    b: &mut Builder,
+    digest: Dw,
+    output: [Kw; 4],
+    max_members: usize,
+    members: Option<&[[u64; 4]]>,
+) -> Dw {
+    use fiat_shamir::arith::Arith;
+    use leanvm_guest::members::{DOMAIN, TAG};
+
+    fn choose(b: &mut Builder, bit: Ew, yes: Dw, no: Dw) -> Dw {
+        let y = b.d_to_halves(yes);
+        let n = b.d_to_halves(no);
+        let selected = std::array::from_fn::<_, 2, _>(|i| {
+            let delta = b.add(y[i], n[i]);
+            b.mul_add(bit, delta, n[i])
+        });
+        b.halves_to_d(selected[0], selected[1])
+    }
+
     let zero = b.k_const(0);
+    let z = b.zero();
+    let one = b.one();
     let iv = b.d_const(PARAM_IV);
-    let header = b.leaf_block(
+    let tag = b.k_const(TAG);
+    let mut list = b.leaf_block(iv, [tag, zero, zero, zero, zero, zero, zero, zero], DOMAIN | 1, false);
+    let [d0, d1, d2, d3] = b.d_to_k(digest);
+    let mut group = b.leaf_block(
         iv,
         [d0, d1, d2, d3, zero, zero, zero, zero],
         multiset::code::START,
         false,
     );
-    let members = b.leaf_block(
-        header,
-        [output[0], output[1], output[2], output[3], zero, zero, zero, zero],
-        multiset::code::MEMBER,
-        false,
-    );
+    let mut previous = one;
+    for pair in 0..max_members.div_ceil(2) {
+        let present: [Ew; 2] = std::array::from_fn(|j| {
+            let index = 2 * pair + j;
+            let bit = b.free_k(u64::from(members.is_some_and(|m| index < m.len())));
+            let e = b.k_to_e1(bit);
+            let square = b.square(e);
+            b.eq(square, e);
+            if index >= max_members {
+                b.eq(e, z);
+            }
+            let missing_previous = b.add(previous, one);
+            let gap = b.mul(e, missing_previous);
+            b.eq(gap, z);
+            if index == 0 {
+                b.eq(e, one);
+            }
+            previous = e;
+            e
+        });
+        let block: [Kw; 8] = std::array::from_fn(|j| {
+            let index = 2 * pair + j / 4;
+            let word = b.free_k(members.and_then(|m| m.get(index)).map_or(0, |m| m[j % 4]));
+            let e = b.k_to_e1(word);
+            let absent = b.add(present[j / 4], one);
+            let padding = b.mul(e, absent);
+            b.eq(padding, z);
+            word
+        });
+        // PAIR is a constrained bit, not an alternative interpretation selected by the prover.
+        let pair_bit = b.e_to_k(present[1])[0];
+        let one_word = b.k_const(1);
+        let counter = b.pack(&[zero, one_word, zero, pair_bit]);
+        let tf = b.k_to_d([counter, zero, zero, zero]);
+        let next_group = b.block(group, block, tf);
+        group = choose(b, present[0], next_group, group);
+        let list_counter = b.pack(&[zero, one_word, zero, pair_bit, one_word]);
+        let tf = b.k_to_d([list_counter, zero, zero, zero]);
+        let next_list = b.block(list, block, tf);
+        list = choose(b, present[0], next_list, list);
+    }
+    let end = b.leaf_block(list, [tag, zero, zero, zero, zero, zero, zero, zero], DOMAIN | 4, true);
+    let words = b.d_to_k(end);
+    let expected = b.chain(&words);
+    let output = b.k_to_d(output);
+    b.eq(expected, output);
     let tag = b.k_const(multiset::code::TAG);
     b.leaf_block(
-        members,
+        group,
         [tag, zero, zero, zero, zero, zero, zero, zero],
         multiset::code::END,
         true,
@@ -204,6 +335,7 @@ mod tests {
         tree: Tree<'static>,
         programs: [Program; 2],
         runs: [ProvenRun; 2],
+        members: [[u64; 4]; 2],
         class: ProgramClass,
         shape: TreeShape,
     }
@@ -211,9 +343,16 @@ mod tests {
     fn fixture() -> &'static Fixture {
         static F: OnceLock<Fixture> = OnceLock::new();
         F.get_or_init(|| {
-            let a = Program::from_elf(include_bytes!("../../../../../programs/fibonacci/fibonacci.elf")).unwrap();
-            let b = Program::from_elf(include_bytes!("../../../../../programs/preimage/preimage.elf")).unwrap();
+            let a = Program::from_elf(include_bytes!(
+                "../../../../../programs/fibonacci-members/fibonacci-members.elf"
+            ))
+            .unwrap();
+            let b = Program::from_elf(include_bytes!(
+                "../../../../../programs/preimage-members/preimage-members.elf"
+            ))
+            .unwrap();
             let class = ProgramClass {
+                max_members: 4,
                 log_bytecode: a.rv().entries().len().max(b.rv().entries().len()).ilog2() as usize,
                 log_ram: a.rv().log_ram().max(b.rv().log_ram()),
                 log_advice: a.rv().log_advice().max(b.rv().log_advice()),
@@ -243,7 +382,14 @@ mod tests {
                 }),
             };
             let tree = Tree::mixed(class, shape).unwrap();
+            let old_a = Program::from_elf(include_bytes!("../../../../../programs/fibonacci/fibonacci.elf")).unwrap();
+            let old_b = Program::from_elf(include_bytes!("../../../../../programs/preimage/preimage.elf")).unwrap();
+            let members = [
+                old_a.execute(&[2700]).unwrap().output,
+                old_b.execute(&[0]).unwrap().output,
+            ];
             Fixture {
+                members,
                 tree,
                 programs,
                 runs,
@@ -259,6 +405,7 @@ mod tests {
                 key: self.programs[i].verifying_key(),
                 proof: &self.runs[i].proof,
                 output: self.runs[i].output,
+                members: std::slice::from_ref(&self.members[i]),
             })
         }
     }
@@ -382,6 +529,7 @@ mod tests {
             key: p.verifying_key(),
             proof: &run.proof,
             output: run.output,
+            members: &f.members[..1],
         };
         let root = other.aggregate_programs(&[leaf, leaf], None).unwrap();
         other.verify_claims(&root.proof, &root.claims).unwrap();
@@ -442,6 +590,7 @@ mod tests {
             .zip(&sets)
             .map(|(leaf, set)| LeafWitness {
                 key: Some(leaf.key),
+                members: leaf.members,
                 proof: &leaf.proof.0,
                 openings: leaf.key.verify_recording(leaf.output, leaf.proof).unwrap(),
                 output: *leaf.output.words(),
@@ -522,7 +671,7 @@ mod tests {
             ));
         }
         // Re-pin malformed encodings to exercise the parser rather than only authentication.
-        let header = 8 + (4 + crate::N_TABLES + 7 + 1) * 8;
+        let header = 8 + (1 + 5 + crate::N_TABLES + 1 + 6 + 1) * 8;
         let tier_count = header + 8 + 32 + 32;
         let tier_heights = tier_count + 8;
         let key_count = tier_heights + Table::ALL.len() * 8;
@@ -837,7 +986,7 @@ mod tests {
         let mut b = Builder::new();
         let digest = b.free_d(primitives::hash::digest_words(key.digest()));
         let words = output.words().map(|w| b.free_k(w));
-        let set = singleton_rows(&mut b, digest, words);
+        let set = member_rows(&mut b, digest, words, f.class.max_members, Some(&f.members[..1]));
         assert_eq!(b.d(set), f.leaves()[0].claims().digest());
         assert!(b.finish().failures.is_empty());
         assert!(!check(f.programs[1].verifying_key(), output).0.is_empty());
@@ -850,3 +999,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "member_tests.rs"]
+mod member_tests;

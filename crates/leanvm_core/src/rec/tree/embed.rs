@@ -8,9 +8,9 @@ use primitives::hash::Hasher;
 use std::sync::{Arc, OnceLock};
 
 /// The encoding's tag and version.
-const MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK01");
+const MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK02");
 
-const DOMAIN: &[u8] = b"leanvm/mixed-class-key/v1";
+const DOMAIN: &[u8] = b"leanvm/mixed-class-key/v2";
 
 fn digest(bytes: &[u8]) -> Hash {
     let mut h = Hasher::new();
@@ -19,25 +19,36 @@ fn digest(bytes: &[u8]) -> Hash {
     h.finalize()
 }
 
-fn descriptor(class: ProgramClass, shape: TreeShape) -> Result<Vec<u8>, TreeError> {
+fn descriptor(classes: &[LeafClass], shape: TreeShape) -> Result<Vec<u8>, TreeError> {
     let claims = shape.claims.ok_or(TreeError::MixedClass)?;
-    if shape.leaf.is_zero_knowledge() {
+    if classes.is_empty()
+        || classes[0].shape != shape.leaf
+        || classes
+            .iter()
+            .any(|c| c.shape.is_zero_knowledge() || c.program.max_members == 0)
+    {
         return Err(TreeError::MixedClass);
     }
     let mut out = Vec::new();
-    for word in [class.log_bytecode, class.log_ram, class.log_advice, class.image_words]
-        .into_iter()
-        .chain(shape.leaf.heights().into_values())
-        .chain([
-            usize::from(shape.leaf.rate().log_inv_rate()),
-            shape.arity_0,
-            shape.arity,
-            usize::from(shape.rate.log_inv_rate()),
-            claims.capacity.claims,
-            claims.capacity.groups,
-            usize::from(claims.small.is_some()),
-        ])
-    {
+    put(&mut out, classes.len() as u64);
+    for leaf in classes {
+        let c = leaf.program;
+        for word in [c.log_bytecode, c.log_ram, c.log_advice, c.image_words, c.max_members]
+            .into_iter()
+            .chain(leaf.shape.heights().into_values())
+            .chain([usize::from(leaf.shape.rate().log_inv_rate())])
+        {
+            put(&mut out, word as u64);
+        }
+    }
+    for word in [
+        shape.arity_0,
+        shape.arity,
+        usize::from(shape.rate.log_inv_rate()),
+        claims.capacity.claims,
+        claims.capacity.groups,
+        usize::from(claims.small.is_some()),
+    ] {
         put(&mut out, word as u64);
     }
     if let Some(tier) = claims.small {
@@ -97,22 +108,36 @@ impl Tree<'_> {
             return Err(TreeError::MixedClass);
         }
         self.check_seal_roots(roots)?;
-        let key = self.design.leaf.program().verifying_key();
-        let sizes = key.sizes();
-        let class = ProgramClass {
-            log_bytecode: sizes.log_bytecode,
-            log_ram: sizes.log_ram,
-            log_advice: sizes.log_advice,
-            image_words: key.image().len(),
-        };
+        let leaves: Vec<_> = std::iter::once((&self.design.leaf, self.design.max_members))
+            .chain(self.design.extra_leaves.iter().map(|(leaf, max)| (leaf, *max)))
+            .collect();
+        let classes: Vec<_> = leaves
+            .iter()
+            .map(|(leaf, max)| {
+                let key = leaf.program().verifying_key();
+                let sizes = key.sizes();
+                LeafClass {
+                    program: ProgramClass {
+                        log_bytecode: sizes.log_bytecode,
+                        log_ram: sizes.log_ram,
+                        log_advice: sizes.log_advice,
+                        image_words: key.image().len(),
+                        max_members: *max,
+                    },
+                    shape: leaf.shape(),
+                }
+            })
+            .collect();
         let mut out = Vec::new();
         put(&mut out, MAGIC);
-        out.extend_from_slice(&descriptor(class, self.shape)?);
+        out.extend_from_slice(&descriptor(&classes, self.shape)?);
         put(&mut out, roots.0.len() as u64);
         for root in &roots.0 {
             out.extend_from_slice(root);
         }
-        out.extend_from_slice(self.design.leaf.program().verifying_key().root());
+        for (leaf, _) in leaves {
+            out.extend_from_slice(leaf.program().verifying_key().root());
+        }
         put(&mut out, self.design.tiers.len() as u64);
         for tier in &self.design.tiers {
             put_heights(&mut out, &tier.taus);
@@ -175,11 +200,29 @@ impl Tree<'static> {
         bytes: &[u8],
         expected_digest: &Hash,
     ) -> Result<Self, TreeError> {
+        Self::mixed_classes_from_bytes(
+            &[LeafClass {
+                program: class,
+                shape: shape.leaf,
+            }],
+            shape,
+            bytes,
+            expected_digest,
+        )
+    }
+
+    /// Authenticate a class key covering every expected leaf class, in this order.
+    pub fn mixed_classes_from_bytes(
+        classes: &[LeafClass],
+        shape: TreeShape,
+        bytes: &[u8],
+        expected_digest: &Hash,
+    ) -> Result<Self, TreeError> {
         let _span = info_span!("load mixed class key").entered();
         if &digest(bytes) != expected_digest {
             return Err(TreeError::ClassKeyDigest);
         }
-        Self::mixed_from_trusted_bytes(class, shape, bytes, expected_digest)
+        Self::mixed_classes_from_trusted_bytes(classes, shape, bytes, expected_digest)
     }
 
     /// Load a verifier-only mixed tree from bytes already authenticated by the caller, without hashing them.
@@ -213,16 +256,36 @@ impl Tree<'static> {
         bytes: &[u8],
         digest: &Hash,
     ) -> Result<Self, TreeError> {
+        Self::mixed_classes_from_trusted_bytes(
+            &[LeafClass {
+                program: class,
+                shape: shape.leaf,
+            }],
+            shape,
+            bytes,
+            digest,
+        )
+    }
+
+    /// Load an externally authenticated class key for all expected leaf classes.
+    ///
+    /// # Security
+    /// Exactly the same trust obligation as [`Tree::mixed_from_trusted_bytes`]: the bytes must be genuine,
+    /// and the supplied digest is assumed correct without being hashed. Empty first-level seals do not detect
+    /// a wrong digest. Prefer [`Tree::mixed_classes_from_bytes`] for untrusted input.
+    pub fn mixed_classes_from_trusted_bytes(
+        classes: &[LeafClass],
+        shape: TreeShape,
+        bytes: &[u8],
+        digest: &Hash,
+    ) -> Result<Self, TreeError> {
         let _span = info_span!("load trusted mixed class key").entered();
-        if shape.claims.is_none() || shape.leaf.is_zero_knowledge() {
-            return Err(TreeError::MixedClass);
-        }
         shape.check()?;
         let mut r = Words(bytes);
         if r.next()? != MAGIC {
             return Err(TreeError::MixedClass);
         }
-        let expected = descriptor(class, shape)?;
+        let expected = descriptor(classes, shape)?;
         if !r.0.starts_with(&expected) {
             return Err(TreeError::MixedClass);
         }
@@ -238,9 +301,14 @@ impl Tree<'static> {
             r.0 = rest;
         }
         let roots = SealRoots(roots);
-        let (root, rest) = r.0.split_first_chunk::<32>().ok_or(TreeError::MixedClass)?;
-        r.0 = rest;
-        let root = *root;
+        let placeholders = classes
+            .iter()
+            .map(|class| {
+                let (root, rest) = r.0.split_first_chunk::<32>().ok_or(TreeError::MixedClass)?;
+                r.0 = rest;
+                Self::mixed_placeholder_with_root(class.program, *root)
+            })
+            .collect::<Result<Vec<_>, TreeError>>()?;
         let tiers = r.usize()?;
         if tiers != shape.claims.map_or(1, |c| c.tiers()) {
             return Err(TreeError::MixedClass);
@@ -252,9 +320,15 @@ impl Tree<'static> {
             }
             crate::rec::RecLayout::from_taus(*heights).map_err(|_| TreeError::MixedClass)?;
         }
-        let placeholder = Self::mixed_placeholder_with_root(class, root)?;
-        let mut design = Design::new(&placeholder, &shape, &taus)?;
+        let placeholder = &placeholders[0];
+        let extra: Vec<_> = placeholders[1..]
+            .iter()
+            .zip(&classes[1..])
+            .map(|(p, c)| (p.clone(), c.shape, c.program.max_members))
+            .collect();
+        let mut design = Design::new(placeholder, &shape, &taus, &extra)?;
         design.mixed = true;
+        design.max_members = classes[0].program.max_members;
         let n_keys = r.usize()?;
         if n_keys != design.places.len() {
             return Err(TreeError::MixedClass);

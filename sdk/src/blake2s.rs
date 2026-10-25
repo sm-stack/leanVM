@@ -55,7 +55,7 @@ impl Blake2s {
             self.make_room();
             // Copy as much as the block still takes.
             let (at, n) = (self.filled, data.len().min(64 - self.filled));
-            self.m_bytes()[at..at + n].copy_from_slice(&data[..n]);
+            self.put_bytes(at, &data[..n]);
             self.filled += n;
             data = &data[n..];
         }
@@ -138,12 +138,26 @@ impl Blake2s {
         }
     }
 
-    /// The message block as its 64 bytes.
+    /// Write bytes at their little-endian positions in the message words.
     #[inline(always)]
-    fn m_bytes(&mut self) -> &mut [u8; 64] {
-        const { assert!(cfg!(target_endian = "little"), "the message words are little-endian") };
-        // SAFETY: eight words are readable and writable as their 64 bytes.
-        unsafe { &mut *(&raw mut self.m).cast() }
+    fn put_bytes(&mut self, at: usize, data: &[u8]) {
+        #[cfg(target_endian = "little")]
+        {
+            // SAFETY: the eight words have exactly 64 bytes, in little-endian order on this target.
+            let bytes: &mut [u8; 64] = unsafe { &mut *(&raw mut self.m).cast() };
+            bytes[at..at + data.len()].copy_from_slice(data);
+        }
+        #[cfg(target_endian = "big")]
+        put_le_bytes(&mut self.m, at, data);
+    }
+}
+
+/// A byte's position is in the encoded message, not the host's memory image.
+#[cfg(target_endian = "big")]
+fn put_le_bytes(words: &mut [u64; 8], at: usize, data: &[u8]) {
+    for (k, &byte) in data.iter().enumerate() {
+        let (word, shift) = ((at + k) / 8, 8 * ((at + k) % 8));
+        words[word] = (words[word] & !(0xff << shift)) | (u64::from(byte) << shift);
     }
 }
 
@@ -178,6 +192,7 @@ impl<const W: usize> Template<W> {
 
     /// Write `value` at byte `at` of the message: a field narrower than a word, or an offset already in bytes,
     /// which then needs no shift to become an address as [`Self::set`]'s word index does.
+    /// Integers, including each element of an array, are encoded little endian on every host.
     #[inline(always)]
     pub fn write<T: Plain>(&mut self, at: usize, value: T) {
         assert!(
@@ -186,7 +201,12 @@ impl<const W: usize> Template<W> {
         );
         // SAFETY: the field is inside the message and aligned (checked above), and `T` has no padding, so the
         // message stays initialized words.
-        unsafe { self.block.m.as_mut_ptr().byte_add(at).cast::<T>().write(value) }
+        #[cfg(target_endian = "little")]
+        unsafe {
+            self.block.m.as_mut_ptr().byte_add(at).cast::<T>().write(value);
+        }
+        #[cfg(target_endian = "big")]
+        value.write_le(&mut self.block.m, at);
     }
 
     /// The digest of the message as it stands, as four little-endian words.
@@ -256,12 +276,29 @@ impl<const W: usize> Template<W> {
 
 /// What [`Template::write`] takes: an integer or an array of them, whose bytes are all initialized.
 mod plain {
-    pub trait Plain: Copy {}
-    impl Plain for u8 {}
-    impl Plain for u16 {}
-    impl Plain for u32 {}
-    impl Plain for u64 {}
-    impl<T: Plain, const N: usize> Plain for [T; N] {}
+    pub trait Plain: Copy {
+        #[cfg(target_endian = "big")]
+        fn write_le(self, words: &mut [u64; 8], at: usize);
+    }
+    macro_rules! integer {
+        ($($ty:ty),*) => {$(
+            impl Plain for $ty {
+                #[cfg(target_endian = "big")]
+                fn write_le(self, words: &mut [u64; 8], at: usize) {
+                    super::put_le_bytes(words, at, &self.to_le_bytes());
+                }
+            }
+        )*};
+    }
+    integer!(u8, u16, u32, u64);
+    impl<T: Plain, const N: usize> Plain for [T; N] {
+        #[cfg(target_endian = "big")]
+        fn write_le(self, words: &mut [u64; 8], at: usize) {
+            for (i, value) in self.into_iter().enumerate() {
+                value.write_le(words, at + i * size_of::<T>());
+            }
+        }
+    }
 }
 
 /// BLAKE2s-256 of the words `write` puts in a [`Stream`], as four little-endian words.
@@ -570,6 +607,37 @@ mod tests {
     /// The reference BLAKE2s-256 of `bytes`, as little-endian words.
     fn reference(bytes: &[u8]) -> [u64; 4] {
         digest_words(&hash(bytes))
+    }
+
+    #[test]
+    fn byte_and_word_updates_match_across_blocks() {
+        let bytes: [u8; 193] = core::array::from_fn(|i| (i as u8).wrapping_mul(37));
+        for len in 0..=bytes.len() {
+            let expected = reference(&bytes[..len]);
+            assert_eq!(Blake2s::hash(&bytes[..len]), hash(&bytes[..len]));
+            for split in 0..=len {
+                let mut h = Blake2s::new();
+                h.update(&bytes[..split]);
+                let (words, tail) = bytes[split..len].as_chunks::<8>();
+                for word in words {
+                    h.update_words(&[u64::from_le_bytes(*word)]);
+                }
+                h.update(tail);
+                assert_eq!(h.finalize_words(), expected, "length {len}, split {split}");
+            }
+        }
+    }
+
+    #[test]
+    fn template_nested_arrays_encode_each_integer_little_endian() {
+        let mut t = Template::new([u64::MAX; 2]);
+        t.write(2, [[0x0123u16, 0x4567], [0x89ab, 0xcdef]]);
+        assert_eq!(
+            t.digest(),
+            reference(&[
+                255, 255, 0x23, 1, 0x67, 0x45, 0xab, 0x89, 0xef, 0xcd, 255, 255, 255, 255, 255, 255
+            ])
+        );
     }
 
     /// A template and the bytes its message should be, rewritten together.

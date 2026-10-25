@@ -40,6 +40,24 @@ mod tests {
     use primitives::hash::{Hasher, digest_words};
 
     #[test]
+    fn signature_member_little_endian_vector() {
+        let key = PublicKey {
+            root: [0x0123_4567_89ab_cdef, 2],
+            public_param: [3, 4],
+        };
+        // Python hashlib.blake2s of the 72-byte little-endian statement.
+        assert_eq!(
+            member(&key, &[5, 6, 7, 8]),
+            [
+                1617923521375427077,
+                1142329842302112511,
+                11289993798494321134,
+                7740254126160219533
+            ]
+        );
+    }
+
+    #[test]
     fn signature_members_match_bytes_and_guest_execution() {
         let (sk, key) = leansphincs::key_gen([7; 32]);
         let message = [11, 12, 13, 14];

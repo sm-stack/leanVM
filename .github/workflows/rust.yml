@@ -32,6 +32,25 @@ jobs:
       - name: Test
         run: cargo testall
 
+  big-endian:
+    name: Big-endian build and verification (s390x)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -C target-cpu=generic
+      CARGO_BUILD_JOBS: 2
+      RUST_TEST_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+        with:
+          targets: s390x-unknown-linux-gnu
+      - name: Install the cross compiler and emulator
+        run: sudo apt-get update && sudo apt-get install -y gcc-s390x-linux-gnu libc6-dev-s390x-cross qemu-user
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and execute the big-endian verifier
+        run: scripts/check-big-endian.sh
+
   clippy:
     name: Clippy (${{ matrix.arch }})
     strategy:

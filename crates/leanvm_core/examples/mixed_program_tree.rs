@@ -16,7 +16,7 @@ static ALLOCATOR: bench::Jemalloc = bench::Jemalloc;
 fn write_class(path: &Path, class: ProgramClass, shape: TreeShape) {
     let capacity = shape.claims.unwrap().capacity;
     let words = [
-        1,
+        2,
         class.log_bytecode as u64,
         class.log_ram as u64,
         class.log_advice as u64,
@@ -30,7 +30,8 @@ fn write_class(path: &Path, class: ProgramClass, shape: TreeShape) {
     ];
     let words = words
         .into_iter()
-        .chain(shape.leaf.heights().into_values().map(|h| h as u64));
+        .chain(shape.leaf.heights().into_values().map(|h| h as u64))
+        .chain([class.max_members as u64]);
     std::fs::write(path, words.flat_map(u64::to_le_bytes).collect::<Vec<_>>()).unwrap();
 }
 
@@ -42,9 +43,10 @@ fn read_class(path: &Path) -> (ProgramClass, TreeShape) {
         .iter()
         .map(|&w| usize::try_from(u64::from_le_bytes(w)).unwrap())
         .collect();
-    assert_eq!(words.len(), 11 + leanvm::N_TABLES);
-    assert_eq!(words[0], 1);
+    assert_eq!(words.len(), 12 + leanvm::N_TABLES);
+    assert_eq!(words[0], 2);
     let class = ProgramClass {
+        max_members: words[11 + leanvm::N_TABLES],
         log_bytecode: words[1],
         log_ram: words[2],
         log_advice: words[3],
@@ -99,14 +101,26 @@ fn main() {
         return;
     }
     let directory = Path::new(args.get(1).map_or("mixed-program-tree", String::as_str));
-    let fibonacci = Program::from_elf(include_bytes!("../../../programs/fibonacci/fibonacci.elf")).unwrap();
-    let preimage = Program::from_elf(include_bytes!("../../../programs/preimage/preimage.elf")).unwrap();
+    let fibonacci = Program::from_elf(include_bytes!(
+        "../../../programs/fibonacci-members/fibonacci-members.elf"
+    ))
+    .unwrap();
+    let preimage = Program::from_elf(include_bytes!(
+        "../../../programs/preimage-members/preimage-members.elf"
+    ))
+    .unwrap();
     let constant = |value| {
-        let text = Asm::new().li(Reg::A0, value).exit().finish();
+        let output = leanvm_guest::members::output(&[[value, 0, 0, 0]]);
+        let mut asm = Asm::new();
+        for (r, v) in [Reg::A0, Reg::A1, Reg::A2, Reg::A3].into_iter().zip(output) {
+            asm.li(r, v);
+        }
+        let text = asm.exit().finish();
         Program::new(&text, Region::TEXT.base(), vec![], 0, 0).unwrap()
     };
     let originals = [fibonacci, preimage, constant(17), constant(19)];
     let class = ProgramClass {
+        max_members: 4,
         log_bytecode: originals
             .iter()
             .map(|p| p.rv().entries().len().ilog2() as usize)
@@ -177,10 +191,36 @@ fn main() {
                 prover.prove(&programs[p], &advice).unwrap()
             })
             .collect();
+        let members: Vec<_> = indices
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| match p {
+                0 => {
+                    let n = 2700 + i as u64;
+                    let (mut a, mut b) = (0u64, 1u64);
+                    for _ in 0..n {
+                        (a, b) = (b, a.wrapping_add(b));
+                    }
+                    let mut v = leanvm_guest::PublicValues::new();
+                    v.commit(&[n, a]);
+                    v.digest()
+                }
+                1 => {
+                    let mut h = leanvm_guest::Blake2s::new();
+                    h.update(&(7 + i as u64).to_le_bytes());
+                    let mut v = leanvm_guest::PublicValues::new();
+                    v.commit(&h.finalize_words());
+                    v.digest()
+                }
+                _ => [if p == 2 { 17 } else { 19 }, 0, 0, 0],
+            })
+            .collect();
         let leaves: Vec<_> = runs
             .iter()
             .zip(&indices)
-            .map(|(r, &p)| MixedLeaf {
+            .zip(&members)
+            .map(|((r, &p), member)| MixedLeaf {
+                members: std::slice::from_ref(member),
                 key: programs[p].verifying_key(),
                 proof: &r.proof,
                 output: r.output,

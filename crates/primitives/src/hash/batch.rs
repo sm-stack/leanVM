@@ -352,7 +352,7 @@ unsafe fn hash_sets<S: Lanes32, const G: usize>(
         for (g, block) in buf.iter_mut().enumerate() {
             let first = set * set_bytes + g * S::WIDTH * len + b * BLOCK_LEN;
             // SAFETY: `step < steps`, so block `b` of every input in the group is in bounds.
-            unsafe { S::transpose(src.add(first), len, block.as_mut_ptr().as_mut_unchecked()) };
+            unsafe { S::transpose(src.add(first), len, &mut *block.as_mut_ptr()) };
         }
     };
 

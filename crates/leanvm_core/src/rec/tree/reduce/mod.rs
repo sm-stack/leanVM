@@ -37,9 +37,11 @@ pub enum DensePoly {
     /// The nodes' fixed polynomial `W_node`: the fixed columns of the circuits of a tree's only tier, or of its small
     /// tier, stacked by their kind's index.
     Fixed,
-    /// The fixed columns of a claim-set tree's large tier's circuits, stacked by their kind's index; a tree of one
-    /// tier has none.
+    /// The fixed columns of tier one: the large aggregation tier, or the first isolated leaf tier when there is no
+    /// large tier. A tree of one tier has none.
     Wide,
+    /// Fixed columns of an additional, isolated leaf tier (tier index at least two).
+    Extra(usize),
 }
 
 /// What a node reduces: the values its transcript binds first, then its dense and matrix claims.
@@ -77,18 +79,42 @@ pub(crate) struct Reduced<E> {
 
 /// The prover's dense polynomials, each a table of its values: the bytecode table, the image, the fixed polynomial.
 #[derive(Clone, Debug)]
-pub(crate) struct DenseTables(pub(crate) [Vec<F64>; DensePoly::COUNT]);
+pub(crate) struct DenseTables(pub(crate) Vec<Vec<F64>>);
 
 impl DensePoly {
-    /// How many dense polynomials there are.
+    /// The number of polynomial kinds in the original layout, before additional isolated tiers.
     pub const COUNT: usize = 4;
 
-    /// Every dense polynomial, in statement order.
+    /// The original layout's polynomial kinds, in statement order. Additional tiers use `Extra`.
     pub const ALL: [Self; Self::COUNT] = [Self::Bytecode, Self::Image, Self::Fixed, Self::Wide];
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Bytecode => 0,
+            Self::Image => 1,
+            Self::Fixed => 2,
+            Self::Wide => 3,
+            Self::Extra(tier) => tier + 2,
+        }
+    }
+
+    pub(crate) const fn at(index: usize) -> Self {
+        match index {
+            0 => Self::Bytecode,
+            1 => Self::Image,
+            2 => Self::Fixed,
+            3 => Self::Wide,
+            _ => Self::Extra(index - 2),
+        }
+    }
+
+    pub(crate) fn all(count: usize) -> impl Iterator<Item = Self> {
+        (0..count).map(Self::at)
+    }
 
     /// Whether it holds circuits' fixed columns, on which a first-level node's statement carries no claim.
     pub(crate) const fn is_fixed(self) -> bool {
-        matches!(self, Self::Fixed | Self::Wide)
+        matches!(self, Self::Fixed | Self::Wide | Self::Extra(_))
     }
 }
 

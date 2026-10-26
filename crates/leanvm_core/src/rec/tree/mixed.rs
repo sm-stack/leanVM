@@ -52,9 +52,14 @@ impl ProgramClass {
         program.padded(self.log_bytecode, self.log_ram, self.log_advice, self.image_words)
     }
 
-    /// A prover padding each table to at least the supplied leaf shape.
+    /// A prover padding each table to at least the supplied leaf shape, with fresh OS randomness for a ZK shape.
     pub fn prover(self, shape: LeafShape) -> Prover {
-        Prover::new(shape.rate()).with_floor(shape.taus().map(|height| 1 << height))
+        let prover = Prover::new(shape.rate()).with_floor(shape.taus().map(|height| 1 << height));
+        if shape.is_zero_knowledge() {
+            prover.zero_knowledge(zk::Randomness::Os)
+        } else {
+            prover
+        }
     }
 
     fn accepts(self, key: &VerifyingKey) -> bool {
@@ -84,9 +89,9 @@ impl MixedLeaf<'_> {
 impl Tree<'static> {
     /// Build a mixed-program claim-set tree from class data alone.
     ///
-    /// Zero-knowledge leaves are refused in this mode; same-program trees retain their zero-knowledge support.
+    /// A zero-knowledge class uses a dedicated first level and a small-tier wrap.
     pub fn mixed(class: ProgramClass, shape: TreeShape) -> Result<Self, TreeError> {
-        if shape.claims.is_none() || shape.leaf.is_zero_knowledge() || class.max_members == 0 {
+        if shape.claims.is_none() || class.max_members == 0 {
             return Err(TreeError::MixedClass);
         }
         Self::mixed_classes(
@@ -99,15 +104,11 @@ impl Tree<'static> {
     }
 
     /// Build one tree with an ordered set of leaf classes. `shape.leaf` must equal the first class's shape.
-    /// All first-level circuits share the small recursion tier's heights; each has its own authenticated kind.
+    /// Plain first levels share the small tier's heights; each ZK first level has a dedicated tier and small-tier wrap.
+    /// Each circuit has its own authenticated kind.
     pub fn mixed_classes(classes: &[LeafClass], shape: TreeShape) -> Result<Self, TreeError> {
         let first = classes.first().ok_or(TreeError::MixedClass)?;
-        if shape.claims.is_none()
-            || first.shape != shape.leaf
-            || classes
-                .iter()
-                .any(|c| c.shape.is_zero_knowledge() || c.program.max_members == 0)
-        {
+        if shape.claims.is_none() || first.shape != shape.leaf || classes.iter().any(|c| c.program.max_members == 0) {
             return Err(TreeError::MixedClass);
         }
         let program = Self::mixed_placeholder(first.program)?;
@@ -164,6 +165,7 @@ impl Tree<'_> {
         leaves: &[MixedLeaf<'_>],
         declare: Option<&ClaimSet>,
     ) -> Result<Aggregate, TreeError> {
+        let class_index = class;
         self.require_prover()?;
         if !self.design.mixed {
             return Err(TreeError::MixedClass);
@@ -174,10 +176,7 @@ impl Tree<'_> {
                 got: leaves.len(),
             });
         }
-        let position = self
-            .design
-            .place(SMALL, Level::First(class))
-            .ok_or(TreeError::MixedClass)?;
+        let position = self.design.first_place(class).ok_or(TreeError::MixedClass)?;
         let (leaf_shape, max_members) = if class == 0 {
             (&self.design.leaf, self.design.max_members)
         } else {
@@ -226,10 +225,16 @@ impl Tree<'_> {
             union: Some(&union),
         };
         let rows = self.design.first_rows_at(position, &inputs);
-        Ok(Aggregate {
+        let first = Aggregate {
             proof: self.prove_rows(rows)?,
             claims,
-        })
+        };
+        let tier = self.design.places[position].tier;
+        if tier != SMALL {
+            self.wrap_at(0, &first, Level::LeafWrap(class_index), tier)
+        } else {
+            Ok(first)
+        }
     }
 }
 
@@ -960,7 +965,7 @@ mod tests {
             leaf: f.shape.leaf.zero_knowledge(),
             ..f.shape
         };
-        assert!(matches!(Tree::mixed(f.class, zk), Err(TreeError::MixedClass)));
+        assert!(Tree::mixed(f.class, zk).is_ok());
     }
 
     #[test]
@@ -1003,3 +1008,7 @@ mod tests {
 #[cfg(test)]
 #[path = "member_tests.rs"]
 mod member_tests;
+
+#[cfg(test)]
+#[path = "zk_tests.rs"]
+mod zk_tests;

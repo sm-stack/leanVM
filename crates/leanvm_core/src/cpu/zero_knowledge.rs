@@ -187,6 +187,17 @@ impl Layout {
         rate: Rate,
         output: &[Value<V::E>; 4],
     ) -> Result<RecordedCore<V::Root, V::E>, CpuError> {
+        self.record_core_at(rec, rate, output, None)
+    }
+
+    /// Record the core with a public entry supplied by the witnessed program key.
+    pub(crate) fn record_core_at<V: OpeningVerifier>(
+        &self,
+        rec: &mut Recorder<V>,
+        rate: Rate,
+        output: &[Value<V::E>; 4],
+        entry: Option<Value<V::E>>,
+    ) -> Result<RecordedCore<V::Root, V::E>, CpuError> {
         let commitment = Commitment::read(rec, self.shape, rate)?;
         let keys = KeyCommitment::read(rec.inner(), rate.log_inv_rate().into())
             .map_err(|e| CpuError::Outer(OuterError::KeyOpening(e)))?;
@@ -199,7 +210,7 @@ impl Layout {
             rec.ensure_bit(b, || CpuError::FinalClock)?;
             clock = rec.mul_const_add(b, F192::from(F64(1 << bit)), clock);
         }
-        let claims = self.verify_committed(rec, &commitment, clock, output)?;
+        let claims = self.verify_committed_at(rec, &commitment, clock, output, entry)?;
         Ok(RecordedCore { keys, claims })
     }
 }

@@ -117,8 +117,8 @@ impl StatementLayout {
     }
 
     /// The dense polynomials the tree has.
-    pub(crate) fn polys(self) -> &'static [DensePoly] {
-        &DensePoly::ALL[..self.n_polys]
+    pub(crate) fn polys(self) -> impl Iterator<Item = DensePoly> {
+        DensePoly::all(self.n_polys)
     }
 
     /// How many words a section has.
@@ -201,7 +201,7 @@ impl<E: Copy> TreeStatement<E> {
 
     /// A dense polynomial's claimed value at its prefix of the point.
     pub(crate) fn dense_value(&self, poly: DensePoly) -> E {
-        self.section(Section::DenseValues)[poly as usize]
+        self.section(Section::DenseValues)[poly.index()]
     }
 
     /// The matrices' row point.
@@ -247,7 +247,12 @@ impl TreeStatement<Ew> {
             .copy_from_slice(&Self::digest_halves(b, digest));
         let point = &reduced.dense.point;
         s.section_mut(Section::DensePoint)[..point.len()].copy_from_slice(point);
-        let values = reduced.dense.values.map(|v| v.unwrap_or(zero));
+        let values = reduced
+            .dense
+            .values
+            .iter()
+            .map(|v| v.unwrap_or(zero))
+            .collect::<Vec<_>>();
         let section = s.section_mut(Section::DenseValues);
         let n = section.len();
         section.copy_from_slice(&values[..n]);

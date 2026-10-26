@@ -114,15 +114,48 @@ impl<'p> ProofShape<'p> {
         words.push(b.k_const(template.image().len() as u64));
         words.extend_from_slice(&image);
         let digest = b.hash_prefixed(Program::DIGEST_DOMAIN, &words);
-        let session = b.session_tagged(Program::SESSION_TAG, digest);
+        let tag = if self.shape.is_zero_knowledge() {
+            Program::ZK_SESSION_TAG
+        } else {
+            Program::SESSION_TAG
+        };
+        let session = b.session_tagged(tag, digest);
         let mut t = Transcript::dynamic(b, session, &output, source);
         let mut r = Rows::new(b, &mut t);
-        let clock = r.scope("announcement", |r| self.read_announcement(r));
-        let output = output.map(|o| r.b.k_to_e1(o));
-        let claims = infallible(
-            self.layout
-                .verify_core_at(&mut r, clock, &output, self.shape.rate(), Some(entry_e)),
-        );
+        let claims = if self.shape.is_zero_knowledge() {
+            r.scope("announcement", |r| self.read_shape(r));
+            let output = output.map(|o| Value::Public(r.b.k_to_e1(o)));
+            let mut rec = Recorder::new(r);
+            let core = infallible(self.layout.record_core_at(
+                &mut rec,
+                self.shape.rate(),
+                &output,
+                Some(Value::Public(entry_e)),
+            ));
+            let claims = infallible(core.claims.into_plain(&mut rec));
+            // The outer opening is part of this leaf's transcript, before the program opening.
+            r = match core.keys.verify_outer(rec) {
+                Ok(rows) => rows,
+                Err(_) => {
+                    b.fail("the record outgrows the key commitment");
+                    return (
+                        CoreRows {
+                            claims,
+                            state: t.digest(b),
+                        },
+                        digest,
+                    );
+                }
+            };
+            claims
+        } else {
+            let clock = r.scope("announcement", |r| self.read_announcement(r));
+            let output = output.map(|o| r.b.k_to_e1(o));
+            infallible(
+                self.layout
+                    .verify_core_at(&mut r, clock, &output, self.shape.rate(), Some(entry_e)),
+            )
+        };
         let image: Vec<_> = image.into_iter().map(|w| r.b.k_to_e1(w)).collect();
         r.scope("program opening", |r| {
             infallible(template.verify_program_with_image(r, root, &claims.program, &image));

@@ -1,5 +1,5 @@
 //! Export on little endian, then verify the same bytes on a big-endian host.
-//! Usage: endian_verifier export|verify DIRECTORY.
+//! Usage: endian_verifier export|verify DIRECTORY [zk].
 use leanvm::aggregate::{
     Capacity, ClaimSet, ClaimShape, LeafClass, LeafShape, MixedLeaf, ProgramClass, Tree, TreeProof, TreeShape,
 };
@@ -37,10 +37,18 @@ fn main() {
     let mut stats = program.measure(&[]).unwrap();
     stats.counts[TableId::ALU] *= 2;
     let leaf = LeafShape::measured(&stats, Rate::MIN);
-    let classes = [LeafClass {
+    let mut classes = vec![LeafClass {
         program: class,
         shape: leaf,
     }];
+    let zk = args.get(3).is_some_and(|s| s == "zk");
+    if zk {
+        classes.push(LeafClass {
+            program: class,
+            shape: leaf.zero_knowledge(),
+        });
+    }
+    let selected = usize::from(zk);
     let shape = TreeShape {
         leaf,
         arity_0: 1,
@@ -55,11 +63,11 @@ fn main() {
     if mode == "export" {
         std::fs::create_dir_all(path).unwrap();
         let write = |name, bytes| std::fs::write(path.join(name), bytes).unwrap();
-        let run = class.prover(leaf).prove(&program, &[]).unwrap();
+        let run = class.prover(classes[selected].shape).prove(&program, &[]).unwrap();
         let tree = Tree::mixed_classes(&classes, shape).unwrap();
         let first = tree
             .aggregate_programs_at(
-                0,
+                selected,
                 &[MixedLeaf {
                     key: program.verifying_key(),
                     proof: &run.proof,

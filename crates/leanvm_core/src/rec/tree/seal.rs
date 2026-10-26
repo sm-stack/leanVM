@@ -37,7 +37,7 @@ fn stack_shape(len: usize) -> Result<(usize, Config, usize), TreeError> {
 /// The fixed polynomials a root's statement carries claims on, as `settle` checks them.
 fn fixed_polys<'a>(design: &'a Design<'_>, position: usize) -> impl Iterator<Item = DensePoly> + 'a {
     // A first-level node reduces no claim on a fixed polynomial.
-    (design.statement.polys().iter().copied())
+    (design.statement.polys())
         .filter(move |poly| poly.is_fixed() && !matches!(design.places[position].level, Level::First(_)))
 }
 
@@ -108,10 +108,9 @@ impl Tree<'_> {
     pub(super) fn seal_prover_over(&self, tables: &DenseTables) -> Result<SealProver, TreeError> {
         self.require_prover()?;
         let _span = info_span!("seal commitments").entered();
-        let n_fixed = self.design.statement.polys().iter().filter(|p| p.is_fixed()).count();
-        let stacks = (DensePoly::ALL.iter().copied().filter(|p| p.is_fixed()).take(n_fixed))
+        let stacks = (self.design.statement.polys().filter(|p| p.is_fixed()))
             .map(|poly| {
-                let mut words = tables.0[poly as usize].clone();
+                let mut words = tables.0[poly.index()].clone();
                 let (log_n, config, lanes) = stack_shape(words.len())?;
                 words.resize(lanes << (log_n - config.initial_k()), F64::ZERO);
                 let stack = CommittedStack::new(&words, log_n, config);
@@ -144,7 +143,7 @@ impl Tree<'_> {
             let (_, words, stack) = (prover.stacks.iter())
                 .find(|(p, _, _)| *p == poly)
                 .ok_or(TreeError::MixedClass)?;
-            let point = statement.dense_point()[..d.vars.0[poly as usize]].to_vec();
+            let point = statement.dense_point()[..d.vars.0[poly.index()]].to_vec();
             let claim = StackClaim::Point {
                 offset: 0,
                 low_point: point,
@@ -214,23 +213,18 @@ impl Tree<'_> {
         self.settle_with(&statement, position, false)?;
         let mut v = VerifierState::new(&session, &LengthPrefixed(root.limbs().as_flattened()), seal);
         let fixed: Vec<DensePoly> = fixed_polys(d, position).collect();
-        let n_fixed = d.statement.polys().iter().filter(|p| p.is_fixed()).count();
+        let n_fixed = d.statement.polys().filter(|p| p.is_fixed()).count();
         if roots.0.len() != n_fixed {
             return Err(TreeError::MixedClass);
         }
-        let committed: Vec<DensePoly> = DensePoly::ALL
-            .iter()
-            .copied()
-            .filter(|p| p.is_fixed())
-            .take(n_fixed)
-            .collect();
+        let committed: Vec<DensePoly> = d.statement.polys().filter(|p| p.is_fixed()).collect();
         for poly in fixed {
             let index = committed
                 .iter()
                 .position(|&p| p == poly)
                 .ok_or(TreeError::Claim(FalseClaim::Dense(poly)))?;
-            let (log_n, config, lanes) = stack_shape(1 << d.vars.0[poly as usize])?;
-            let point = statement.dense_point()[..d.vars.0[poly as usize]].to_vec();
+            let (log_n, config, lanes) = stack_shape(1 << d.vars.0[poly.index()])?;
+            let point = statement.dense_point()[..d.vars.0[poly.index()]].to_vec();
             let claim = StackClaim::Point {
                 offset: 0,
                 low_point: point,

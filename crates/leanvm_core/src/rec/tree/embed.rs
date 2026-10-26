@@ -11,25 +11,29 @@ use std::sync::{Arc, OnceLock};
 const MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK02");
 
 const DOMAIN: &[u8] = b"leanvm/mixed-class-key/v2";
+const ZK_MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK03");
 
 fn digest(bytes: &[u8]) -> Hash {
     let mut h = Hasher::new();
-    h.update(DOMAIN);
+    h.update(if bytes.starts_with(&ZK_MAGIC.to_le_bytes()) {
+        b"leanvm/mixed-class-key/v3"
+    } else {
+        DOMAIN
+    });
     h.update(bytes);
     h.finalize()
 }
 
-fn descriptor(classes: &[LeafClass], shape: TreeShape) -> Result<Vec<u8>, TreeError> {
+fn descriptor(classes: &[LeafClass], shape: TreeShape, split_zk: bool) -> Result<Vec<u8>, TreeError> {
     let claims = shape.claims.ok_or(TreeError::MixedClass)?;
-    if classes.is_empty()
-        || classes[0].shape != shape.leaf
-        || classes
-            .iter()
-            .any(|c| c.shape.is_zero_knowledge() || c.program.max_members == 0)
-    {
+    if classes.is_empty() || classes[0].shape != shape.leaf || classes.iter().any(|c| c.program.max_members == 0) {
         return Err(TreeError::MixedClass);
     }
+    let zk = classes.iter().any(|c| c.shape.is_zero_knowledge());
     let mut out = Vec::new();
+    if zk {
+        put(&mut out, u64::from(split_zk));
+    }
     put(&mut out, classes.len() as u64);
     for leaf in classes {
         let c = leaf.program;
@@ -39,6 +43,9 @@ fn descriptor(classes: &[LeafClass], shape: TreeShape) -> Result<Vec<u8>, TreeEr
             .chain([usize::from(leaf.shape.rate().log_inv_rate())])
         {
             put(&mut out, word as u64);
+        }
+        if zk {
+            put(&mut out, u64::from(leaf.shape.is_zero_knowledge()));
         }
     }
     for word in [
@@ -129,8 +136,15 @@ impl Tree<'_> {
             })
             .collect();
         let mut out = Vec::new();
-        put(&mut out, MAGIC);
-        out.extend_from_slice(&descriptor(&classes, self.shape)?);
+        put(
+            &mut out,
+            if classes.iter().any(|c| c.shape.is_zero_knowledge()) {
+                ZK_MAGIC
+            } else {
+                MAGIC
+            },
+        );
+        out.extend_from_slice(&descriptor(&classes, self.shape, self.design.split_zk)?);
         put(&mut out, roots.0.len() as u64);
         for root in &roots.0 {
             out.extend_from_slice(root);
@@ -282,16 +296,17 @@ impl Tree<'static> {
         let _span = info_span!("load trusted mixed class key").entered();
         shape.check()?;
         let mut r = Words(bytes);
-        if r.next()? != MAGIC {
+        let zk_count = classes.iter().filter(|c| c.shape.is_zero_knowledge()).count();
+        if r.next()? != if zk_count == 0 { MAGIC } else { ZK_MAGIC } {
             return Err(TreeError::MixedClass);
         }
-        let expected = descriptor(classes, shape)?;
+        let expected = descriptor(classes, shape, true)?;
         if !r.0.starts_with(&expected) {
             return Err(TreeError::MixedClass);
         }
         r.0 = &r.0[expected.len()..];
         let count = r.usize()?;
-        if count != shape.claims.map_or(1, |c| c.tiers()) {
+        if count != shape.claims.map_or(1, |c| c.tiers()) + zk_count {
             return Err(TreeError::MixedClass);
         }
         let mut roots = Vec::with_capacity(count);
@@ -310,7 +325,7 @@ impl Tree<'static> {
             })
             .collect::<Result<Vec<_>, TreeError>>()?;
         let tiers = r.usize()?;
-        if tiers != shape.claims.map_or(1, |c| c.tiers()) {
+        if tiers != shape.claims.map_or(1, |c| c.tiers()) + zk_count {
             return Err(TreeError::MixedClass);
         }
         let taus = (0..tiers).map(|_| r.heights()).collect::<Result<Vec<_>, _>>()?;
@@ -326,7 +341,7 @@ impl Tree<'static> {
             .zip(&classes[1..])
             .map(|(p, c)| (p.clone(), c.shape, c.program.max_members))
             .collect();
-        let mut design = Design::new(placeholder, &shape, &taus, &extra)?;
+        let mut design = Design::new_with_zk(placeholder, &shape, &taus, &extra, true)?;
         design.mixed = true;
         design.max_members = classes[0].program.max_members;
         let n_keys = r.usize()?;
@@ -381,8 +396,13 @@ impl Tree<'static> {
         };
         let rv = placeholder.rv();
         let mut image: Vec<F64> = rv.image().iter().map(|&w| F64(w)).collect();
-        image.resize(1 << design.vars.0[DensePoly::Image as usize], F64::ZERO);
-        let tables = DenseTables([Lookup::Bytecode.table(rv), image, fixed(SMALL), fixed(LARGE)]);
+        image.resize(1 << design.vars.0[DensePoly::Image.index()], F64::ZERO);
+        let tables = DenseTables(
+            std::iter::once(Lookup::Bytecode.table(rv))
+                .chain([image])
+                .chain((0..design.tiers.len().max(2)).map(fixed))
+                .collect(),
+        );
         Ok(Self {
             shape,
             design,

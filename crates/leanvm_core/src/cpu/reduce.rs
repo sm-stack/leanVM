@@ -96,7 +96,7 @@ impl Layout {
         self.verify_committed_at(v, commitment, clock, output, None)
     }
 
-    fn verify_committed_at<V: OpeningVerifier + PublicColumns>(
+    pub(super) fn verify_committed_at<V: OpeningVerifier + PublicColumns>(
         &self,
         v: &mut V,
         commitment: &Commitment<V::Root>,

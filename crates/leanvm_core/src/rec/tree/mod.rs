@@ -172,8 +172,8 @@ pub enum TreeError {
     /// The tree has verifier data only.
     #[error("a verifier-only tree cannot prove")]
     VerifierOnly,
-    /// A mixed tree requires claim sets and plain leaves of its program class.
-    #[error("mixed trees require claim sets and plain leaves matching the program class")]
+    /// A mixed tree requires claim sets and leaves matching its program classes.
+    #[error("mixed trees require claim sets and leaves matching the program class")]
     MixedClass,
     /// The arities make no tree: a first level takes at least one leaf, a node at least two children.
     #[error("a first level of {arity_0} leaves and nodes of {arity} children make no tree")]
@@ -375,10 +375,25 @@ impl<'p> Tree<'p> {
         max_members: Option<usize>,
         extra: &[(Program, LeafShape, usize)],
     ) -> Result<Self, TreeError> {
+        Self::build_zk_mode(program, shape, max_members, extra, true)
+    }
+
+    fn build_zk_mode(
+        program: &Program,
+        shape: TreeShape,
+        max_members: Option<usize>,
+        extra: &[(Program, LeafShape, usize)],
+        split_zk: bool,
+    ) -> Result<Self, TreeError> {
         shape.check()?;
-        let tiers = shape.claims.map_or(1, |c| c.tiers());
+        let isolate = max_members.is_some() && split_zk;
+        let zk_count = std::iter::once(shape.leaf)
+            .chain(extra.iter().map(|(_, s, _)| *s))
+            .filter(|s| isolate && s.is_zero_knowledge())
+            .count();
+        let tiers = shape.claims.map_or(1, |c| c.tiers()) + zk_count;
         let (design, circuits) = Self::converge(tiers, |taus| {
-            let mut d = Design::new(program, &shape, taus, extra)?;
+            let mut d = Design::new_with_zk(program, &shape, taus, extra, isolate)?;
             d.mixed = max_members.is_some();
             d.max_members = max_members.unwrap_or(0);
             Ok(d)
@@ -398,8 +413,13 @@ impl<'p> Tree<'p> {
         };
         let rv = program.rv();
         let mut image: Vec<F64> = rv.image().iter().map(|&w| F64(w)).collect();
-        image.resize(1 << design.vars.0[DensePoly::Image as usize], F64::ZERO);
-        let tables = DenseTables([Lookup::Bytecode.table(rv), image, fixed(SMALL), fixed(LARGE)]);
+        image.resize(1 << design.vars.0[DensePoly::Image.index()], F64::ZERO);
+        let tables = DenseTables(
+            std::iter::once(Lookup::Bytecode.table(rv))
+                .chain([image])
+                .chain((0..design.tiers.len().max(2)).map(fixed))
+                .collect(),
+        );
         Ok(Self {
             shape,
             design,
@@ -422,8 +442,21 @@ impl<'p> Tree<'p> {
         tiers: usize,
         design: impl Fn(&[PerRecTable<usize>]) -> Result<Design<'p>, TreeError>,
     ) -> Result<(Design<'p>, Vec<Circuit>), TreeError> {
-        let start = design(&vec![PerRecTable::default(); tiers])?.shape(0).circuit.heights();
+        let initial = design(&vec![PerRecTable::default(); tiers])?;
+        let isolated = initial.places.iter().any(|p| matches!(p.level, Level::LeafWrap(_)));
+        let start = if isolated {
+            PerRecTable::from_fn(|t: Table| t.height_log(if t == Table::Pub { initial.statement.len() } else { 0 }))
+        } else {
+            initial.shape(0).circuit.heights()
+        };
         let mut taus = vec![start; tiers];
+        if isolated {
+            for (position, place) in initial.places.iter().enumerate() {
+                if place.tier != SMALL && matches!(place.level, Level::First(_)) {
+                    taus[place.tier] = initial.shape(position).circuit.heights();
+                }
+            }
+        }
         for _ in 0..MAX_ROUNDS {
             let d = design(&taus)?;
             let built: Vec<Circuit> = (0..d.places.len()).map(|p| d.shape(p).circuit).collect();
@@ -683,7 +716,7 @@ impl<'p> Tree<'p> {
         for (index, c) in children.iter().enumerate() {
             let position = self.known(&c.proof)?;
             wraps.push(
-                (d.places[position].tier == LARGE)
+                (d.places[position].tier == LARGE && matches!(d.places[position].level, Level::Node(_)))
                     .then(|| self.wrap(index, c))
                     .transpose()?,
             );
@@ -731,10 +764,20 @@ impl<'p> Tree<'p> {
 
     /// Wrap child `index`, a proof of the large tier: a proof of the small tier stating its set.
     fn wrap(&self, index: usize, child: &Aggregate) -> Result<Aggregate, TreeError> {
+        self.wrap_at(index, child, Level::Wrap, LARGE)
+    }
+
+    fn wrap_at(
+        &self,
+        index: usize,
+        child: &Aggregate,
+        level: Level,
+        child_tier: usize,
+    ) -> Result<Aggregate, TreeError> {
         let d = &self.design;
-        let position = (d.place(SMALL, Level::Wrap)).expect("a tree of two tiers wraps");
+        let position = d.place(SMALL, level).expect("a wrapping circuit");
         let statements = [child.proof.statement(d.statement)];
-        let items = (self.child_witnesses(LARGE, &[&child.proof], &statements)).map_err(|e| match e {
+        let items = (self.child_witnesses(child_tier, &[&child.proof], &statements)).map_err(|e| match e {
             TreeError::Child { error, .. } => TreeError::Child { index, error },
             e => e,
         })?;
@@ -922,7 +965,7 @@ impl<'p> Tree<'p> {
     /// [`Tree::settle`], the fixed polynomials evaluated only if `fixed`: otherwise the caller settles them.
     fn settle_with(&self, s: &TreeStatement, position: usize, fixed: bool) -> Result<(), TreeError> {
         let vars = &self.design.vars.0;
-        for &poly in self.design.statement.polys() {
+        for poly in self.design.statement.polys() {
             if self.design.mixed && !poly.is_fixed() {
                 continue;
             }
@@ -933,8 +976,8 @@ impl<'p> Tree<'p> {
             if poly.is_fixed() && matches!(self.design.places[position].level, Level::First(_)) {
                 continue;
             }
-            let point = &s.dense_point()[..vars[poly as usize]];
-            if mle_eval_par(&self.tables.0[poly as usize], point) != s.dense_value(poly) {
+            let point = &s.dense_point()[..vars[poly.index()]];
+            if mle_eval_par(&self.tables.0[poly.index()], point) != s.dense_value(poly) {
                 return Err(TreeError::Claim(FalseClaim::Dense(poly)));
             }
         }
@@ -964,23 +1007,27 @@ impl<'p> Tree<'p> {
     #[must_use]
     pub fn stats(&self, kind: Kind) -> CircuitStats {
         self.circuit_stats(match kind {
-            Kind::First => 0,
-            Kind::Node => self.design.places.len() - 1,
+            Kind::First => self.design.first_place(0).expect("class zero"),
+            Kind::Node => self
+                .design
+                .place(
+                    self.shape.claims.map_or(1, |c| c.tiers()) - 1,
+                    Level::Node(self.shape.arity),
+                )
+                .expect("largest node"),
         })
     }
 
     /// Statistics of a mixed leaf class's first-level circuit.
     pub fn first_stats(&self, class: usize) -> Option<CircuitStats> {
-        self.design
-            .place(SMALL, Level::First(class))
-            .map(|p| self.circuit_stats(p))
+        self.design.first_place(class).map(|p| self.circuit_stats(p))
     }
 
     /// What the node circuit of this arity costs, if the tree has one: of a tree of two tiers, the large tier's.
     /// Unpadded row counts are unavailable (reported as zero) on loaded verifier-only trees.
     #[must_use]
     pub fn node_stats(&self, arity: usize) -> Option<CircuitStats> {
-        let tier = self.design.tiers.len() - 1;
+        let tier = self.shape.claims.map_or(1, |c| c.tiers()) - 1;
         (self.design.place(tier, Level::Node(arity))).map(|p| self.circuit_stats(p))
     }
 
@@ -1344,7 +1391,7 @@ mod tests {
         // The prover hands the rows the fake's fixed columns, and its fixed polynomial the fake's half.
         let columns = fake.fixed();
         let mut tables = f.tree.tables.clone();
-        tables.0[DensePoly::Fixed as usize] = d.tiers[SMALL].fixed.polynomial(&[columns, f.tree.keys[1].fixed()]);
+        tables.0[DensePoly::Fixed.index()] = d.tiers[SMALL].fixed.polynomial(&[columns, f.tree.keys[1].fixed()]);
         let statement = TreeStatement::new(d.statement, child.words);
         let items: Vec<ChildWitness<'_>> = (0..2)
             .map(|_| ChildWitness {
@@ -2428,7 +2475,7 @@ mod tests {
             let digest = forged_set.digest();
             let halves = [F192::new(digest[0], digest[1], 0), F192::new(digest[2], digest[3], 0)];
             let rest = d.statement.range(Section::Digest).end;
-            let wide = d.statement.range(Section::DenseValues).start + DensePoly::Wide as usize;
+            let wide = d.statement.range(Section::DenseValues).start + DensePoly::Wide.index();
             // The fake: the large node's kind, the forged set's digest, then an honest large proof's claims but for the wide
             // polynomial's value, which the fake's own stack decides.
             let fake = |wide_value: F192| {
@@ -2452,11 +2499,11 @@ mod tests {
             };
             let columns = FixedColumns::new(&fake(F192::ZERO).0);
             let mut tables = tree.tables.clone();
-            tables.0[DensePoly::Wide as usize] = d.tiers[LARGE].fixed.polynomial(&[&columns]);
+            tables.0[DensePoly::Wide.index()] = d.tiers[LARGE].fixed.polynomial(&[&columns]);
             let point = &pair.proof.words[d.statement.range(Section::DensePoint)];
             let value = mle_eval_par(
-                &tables.0[DensePoly::Wide as usize],
-                &point[..d.vars.0[DensePoly::Wide as usize]],
+                &tables.0[DensePoly::Wide.index()],
+                &point[..d.vars.0[DensePoly::Wide.index()]],
             );
             let (circuit, assignment) = fake(value);
             assert_eq!(circuit.heights(), taus, "the fake has the large tier's heights");

@@ -355,7 +355,7 @@ fn leaf_shape_is_bound_by_its_kind_and_fixed_polynomial() {
             }
         })
         .collect();
-    tables.0[DensePoly::Fixed as usize] = d.tiers[SMALL].fixed.polynomial(&columns);
+    tables.0[DensePoly::Fixed.index()] = d.tiers[SMALL].fixed.polynomial(&columns);
     let statement = child.statement(d.statement);
     let items: Vec<_> = (0..2)
         .map(|_| ChildWitness {

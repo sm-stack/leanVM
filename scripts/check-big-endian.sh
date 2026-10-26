@@ -17,6 +17,8 @@ case "$target" in
     *) echo "Set the Cargo linker and runner for $target explicitly." ;;
 esac
 cargo run --release -p leanvm --example endian_verifier -- export "$fixture"
+cargo run --release -p leanvm --example endian_verifier -- export "$fixture-zk" zk
 cargo build --release -p leanvm --lib --target "$target"
 cargo test --release -p leanvm_guest -p leansphincs-members-host --target "$target"
 cargo run --release -p leanvm --example endian_verifier --target "$target" -- verify "$fixture"
+cargo run --release -p leanvm --example endian_verifier --target "$target" -- verify "$fixture-zk" zk

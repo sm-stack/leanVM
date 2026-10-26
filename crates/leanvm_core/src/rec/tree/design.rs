@@ -56,6 +56,8 @@ pub(crate) enum Level {
     Node(usize),
     /// One proof of the large tier, whose set it states.
     Wrap,
+    /// One proof of an isolated ZK first level, returned in the small tier.
+    LeafWrap(usize),
 }
 
 /// One of a tree's circuits: its tier, and what it verifies.
@@ -89,6 +91,8 @@ pub(crate) struct Design<'p> {
     pub(crate) leaf: ProofShape<'p>,
     /// Leaf keys are witnesses and their program claims close in the first level.
     pub(crate) mixed: bool,
+    /// Isolate mixed ZK first levels from the shared small tier.
+    pub(crate) split_zk: bool,
     /// Class zero's inclusive member-list bound.
     pub(crate) max_members: usize,
     /// Additional first-level leaf shapes and their inclusive member-list bounds.
@@ -191,7 +195,7 @@ impl<T> NodeInputs<'_, T> {
             Self::Shape => F192::ZERO,
             Self::Prove { tables, .. } => {
                 let at: Vec<F192> = point.iter().map(|&w| b.e(w)).collect();
-                mle_eval_par(&tables.0[poly as usize], &at)
+                mle_eval_par(&tables.0[poly.index()], &at)
             }
         };
         b.free_e(value)
@@ -234,11 +238,12 @@ impl<'p> Design<'p> {
     /// # Errors
     ///
     /// Returns an error if no proof of the program has the leaves' shape, or the heights admit no recursion proof.
-    pub(crate) fn new(
+    pub(crate) fn new_with_zk(
         program: &Program,
         shape: &TreeShape,
         taus: &[PerRecTable<usize>],
         extra: &[(Program, super::LeafShape, usize)],
+        split_zk: bool,
     ) -> Result<Self, TreeError> {
         let TreeShape {
             leaf,
@@ -248,7 +253,26 @@ impl<'p> Design<'p> {
             claims,
         } = *shape;
         let leaf = ProofShape::new(program, leaf).map_err(|e| TreeError::LeafShape(e.into()))?;
-        let places = Place::all(arity, claims, 1 + extra.len());
+        let mut places = Place::all(arity, claims, 1 + extra.len());
+        let zk_classes: Vec<_> = std::iter::once(shape.leaf)
+            .chain(extra.iter().map(|(_, s, _)| *s))
+            .enumerate()
+            .filter_map(|(i, s)| (split_zk && s.is_zero_knowledge()).then_some(i))
+            .collect();
+        let base_tiers = claims.map_or(1, |c| c.tiers());
+        places.retain(|p| !matches!(p.level, Level::First(i) if zk_classes.contains(&i)));
+        let small_end = places.iter().take_while(|p| p.tier == SMALL).count();
+        places.splice(
+            small_end..small_end,
+            zk_classes.iter().map(|&class| Place {
+                tier: SMALL,
+                level: Level::LeafWrap(class),
+            }),
+        );
+        places.extend(zk_classes.iter().enumerate().map(|(i, &class)| Place {
+            tier: base_tiers + i,
+            level: Level::First(class),
+        }));
         let tiers = (0..taus.len())
             .map(|tier| {
                 let start = places.iter().position(|p| p.tier == tier).expect("a tier has circuits");
@@ -259,7 +283,7 @@ impl<'p> Design<'p> {
                     fixed: FixedLayout::new(&taus[tier]),
                     places: start..end,
                     kind_bits: crate::log2_ceil_usize(end - start),
-                    capacity: claims.map(|c| c.tier_capacity(tier)),
+                    capacity: claims.map(|c| c.tier_capacity(if tier < base_tiers { tier } else { SMALL })),
                 })
             })
             .collect::<Result<Vec<_>, TreeError>>()?;
@@ -271,17 +295,17 @@ impl<'p> Design<'p> {
         let tier_shift = tiers.iter().map(|t| t.kind_bits).max().unwrap_or(0);
         let fixed_vars = |tier: usize| tiers.get(tier).map_or(0, |t| t.fixed.kappa() + t.kind_bits);
         let rv = leaf.program().rv();
-        let vars = DenseVars([
+        let mut vars = vec![
             crate::log2_strict_usize(rv.entries().len()) + N_TUPLE_BITS,
             crate::log2_ceil_usize(rv.image().len().max(1)),
-            fixed_vars(SMALL),
-            fixed_vars(LARGE),
-        ]);
-        // A tree of one tier has no wide polynomial, the last.
-        let n_polys = DensePoly::COUNT - usize::from(tiers.len() == 1);
-        let statement = StatementLayout::new(vars.0.into_iter().max().unwrap_or(0), n_polys);
+        ];
+        vars.extend((0..tiers.len().max(2)).map(fixed_vars));
+        let vars = DenseVars(vars);
+        let n_polys = 2 + tiers.len();
+        let statement = StatementLayout::new(vars.0.iter().copied().max().unwrap_or(0), n_polys);
         Ok(Self {
             mixed: false,
+            split_zk,
             max_members: 0,
             extra_leaves: extra
                 .iter()
@@ -325,6 +349,15 @@ impl<'p> Design<'p> {
         tag.extend_from_slice(self.leaf.program().digest());
         if self.mixed {
             tag.extend_from_slice(b"/mixed-members/2");
+            if self.leaf.shape().is_zero_knowledge()
+                || self.extra_leaves.iter().any(|(l, _)| l.shape().is_zero_knowledge())
+            {
+                tag.extend_from_slice(b"/zk-leaves/1");
+                tag.push(u8::from(self.split_zk));
+                for leaf in std::iter::once(&self.leaf).chain(self.extra_leaves.iter().map(|(l, _)| l)) {
+                    tag.push(u8::from(leaf.shape().is_zero_knowledge()));
+                }
+            }
             tag.extend_from_slice(&(self.max_members as u64).to_le_bytes());
             tag.extend_from_slice(&(self.extra_leaves.len() as u64).to_le_bytes());
             for (leaf, max) in &self.extra_leaves {
@@ -378,13 +411,17 @@ impl<'p> Design<'p> {
         match level {
             Level::First(_) => Some(UnionShape::new(capacity, self.arity_0)),
             Level::Node(arity) => Some(UnionShape::optional(capacity, arity)),
-            Level::Wrap => None,
+            Level::Wrap | Level::LeafWrap(_) => None,
         }
     }
 
     /// The position of the circuit of this place, if the tree has one.
     pub(crate) fn place(&self, tier: usize, level: Level) -> Option<usize> {
         self.places.iter().position(|&p| p == Place { tier, level })
+    }
+
+    pub(crate) fn first_place(&self, class: usize) -> Option<usize> {
+        self.places.iter().position(|p| p.level == Level::First(class))
     }
 
     /// The first level's rows, verifying its leaves.
@@ -461,6 +498,7 @@ impl<'p> Design<'p> {
         let (arity, child_tier) = match self.places[position].level {
             Level::Node(arity) => (arity, SMALL),
             Level::Wrap => (1, LARGE),
+            Level::LeafWrap(class) => (1, self.places[self.first_place(class).expect("a ZK first level")].tier),
             Level::First(_) => panic!("circuit {position} is a first-level node"),
         };
         let tier = &self.tiers[child_tier];
@@ -506,7 +544,7 @@ impl<'p> Design<'p> {
         }
         let digest = match (self.places[position].level, self.union_shape(position)) {
             // A wrap states its child's set.
-            (Level::Wrap, _) => digests[0],
+            (Level::Wrap | Level::LeafWrap(_), _) => digests[0],
             (_, Some(shape)) => shape.rows(&mut b, &session, &digests, inputs.union()),
             (_, None) => Kind::Node.digest_rows(&mut b, &words),
         };
@@ -548,7 +586,7 @@ impl<'p> Design<'p> {
     pub(crate) fn shape(&self, position: usize) -> Finished {
         let rows = match self.places[position].level {
             Level::First(_) => self.first_rows_at(position, &NodeInputs::Shape),
-            Level::Node(_) | Level::Wrap => self.node_rows(&NodeInputs::Shape, position),
+            Level::Node(_) | Level::Wrap | Level::LeafWrap(_) => self.node_rows(&NodeInputs::Shape, position),
         };
         rows.reduce(self, ProofSource::Shape)
     }
@@ -565,7 +603,7 @@ impl<'p> Design<'p> {
         claims: &mut NodeClaims<Ew>,
     ) {
         let p = &program.point;
-        let kbc = self.vars.0[DensePoly::Bytecode as usize] - N_TUPLE_BITS;
+        let kbc = self.vars.0[DensePoly::Bytecode.index()] - N_TUPLE_BITS;
         let (chi, alpha) = p.bytecode.split_at(kbc);
         let ladders: Vec<Vec<Ew>> = chi.iter().map(|&x| inverse_frobenius_ladder(b, x, 1)).collect();
         let mut total = b.zero();
@@ -577,7 +615,7 @@ impl<'p> Design<'p> {
             claims.bound.push(d);
             claims.dense.push(DenseClaim::at(DensePoly::Bytecode, point, None, d));
         }
-        let m = self.vars.0[DensePoly::Image as usize];
+        let m = self.vars.0[DensePoly::Image.index()];
         let low = p.image_point[..m].to_vec();
         let image = inputs.hint(b, DensePoly::Image, &low);
         let above = (p.image_point[m..].iter()).fold(p.image_weight, |acc, &x| b.times_one_plus(acc, x));
@@ -618,11 +656,7 @@ impl<'p> Design<'p> {
             })
             .collect();
         DenseClaim {
-            poly: if tier == SMALL {
-                DensePoly::Fixed
-            } else {
-                DensePoly::Wide
-            },
+            poly: DensePoly::at(2 + tier),
             low,
             terms,
         }
@@ -633,11 +667,11 @@ impl<'p> Design<'p> {
     /// A first-level node reduces no claim on a fixed polynomial, so its carried ones are scaled by `is_node`, zero.
     fn carried(&self, statement: &TreeStatement<Ew>, is_node: Ew, claims: &mut NodeClaims<Ew>) {
         let point = statement.dense_point();
-        for &poly in self.statement.polys() {
+        for poly in self.statement.polys() {
             if self.mixed && !poly.is_fixed() {
                 continue;
             }
-            let n = self.vars.0[poly as usize];
+            let n = self.vars.0[poly.index()];
             let scale = poly.is_fixed().then_some(is_node);
             claims.dense.push(DenseClaim::at(
                 poly,

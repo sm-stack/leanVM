@@ -57,8 +57,8 @@ pub(crate) struct DenseClaim<E> {
 }
 
 /// Each dense polynomial's variables: the bytecode table's, the image's, the fixed polynomial's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DenseVars(pub(crate) [usize; DensePoly::COUNT]);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DenseVars(pub(crate) Vec<usize>);
 
 /// What the dense reduction leaves: one point, and each reduced polynomial's value at its prefix.
 ///
@@ -67,7 +67,7 @@ pub(crate) struct DenseReduced<E> {
     /// The point, one coordinate per round.
     pub(crate) point: Vec<E>,
     /// Each polynomial's value at its prefix of the point, if reduced.
-    pub(crate) values: [Option<E>; DensePoly::COUNT],
+    pub(crate) values: Vec<Option<E>>,
 }
 
 /// The dense reduction's prover: each reduced polynomial and its weight table, both folded as the challenges come.
@@ -138,8 +138,10 @@ impl<E: Copy> DenseTerm<E> {
 
 impl<E> DenseClaim<E> {
     /// The polynomials some claim of these weighs, which the reduction reduces.
-    fn weighed(claims: &[Self]) -> [bool; DensePoly::COUNT] {
-        DensePoly::ALL.map(|p| claims.iter().any(|c| c.poly == p))
+    fn weighed(claims: &[Self], count: usize) -> Vec<bool> {
+        DensePoly::all(count)
+            .map(|p| claims.iter().any(|c| c.poly == p))
+            .collect()
     }
 }
 
@@ -154,7 +156,7 @@ impl<E: Copy + PartialEq> DenseReduced<E> {
         vars: &DenseVars,
         claims: &[DenseClaim<E>],
     ) -> Result<Self, ReduceError> {
-        let reduced = DenseClaim::weighed(claims);
+        let reduced = DenseClaim::weighed(claims, vars.0.len());
         let theta = v.verifier_message();
         let n_terms = claims.iter().map(|c| c.terms.len()).sum();
         let powers = v.powers(theta, n_terms);
@@ -165,7 +167,7 @@ impl<E: Copy + PartialEq> DenseReduced<E> {
             v.mul_add(power, value, acc)
         });
 
-        let rounds = vars.rounds(reduced);
+        let rounds = vars.rounds(&reduced);
         let mut point = Vec::with_capacity(rounds);
         for _ in 0..rounds {
             let h = v.read_round(3, claim, None)?;
@@ -173,7 +175,7 @@ impl<E: Copy + PartialEq> DenseReduced<E> {
             claim = v.poly_eval(&h, r);
             point.push(r);
         }
-        let mut values = [None; DensePoly::COUNT];
+        let mut values = vec![None; vars.0.len()];
         for (value, reduced) in values.iter_mut().zip(reduced) {
             if reduced {
                 *value = Some(v.prover_message()?);
@@ -218,7 +220,7 @@ impl<E: Copy> DenseClaim<E> {
 
 impl DenseVars {
     /// The rounds: the most variables a reduced polynomial has.
-    fn rounds(&self, reduced: [bool; DensePoly::COUNT]) -> usize {
+    fn rounds(&self, reduced: &[bool]) -> usize {
         (self.0.iter().zip(reduced))
             .filter_map(|(&n, r)| r.then_some(n))
             .max()
@@ -232,13 +234,13 @@ impl DenseVars {
         claims: &[DenseClaim<A::E>],
         powers: &[A::E],
         point: &[A::E],
-    ) -> [Option<A::E>; DensePoly::COUNT] {
-        let mut weights = [None; DensePoly::COUNT];
+    ) -> Vec<Option<A::E>> {
+        let mut weights = vec![None; self.0.len()];
         let mut powers = powers.iter().copied();
         for claim in claims {
-            let n = self.0[claim.poly as usize];
+            let n = self.0[claim.poly.index()];
             let xi = claim.weight_at(a, &mut powers, &point[..n]);
-            let slot = &mut weights[claim.poly as usize];
+            let slot = &mut weights[claim.poly.index()];
             *slot = Some(slot.map_or(xi, |w| a.add(w, xi)));
         }
         for (weight, &n) in weights.iter_mut().zip(&self.0) {
@@ -321,24 +323,24 @@ impl<'a> DenseProver<'a> {
 
     /// The prover of the claims under the batching challenge `theta`.
     pub(super) fn new(vars: &DenseVars, tables: &'a DenseTables, claims: &[DenseClaim<F192>], theta: F192) -> Self {
-        let reduced = DenseClaim::weighed(claims);
-        let mut placed: Vec<Vec<Placed>> = DensePoly::ALL.map(|_| Vec::new()).into();
+        let reduced = DenseClaim::weighed(claims, vars.0.len());
+        let mut placed: Vec<Vec<Placed>> = (0..vars.0.len()).map(|_| Vec::new()).collect();
         let mut power = F192::ONE;
         for claim in claims {
             for term in &claim.terms {
                 let coef = term.scale.map_or(power, |s| power * s);
                 if !coef.is_zero() {
-                    placed[claim.poly as usize].push(term.placed(&claim.low, coef));
+                    placed[claim.poly.index()].push(term.placed(&claim.low, coef));
                 }
                 power *= theta;
             }
         }
         let mut message = Msg::default();
-        let parts: Vec<Part> = (DensePoly::ALL.into_iter().zip(placed))
-            .filter(|&(p, _)| reduced[p as usize])
+        let parts: Vec<Part> = (DensePoly::all(vars.0.len()).zip(placed))
+            .filter(|&(p, _)| reduced[p.index()])
             .map(|(p, terms)| {
-                let n_vars = vars.0[p as usize];
-                let base = &tables.0[p as usize];
+                let n_vars = vars.0[p.index()];
+                let base = &tables.0[p.index()];
                 assert_eq!(base.len(), 1 << n_vars, "a dense table has its variables");
                 let (part, first) = Part::new(n_vars, base, &terms);
                 message ^= first;
@@ -743,14 +745,14 @@ mod tests {
     fn dense_claims(rng: &mut Rng, tables: &DenseTables, vars: &DenseVars) -> Vec<DenseClaim<F192>> {
         let mut claims = Vec::new();
         for poly in DensePoly::ALL {
-            let table = &tables.0[poly as usize];
+            let table = &tables.0[poly.index()];
             for _ in 0..2 {
-                let point = rng.ext_vec(vars.0[poly as usize]);
+                let point = rng.ext_vec(vars.0[poly.index()]);
                 let value = mle_eval(table, &point);
                 claims.push(DenseClaim::at(poly, point, None, value));
             }
         }
-        let n = vars.0[DensePoly::Fixed as usize];
+        let n = vars.0[DensePoly::Fixed.index()];
         let low = rng.ext_vec(n - 3);
         let term = |n_low: usize, bits: usize, top: u64, scale: F192| {
             let mut point = low[..n_low].to_vec();
@@ -764,7 +766,7 @@ mod tests {
                 },
                 top: vec![F192::new(top, 0, 0)],
                 scale: Some(scale),
-                value: mle_eval(&tables.0[DensePoly::Fixed as usize], &point),
+                value: mle_eval(&tables.0[DensePoly::Fixed.index()], &point),
             }
         };
         claims.push(DenseClaim {
@@ -782,8 +784,13 @@ mod tests {
     #[test]
     fn the_dense_reduction_reduces_to_the_polynomials() {
         let mut rng = Rng::new(17);
-        let vars = DenseVars([3, 6, 7, 5]);
-        let tables = DenseTables(vars.0.map(|n| (0..1 << n).map(|_| F64(rng.next_u64())).collect()));
+        let vars = DenseVars(vec![3, 6, 7, 5]);
+        let tables = DenseTables(
+            vars.0
+                .iter()
+                .map(|&n| (0..1 << n).map(|_| F64(rng.next_u64())).collect())
+                .collect(),
+        );
         let claims = dense_claims(&mut rng, &tables, &vars);
         let prove = |claims: &[DenseClaim<F192>], forge: bool| {
             let mut ps = ProverState::new(
@@ -836,10 +843,10 @@ mod tests {
         let proof = prove(&claims, false);
         let reduced = verify(&claims, &proof).expect("an honest reduction");
         for poly in DensePoly::ALL {
-            let point = &reduced.point[..vars.0[poly as usize]];
+            let point = &reduced.point[..vars.0[poly.index()]];
             assert_eq!(
-                reduced.values[poly as usize],
-                Some(mle_eval(&tables.0[poly as usize], point)),
+                reduced.values[poly.index()],
+                Some(mle_eval(&tables.0[poly.index()], point)),
                 "{poly:?}"
             );
         }
@@ -852,8 +859,8 @@ mod tests {
         let forged = prove(&false_claims, true);
         let reduced = verify(&false_claims, &forged).expect("the forgery meets the final identity");
         let falsified = DensePoly::ALL.into_iter().filter(|&poly| {
-            let point = &reduced.point[..vars.0[poly as usize]];
-            reduced.values[poly as usize] != Some(mle_eval(&tables.0[poly as usize], point))
+            let point = &reduced.point[..vars.0[poly.index()]];
+            reduced.values[poly.index()] != Some(mle_eval(&tables.0[poly.index()], point))
         });
         assert!(falsified.count() > 0, "a false claim reduced to true values");
     }
@@ -866,7 +873,7 @@ mod tests {
         poly: DensePoly,
         blocks: &[(usize, usize)],
     ) -> DenseClaim<F192> {
-        let n = vars.0[poly as usize];
+        let n = vars.0[poly.index()];
         let low = rng.ext_vec(n);
         let mut terms = Vec::new();
         for &(n_low, bits) in blocks {
@@ -880,7 +887,7 @@ mod tests {
                 },
                 top: Vec::new(),
                 scale: Some(rng.ext()),
-                value: mle_eval(&tables.0[poly as usize], &point),
+                value: mle_eval(&tables.0[poly.index()], &point),
             });
         }
         DenseClaim { poly, low, terms }
@@ -892,12 +899,17 @@ mod tests {
         // blocks of the image and the fixed polynomial have one or two low points, so their weights stay factored for a few
         // rounds; the bytecode's has three, written out at once.
         let mut rng = Rng::new(23);
-        let vars = DenseVars([3, 5, 14, 4]);
-        let tables = DenseTables(vars.0.map(|n| (0..1 << n).map(|_| F64(rng.next_u64())).collect()));
+        let vars = DenseVars(vec![3, 5, 14, 4]);
+        let tables = DenseTables(
+            vars.0
+                .iter()
+                .map(|&n| (0..1 << n).map(|_| F64(rng.next_u64())).collect())
+                .collect(),
+        );
         let mut claims: Vec<DenseClaim<F192>> = (0..3)
             .map(|_| {
                 let point = rng.ext_vec(3);
-                let value = mle_eval(&tables.0[DensePoly::Bytecode as usize], &point);
+                let value = mle_eval(&tables.0[DensePoly::Bytecode.index()], &point);
                 DenseClaim::at(DensePoly::Bytecode, point, None, value)
             })
             .collect();
@@ -924,10 +936,10 @@ mod tests {
         );
         let reduced = DenseReduced::verify(&mut vs, &vars, &claims).expect("an honest reduction");
         for poly in DensePoly::ALL {
-            let point = &reduced.point[..vars.0[poly as usize]];
+            let point = &reduced.point[..vars.0[poly.index()]];
             assert_eq!(
-                reduced.values[poly as usize],
-                Some(mle_eval(&tables.0[poly as usize], point)),
+                reduced.values[poly.index()],
+                Some(mle_eval(&tables.0[poly.index()], point)),
                 "{poly:?}"
             );
         }

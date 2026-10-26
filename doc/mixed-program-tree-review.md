@@ -38,11 +38,11 @@ Every signature user trusts the authorized leanSPHINCS member guest. Review its 
 
 ## Design decisions and limits
 
-All classes use one output convention. The alternative of a label-authenticated mode is unnecessary here; a prover-controlled mode would be unsound. All first-level circuits live in the small recursion tier and share padded heights. This keeps fixed-polynomial selection and two-tier wrapping contained, but the largest leaf verifier may raise costs for smaller classes. Separate recursion tiers or a large-subtree wrapper were alternatives, not implemented. All classes currently share first-level arity.
+All classes use one output convention. The alternative of a label-authenticated mode is unnecessary here; a prover-controlled mode would be unsound. Plain first levels share small-tier heights. Each ZK class has a dedicated first level and a small-tier LeafWrap; unwrapped ZK first levels are refused as small-tier children. The reduction and seal authenticate one fixed polynomial per tier. Adding ZK leaves retains the old plain padded heights at the measured shape, with small additional kind/statement rows. All classes currently share first-level arity.
 
 Member order and duplicates are bound by the execution output, while declared root sets are canonical unions/subsets. The general aggregation API still supports intentional narrowing; only the running-root `fold` API promises full retention. The claim capacity is exclusive. An accumulator's failed fold retains its previous root; closing empty state returns no proof.
 
-Class-key v1, tree-envelope v20 and previous circuit keys are not compatible with this revision. Consumers must port the list relation, v2 descriptors, all first-level kinds, the kind low bit, and the new tree session/envelope before accepting roots. Standalone proof/key formats remain unchanged. No Go, Cannon or OP Stack changes were made. Big-endian validation is compile-only; proof production on big-endian machines remains unsupported. Small adversarial tests do not establish a composed quantitative soundness bound.
+Class-key v1, tree-envelope v20 and previous circuit keys are not compatible with this revision. Consumers must port the list relation, v2 descriptors, all first-level kinds, the kind low bit, and the new tree session/envelope before accepting roots. Standalone proof/key formats remain unchanged. No Go, Cannon or OP Stack changes were made. Big-endian validation includes release codegen and QEMU verification of native-generated plain and ZK fixtures; proof production on big-endian machines remains unsupported. Small adversarial tests do not establish a composed quantitative soundness bound.
 
 ## Upstream interactions
 
@@ -54,3 +54,11 @@ Checked read-only via GitHub on 2026-10-25; all remain open:
 - [PR #553](https://github.com/leanEthereum/leanVM/pull/553), head `0c5a8f3dc422b0e8ef4947fb62a579603fb8ae24`: replaces the recursion machine and changes ISA/proof semantics. The member-list, class-kind, key and seal bindings require a semantic port into its generated verifier, with new artifacts and pins.
 
 No upstream comments or PRs were made. Native root fixed-column openings remain the separate unimplemented design in the main document.
+
+## ZK extension from d2f36540
+
+See [design, privacy and measurements](mixed-program-tree-zk.md). Review the witnessed entry passed as a public recorder value, ZK session derived from the witnessed VK digest, outer key commitment verification, and the program opening against the witnessed root/image. Members remain public and bound to the verified output. Kind separation uses the leaf envelope, announcement/kind, session and authenticated circuit descriptor; a VK alone does not distinguish plain from ZK.
+
+The ZK-only class-key v3 descriptor includes all class kinds and placement; no-ZK class keys stay byte-identical v2. LeafWrap states the same set and introduces the dedicated tier's fixed claim. Subsequent nodes carry it through reduction; seals authenticate every tier root. Seal v2 and its empty-first-level exception remain unchanged. The trusted loader still requires genuine externally authenticated bytes, including every added tier; a digest is not a substitute for this authentication.
+
+`mixed_zk_classes_wrap_fold_seal_and_refuse_foreign_leaves` combines plain, actual leanSPHINCS-member and ZK leaves; checks direct/sealed roots and checked/trusted reload; bypasses native prechecks to reject wrong keys, members and both kind substitutions in rows; refuses an unwrapped ZK first level. It also tests a ZK class zero without a large aggregation tier. `os_draws_a_fresh_seed_for_each_proof` checks fresh OS draws. Fixed seeds require the development-only `zk/test-util` feature outside zk's own tests. These are regression checks, not a formal privacy proof or security audit.

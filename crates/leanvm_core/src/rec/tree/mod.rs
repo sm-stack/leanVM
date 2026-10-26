@@ -52,7 +52,7 @@ mod embed;
 mod seal;
 pub use seal::{SEAL_LOG_INV_RATE, SealProver, SealRoots};
 mod mixed;
-pub use mixed::{LeafClass, MixedLeaf, ProgramClass};
+pub use mixed::{LeafClass, MixedLeaf, ProgramClass, ZkPlacement};
 
 mod multiset;
 mod proof;

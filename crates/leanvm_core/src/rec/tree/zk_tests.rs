@@ -566,3 +566,110 @@ fn measure_mixed_zk_layouts() {
         );
     }
 }
+
+#[test]
+fn public_zk_placement_round_trips_and_pins_the_caller() {
+    let members = [[1, 2, 3, 4]];
+    let (program, plain) = class(&program(&members), &[37]);
+    let hidden = LeafClass {
+        shape: plain.shape.zero_knowledge(),
+        ..plain
+    };
+    let classes = [plain, hidden];
+    let run = hidden.program.prover(hidden.shape).prove(&program, &[37]).unwrap();
+    let leaf = MixedLeaf {
+        key: program.verifying_key(),
+        proof: &run.proof,
+        output: run.output,
+        members: &members,
+    };
+    let other_members = [[9, 10, 11, 12]];
+    let other_program = plain.program.normalize(&self::program(&other_members)).unwrap();
+    let other_run = plain.program.prover(plain.shape).prove(&other_program, &[37]).unwrap();
+    let other_leaf = MixedLeaf {
+        key: other_program.verifying_key(),
+        proof: &other_run.proof,
+        output: other_run.output,
+        members: &other_members,
+    };
+    for small in [
+        None,
+        Some(Tier {
+            arity: 2,
+            capacity: Capacity { claims: 2, groups: 2 },
+        }),
+    ] {
+        let shape = TreeShape {
+            leaf: plain.shape,
+            arity_0: 1,
+            arity: 2,
+            rate: Rate::MIN,
+            claims: Some(ClaimShape {
+                capacity: Capacity { claims: 8, groups: 4 },
+                small,
+            }),
+        };
+        for placement in [ZkPlacement::Shared, ZkPlacement::Isolated] {
+            let tree = Tree::mixed_classes_with(&classes, shape, placement).unwrap();
+            let isolated = placement == ZkPlacement::Isolated;
+            assert_eq!(
+                tree.design.tiers.len(),
+                1 + usize::from(small.is_some()) + usize::from(isolated)
+            );
+            assert_eq!(
+                tree.design.places.iter().any(|p| matches!(p.level, Level::LeafWrap(_))),
+                isolated
+            );
+            let first = tree.aggregate_programs_at(1, &[leaf], None).unwrap();
+            let root = tree.aggregate(&[&first, &first], None).unwrap();
+            let wide = small.map(|_| {
+                let second = tree.aggregate_programs_at(0, &[other_leaf], None).unwrap();
+                let large = tree.aggregate(&[&first, &second], None).unwrap();
+                assert_eq!(tree.design.places[tree.known(&large.proof).unwrap()].tier, LARGE);
+                // Feeding a LARGE child through another Node exercises its SMALL Wrap too.
+                tree.aggregate(&[&large, &first], None).unwrap()
+            });
+            let prover = tree.seal_prover().unwrap();
+            let roots = prover.roots();
+            let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
+            let digest = Tree::mixed_class_key_digest(&bytes);
+            for trusted in [false, true] {
+                let load = |p| {
+                    if trusted {
+                        Tree::mixed_classes_from_trusted_bytes_with(&classes, shape, p, &bytes, &digest)
+                    } else {
+                        Tree::mixed_classes_from_bytes_with(&classes, shape, p, &bytes, &digest)
+                    }
+                };
+                let loaded = load(placement).unwrap();
+                assert_eq!(loaded.mixed_verifier_bytes(&roots).unwrap(), bytes);
+                let other = if isolated {
+                    ZkPlacement::Shared
+                } else {
+                    ZkPlacement::Isolated
+                };
+                assert!(matches!(load(other), Err(TreeError::MixedClass)));
+                for root in [&first, &root].into_iter().chain(wide.iter()) {
+                    let seal = tree.seal(&prover, &root.proof).unwrap();
+                    loaded
+                        .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                        .unwrap();
+                }
+            }
+            if !isolated {
+                let position = tree.known(&root.proof).unwrap();
+                let evaluations = tree.keys[position]
+                    .verify_fixed(
+                        &root.proof.limbs(),
+                        &tree.design.session(),
+                        shape.rate,
+                        &root.proof.proof,
+                        None,
+                    )
+                    .unwrap();
+                let claims = tree.seal_claims(&root.proof, position, &evaluations).unwrap();
+                assert_eq!(claims.iter().filter(|c| !c.is_empty()).count(), 1);
+            }
+        }
+    }
+}

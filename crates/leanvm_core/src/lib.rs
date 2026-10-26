@@ -158,5 +158,6 @@ pub mod aggregate {
         Accumulator, Aggregate, Capacity, CircuitStats, Claim, ClaimGroup, ClaimLeaf, ClaimSet, ClaimSetError,
         ClaimShape, DensePoly, FalseClaim, Kind, Leaf, LeafClass, LeafShape, MixedLeaf, Part, ProgramClass,
         SEAL_LOG_INV_RATE, SealProver, SealRoots, TableStats, Tier, Tree, TreeError, TreeProof, TreeShape, Unsatisfied,
+        ZkPlacement,
     };
 }

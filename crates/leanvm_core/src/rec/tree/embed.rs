@@ -204,11 +204,23 @@ impl Tree<'static> {
         bytes: &[u8],
         expected_digest: &Hash,
     ) -> Result<Self, TreeError> {
+        Self::mixed_classes_from_bytes_with(classes, shape, ZkPlacement::Isolated, bytes, expected_digest)
+    }
+
+    /// Authenticate a key against the caller's ordered classes, shape and placement.
+    /// The placement is never inferred from untrusted bytes.
+    pub fn mixed_classes_from_bytes_with(
+        classes: &[LeafClass],
+        shape: TreeShape,
+        placement: ZkPlacement,
+        bytes: &[u8],
+        expected_digest: &Hash,
+    ) -> Result<Self, TreeError> {
         let _span = info_span!("load mixed class key").entered();
         if &digest(bytes) != expected_digest {
             return Err(TreeError::ClassKeyDigest);
         }
-        Self::mixed_classes_from_trusted_bytes(classes, shape, bytes, expected_digest)
+        Self::mixed_classes_from_trusted_bytes_with(classes, shape, placement, bytes, expected_digest)
     }
 
     /// Load a verifier-only mixed tree from bytes already authenticated by the caller, without hashing them.
@@ -265,14 +277,33 @@ impl Tree<'static> {
         bytes: &[u8],
         digest: &Hash,
     ) -> Result<Self, TreeError> {
+        Self::mixed_classes_from_trusted_bytes_with(classes, shape, ZkPlacement::Isolated, bytes, digest)
+    }
+
+    /// Load externally authenticated bytes with caller-pinned placement.
+    ///
+    /// # Security
+    /// The exact obligation of [`Tree::mixed_from_trusted_bytes`] applies: the bytes must be genuine
+    /// and associated with `digest`. The digest is not checked against the bytes, including in release.
+    /// Prefer [`Tree::mixed_classes_from_bytes_with`] for untrusted input.
+    pub fn mixed_classes_from_trusted_bytes_with(
+        classes: &[LeafClass],
+        shape: TreeShape,
+        placement: ZkPlacement,
+        bytes: &[u8],
+        digest: &Hash,
+    ) -> Result<Self, TreeError> {
         let _span = info_span!("load trusted mixed class key").entered();
         shape.check()?;
         let mut r = Words(bytes);
-        let zk_count = classes.iter().filter(|c| c.shape.is_zero_knowledge()).count();
+        let zk_count = classes
+            .iter()
+            .filter(|c| placement.isolated() && c.shape.is_zero_knowledge())
+            .count();
         if r.next()? != MAGIC {
             return Err(TreeError::MixedClass);
         }
-        let expected = descriptor(classes, shape, true)?;
+        let expected = descriptor(classes, shape, placement.isolated())?;
         if !r.0.starts_with(&expected) {
             return Err(TreeError::MixedClass);
         }
@@ -313,7 +344,7 @@ impl Tree<'static> {
             .zip(&classes[1..])
             .map(|(p, c)| (p.clone(), c.shape, c.program.max_members))
             .collect();
-        let mut design = Design::new_with_zk(placeholder, &shape, &taus, &extra, true)?;
+        let mut design = Design::new_with_zk(placeholder, &shape, &taus, &extra, placement.isolated())?;
         design.mixed = true;
         design.max_members = classes[0].program.max_members;
         let n_keys = r.usize()?;

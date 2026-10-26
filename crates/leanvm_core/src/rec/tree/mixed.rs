@@ -86,6 +86,22 @@ impl MixedLeaf<'_> {
     }
 }
 
+/// Where mixed classes verify zero-knowledge leaves. The caller pins this with the class shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ZkPlacement {
+    /// Dedicated First tiers and SMALL LeafWrap circuits (the compatibility default).
+    #[default]
+    Isolated,
+    /// First circuits share the base tier, including its padded heights; no LeafWrap circuits.
+    Shared,
+}
+
+impl ZkPlacement {
+    pub(super) const fn isolated(self) -> bool {
+        matches!(self, Self::Isolated)
+    }
+}
+
 impl Tree<'static> {
     /// Build a mixed-program claim-set tree from class data alone.
     ///
@@ -107,6 +123,16 @@ impl Tree<'static> {
     /// Plain first levels share the small tier's heights; each ZK first level has a dedicated tier and small-tier wrap.
     /// Each circuit has its own authenticated kind.
     pub fn mixed_classes(classes: &[LeafClass], shape: TreeShape) -> Result<Self, TreeError> {
+        Self::mixed_classes_with(classes, shape, ZkPlacement::Isolated)
+    }
+
+    /// Build mixed classes with caller-selected ZK placement. Shared First circuits use the base tier's
+    /// heights and can be Node children directly, with or without a separate large aggregation tier.
+    pub fn mixed_classes_with(
+        classes: &[LeafClass],
+        shape: TreeShape,
+        placement: ZkPlacement,
+    ) -> Result<Self, TreeError> {
         let first = classes.first().ok_or(TreeError::MixedClass)?;
         if shape.claims.is_none() || first.shape != shape.leaf || classes.iter().any(|c| c.program.max_members == 0) {
             return Err(TreeError::MixedClass);
@@ -116,7 +142,13 @@ impl Tree<'static> {
             .iter()
             .map(|c| Ok((Self::mixed_placeholder(c.program)?, c.shape, c.program.max_members)))
             .collect::<Result<Vec<_>, TreeError>>()?;
-        Self::build(&program, shape, Some(first.program.max_members), &extra)
+        Self::build_zk_mode(
+            &program,
+            shape,
+            Some(first.program.max_members),
+            &extra,
+            placement.isolated(),
+        )
     }
 
     /// The class's placeholder program, which fixes a mixed tree's layout and session.

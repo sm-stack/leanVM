@@ -253,7 +253,7 @@ impl Tree<'_> {
     /// the published evaluation is canonically zero. Fresh child-column claims set their
     /// tier's bit unconditionally. OR propagation prevents a used tier disappearing.
     /// The root's own columns are also opened, irrespective of its carried usage bits.
-    fn seal_claims(
+    pub(super) fn seal_claims(
         &self,
         root: &TreeProof,
         position: usize,

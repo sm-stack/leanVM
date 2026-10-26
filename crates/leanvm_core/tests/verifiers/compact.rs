@@ -63,6 +63,15 @@ fn compact_class_key_differential_fixtures() {
     };
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance/mixed-class-key-v4");
     verify_fixtures(&dir, &classes, shape);
+    // Rebuild the default isolated artifact, not merely load it: bytes and digest are frozen at fc3fc9ec.
+    let tree = Tree::mixed_classes(&classes, shape).unwrap();
+    let roots = tree.seal_prover().unwrap().roots();
+    let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
+    assert_eq!(bytes, std::fs::read(dir.join("class-key.bin")).unwrap());
+    assert_eq!(
+        Tree::mixed_class_key_digest(&bytes).as_slice(),
+        std::fs::read(dir.join("class-key.digest")).unwrap()
+    );
 }
 
 fn verify_fixtures(dir: &Path, classes: &[LeafClass], shape: TreeShape) {

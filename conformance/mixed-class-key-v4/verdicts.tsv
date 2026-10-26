@@ -1,0 +1,9 @@
+name	expected	key	digest	root	claims	seal
+plain-small	accept	class-key.bin	class-key.digest	plain-small/root.bin	plain-small/claims.bin	plain-small/seal.bin
+plain-large	accept	class-key.bin	class-key.digest	plain-large/root.bin	plain-large/claims.bin	plain-large/seal.bin
+mixed-zk	accept	class-key.bin	class-key.digest	mixed-zk/root.bin	mixed-zk/claims.bin	mixed-zk/seal.bin
+one-zk	accept	class-key.bin	class-key.digest	one-zk/root.bin	one-zk/claims.bin	one-zk/seal.bin
+opening-dropped	reject	class-key.bin	class-key.digest	plain-small/root.bin	plain-small/claims.bin	opening-dropped.bin
+opening-added	reject	class-key.bin	class-key.digest	plain-small/root.bin	plain-small/claims.bin	opening-added.bin
+tier-bit-flipped	reject	class-key.bin	class-key.digest	tier-bit-flipped.bin	plain-small/claims.bin	plain-small/seal.bin
+wrong-digest	reject	class-key.bin	wrong.digest	plain-small/root.bin	plain-small/claims.bin	plain-small/seal.bin

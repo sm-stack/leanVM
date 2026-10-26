@@ -1,5 +1,7 @@
 # Zero-knowledge leaves in mixed member trees
 
+> Historical report for `3e269bd4`. Dedicated ZK tiers and LeafWrap remain; [compact class key v4 and selective seal v3](compact-class-key.md) supersedes the key/session compatibility, all-tier seals and measurements below.
+
 This extension starts at `d2f36540` on `op-stack/claim-set-leaves`. It changes no OP Stack code or guest instructions. Plain classes keep their existing class-key bytes. Adding a ZK class requires a newly authenticated v3 class key; existing consumers need not move their pin otherwise.
 
 ## Verification and placement

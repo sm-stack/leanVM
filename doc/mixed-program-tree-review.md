@@ -1,5 +1,13 @@
 # Mixed member-list trees: review packet
 
+## Compact-key revision (current)
+
+[The v4/v3 protocol and soundness argument](compact-class-key.md) supersedes this packet's historical format and empty-seal descriptions below. Tier usage is constrained in the recursion circuits: Boolean child bits, OR propagation, unit usage for fresh child-column claims, and zero published fixed values for unused tiers. Seals open exactly the used tiers plus the root's own tier. They authenticate 102 root-column evaluations, with the complete root proof hashed into the instance before opening challenges. Loaded keys carry no rows and refuse direct verification.
+
+The trusted loader assumes externally authenticated genuine key bytes and the correct associated digest. It does not check that association in release builds. A wrong digest now invalidates existing seals even for First roots, because their own columns require an opening. This removes the previous empty-first-level exception. Correct dimensions alone do not establish that the commitments describe the intended circuits; provisioning still needs the pinned, trusted artifact. See the frozen eight-case differential fixtures and measurement/check report in the protocol document. This is not an independent cryptographic audit.
+
+## Historical member-list and ZK revisions
+
 Scope: the member-list SDK and guest, multi-class first-level circuits, class-key v2, running-root API, and migration from `da5c9648`. This is an implementation review packet, not a formal soundness proof.
 
 ## Threat model and authorization

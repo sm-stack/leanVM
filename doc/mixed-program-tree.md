@@ -1,5 +1,7 @@
 # Mixed-program member-list trees
 
+> **Current protocol:** [Compact class key v4 and selective seal v3](compact-class-key.md) supersedes the key, root, session and seal formats described below. Loaded verifiers require a seal, including First roots. The v2 empty-seal exception is historical. The member-list relation and application authorization rules below still apply.
+
 This fork extends the committed-program tree at `da5c9648`. A tree can now authenticate multiple leaf classes and carry both arbitrary-program statements and leanSPHINCS signature members. No OP Stack code or native root fixed-column-opening optimization is included.
 
 ## One output convention

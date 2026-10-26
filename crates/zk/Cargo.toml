@@ -9,6 +9,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Deterministic seeds are development-only: reusing them destroys zero knowledge.
+test-util = []
+
 [dependencies]
 primitives.workspace = true
 fiat_shamir.workspace = true

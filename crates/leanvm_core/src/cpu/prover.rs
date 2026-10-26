@@ -65,6 +65,10 @@ impl Prover {
     }
 
     /// The same prover, making zero-knowledge proofs from this randomness.
+    ///
+    /// Use [`Randomness::Os`] in production: each call to `prove` draws fresh entropy, even when this prover is
+    /// reused or copied. Deterministic seeds require the development-only `zk/test-util` feature and must never
+    /// be reused across real proofs. The class and table heights are public; choose them independently of secrets.
     #[must_use]
     pub const fn zero_knowledge(self, randomness: Randomness) -> Self {
         Self {

@@ -17,6 +17,7 @@ pub enum Randomness {
     ///
     /// Two proofs under one seed share their keys: their difference shows the difference of their hidden values.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-util"))]
     Fixed([u8; 32]),
 }
 
@@ -36,6 +37,7 @@ impl Randomness {
                     .expect("the operating system gives randomness");
                 Seed(seed)
             }
+            #[cfg(any(test, feature = "test-util"))]
             Self::Fixed(seed) => Seed(seed),
         }
     }
@@ -46,6 +48,7 @@ impl Debug for Randomness {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Os => f.write_str("Os"),
+            #[cfg(any(test, feature = "test-util"))]
             Self::Fixed(_) => f.write_str("Fixed(..)"),
         }
     }
@@ -81,6 +84,16 @@ pub enum Purpose {
 mod tests {
     use super::*;
     use rand_core::RngCore;
+
+    #[test]
+    fn os_draws_a_fresh_seed_for_each_proof() {
+        let draw = || {
+            let mut bytes = [0u8; 32];
+            Randomness::Os.seed().stream(Purpose::Keys).fill_bytes(&mut bytes);
+            bytes
+        };
+        assert_ne!(draw(), draw());
+    }
 
     #[test]
     fn each_purpose_draws_its_own_stream() {

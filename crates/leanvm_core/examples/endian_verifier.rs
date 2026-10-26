@@ -123,7 +123,10 @@ fn main() {
         Tree::mixed_classes_from_bytes(&classes, shape, &key, &pin).unwrap(),
         Tree::mixed_classes_from_trusted_bytes(&classes, shape, &key, &pin).unwrap(),
     ] {
-        tree.verify_claims(&proof, &claims).unwrap();
+        assert!(matches!(
+            tree.verify_claims(&proof, &claims),
+            Err(leanvm::aggregate::TreeError::SealRequired)
+        ));
         tree.verify_claims_sealed(&proof, &claims, tree.seal_roots().unwrap(), &seal)
             .unwrap();
         let mut damaged = seal_bytes.clone();

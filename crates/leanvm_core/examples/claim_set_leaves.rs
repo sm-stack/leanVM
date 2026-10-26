@@ -31,28 +31,16 @@ fn shape(p: &Program, advice: &[u64]) -> LeafShape {
 
 fn parts(bytes: &[u8], classes: usize, tiers: usize) {
     let word = |at| usize::try_from(u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())).unwrap();
-    let descriptor = 8 + 8 + classes * 136 + 48 + if tiers == 2 { 24 } else { 0 } + 8;
+    let descriptor = 8 + 16 + classes * 144 + 48 + if tiers == 2 { 24 } else { 0 } + 8;
     let roots = 8 + 32 * tiers;
     let templates = 32 * classes;
     let tier_bytes = 8 + 48 * tiers;
-    let mut at = descriptor + roots + templates + tier_bytes;
+    let at = descriptor + roots + templates + tier_bytes;
     let circuits = word(at);
-    at += 8;
+    assert_eq!(at + 8 + circuits * 56, bytes.len());
     println!(
-        "key_parts descriptor={descriptor} seal_roots={roots} templates={templates} tiers={tier_bytes} circuit_count_bytes=8"
+        "key_parts descriptor={descriptor} seal_roots={roots} templates={templates} tiers={tier_bytes} circuits={circuits}"
     );
-    for i in 0..circuits {
-        let start = at;
-        at += 56;
-        let columns = word(at);
-        at += 8;
-        for _ in 0..columns {
-            let n = word(at);
-            at += 8 + 8 * n;
-        }
-        println!("key_circuit index={i} bytes={}", at - start);
-    }
-    assert_eq!(at, bytes.len());
 }
 
 fn main() {
@@ -233,7 +221,7 @@ fn main() {
             root.claims.n_claims() >= 257
         );
         let (seal, sealing) = plan.warm_then_measure(|| tree.seal(&sealer, &root.proof).unwrap());
-        let (_, direct) = plan.warm_then_measure(|| loaded.verify_claims(&root.proof, &root.claims).unwrap());
+        let (_, direct) = plan.warm_then_measure(|| tree.verify_claims(&root.proof, &root.claims).unwrap());
         let (_, sealed) = plan.warm_then_measure(|| {
             loaded
                 .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)

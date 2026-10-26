@@ -175,6 +175,9 @@ pub enum TreeError {
     /// A mixed tree requires claim sets and leaves matching its program classes.
     #[error("mixed trees require claim sets and leaves matching the program class")]
     MixedClass,
+    /// Compact verifiers authenticate root columns through the seal.
+    #[error("a compact verifier requires a seal")]
+    SealRequired,
     /// The arities make no tree: a first level takes at least one leaf, a node at least two children.
     #[error("a first level of {arity_0} leaves and nodes of {arity} children make no tree")]
     Arity {
@@ -898,21 +901,30 @@ impl<'p> Tree<'p> {
     ///
     /// # Errors
     ///
-    /// A tree of outputs. Otherwise the first check that refuses.
+    /// A tree of outputs, a compact loaded verifier ([`TreeError::SealRequired`]), or the first failed check.
+    /// Use [`Tree::verify_claims_sealed`] with a compact class key.
     #[tracing::instrument(name = "Verify claim-set tree", skip_all)]
     pub fn verify_claims(&self, root: &TreeProof, claims: &ClaimSet) -> Result<(), TreeError> {
+        if self.verifier_only {
+            return Err(TreeError::SealRequired);
+        }
         let position = self.verify_claims_unsettled(root, claims)?;
         self.settle(&root.statement(self.design.statement), position)
     }
 
     /// Everything [`Tree::verify_claims`] checks before settling the root's claims; the root's position.
     fn verify_claims_unsettled(&self, root: &TreeProof, claims: &ClaimSet) -> Result<usize, TreeError> {
+        let position = self.check_claims_statement(root, claims)?;
+        self.read(root, position).map_err(TreeError::Root)?;
+        Ok(position)
+    }
+
+    fn check_claims_statement(&self, root: &TreeProof, claims: &ClaimSet) -> Result<usize, TreeError> {
         let capacity = self.capacity()?;
         let d = &self.design;
         self.check_rate(root)?;
         let position = self.known(root)?;
         claims.check(capacity).map_err(TreeError::ClaimSet)?;
-        self.read(root, position).map_err(TreeError::Root)?;
         let statement = root.statement(d.statement);
         if statement.digest_words() != claims.digest() {
             return Err(TreeError::Claims);
@@ -963,7 +975,7 @@ impl<'p> Tree<'p> {
     }
 
     /// [`Tree::settle`], the fixed polynomials evaluated only if `fixed`: otherwise the caller settles them.
-    fn settle_with(&self, s: &TreeStatement, position: usize, fixed: bool) -> Result<(), TreeError> {
+    fn settle_with(&self, s: &TreeStatement, _position: usize, fixed: bool) -> Result<(), TreeError> {
         let vars = &self.design.vars.0;
         for poly in self.design.statement.polys() {
             if self.design.mixed && !poly.is_fixed() {
@@ -973,7 +985,7 @@ impl<'p> Tree<'p> {
                 continue;
             }
             // A first-level node reduces no claim on a fixed polynomial.
-            if poly.is_fixed() && matches!(self.design.places[position].level, Level::First(_)) {
+            if poly.is_fixed() && s.usage(poly.index() - 2) == F192::ZERO {
                 continue;
             }
             let point = &s.dense_point()[..vars[poly.index()]];
@@ -1580,25 +1592,26 @@ mod tests {
         assert_eq!(
             d.session().0,
             [
-                87, 89, 78, 170, 2, 197, 204, 195, 48, 116, 222, 158, 134, 82, 100, 134, 76, 68, 231, 51, 48, 12, 119,
-                186, 252, 77, 70, 211, 58, 210, 159, 170
+                74, 31, 47, 139, 173, 30, 148, 246, 229, 100, 223, 25, 39, 253, 66, 69, 172, 12, 83, 153, 223, 9, 109,
+                185, 148, 241, 78, 46, 81, 1, 122, 255
             ]
         );
         assert_eq!(d.tiers.len(), 1);
         assert_eq!(d.tiers[SMALL].taus.into_values(), [16, 16, 14, 10, 14, 10]);
-        assert_eq!(d.statement.len(), 97);
+        assert_eq!(d.statement.len(), 98);
         let sections = [
             Section::Kind,
             Section::Digest,
             Section::DensePoint,
             Section::DenseValues,
+            Section::Usage,
             Section::Rows,
             Section::Cols,
             Section::Matrices,
         ];
         assert_eq!(
             sections.map(|s| d.statement.range(s)),
-            [0..1, 1..3, 3..24, 24..27, 27..41, 41..55, 55..97]
+            [0..1, 1..3, 3..24, 24..27, 27..28, 28..42, 42..56, 56..98]
         );
     }
 
@@ -2602,8 +2615,8 @@ mod tests {
             assert_eq!(
                 d.session().0,
                 [
-                    139, 216, 250, 146, 119, 39, 43, 220, 170, 158, 157, 121, 189, 131, 106, 199, 159, 23, 127, 85, 3,
-                    49, 194, 19, 133, 20, 160, 139, 191, 190, 220, 73
+                    146, 249, 228, 219, 2, 153, 132, 224, 249, 215, 134, 58, 143, 176, 129, 65, 80, 103, 6, 161, 138,
+                    107, 65, 8, 71, 17, 169, 112, 11, 14, 164, 80
                 ]
             );
             let sections = [
@@ -2611,16 +2624,17 @@ mod tests {
                 Section::Digest,
                 Section::DensePoint,
                 Section::DenseValues,
+                Section::Usage,
                 Section::Rows,
                 Section::Cols,
                 Section::Matrices,
             ];
             assert_eq!(d.tiers.len(), 1);
             assert_eq!(d.tiers[SMALL].taus.into_values(), [17, 17, 15, 11, 14, 10]);
-            assert_eq!(d.statement.len(), 99);
+            assert_eq!(d.statement.len(), 100);
             assert_eq!(
                 sections.map(|s| d.statement.range(s)),
-                [0..1, 1..3, 3..26, 26..29, 29..43, 43..57, 57..99]
+                [0..1, 1..3, 3..26, 26..29, 29..30, 30..44, 44..58, 58..100]
             );
         }
     }

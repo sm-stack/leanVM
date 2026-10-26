@@ -25,7 +25,7 @@ pub(crate) use dense::{Bits, DenseClaim, DenseProver, DenseReduced, DenseTerm, D
 pub(crate) use matrix::{MatrixClaim, MatrixProver, MatrixReduced};
 
 /// The protocol half of a node's reduction's session tag.
-pub(super) const SESSION_TAG: &[u8] = b"leanvm-tree-reduction-5";
+pub(super) const SESSION_TAG: &[u8] = b"leanvm-tree-reduction-6";
 
 /// The polynomials the program and the tree's circuits fix, on which tree proofs carry claims.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

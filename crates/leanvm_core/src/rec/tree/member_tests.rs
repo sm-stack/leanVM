@@ -156,7 +156,10 @@ fn member_classes_fold_deduplicate_close_and_load() {
     let trusted = Tree::mixed_classes_from_trusted_bytes(&f.classes, f.tree.shape, &bytes, &digest).unwrap();
     let seal = f.tree.seal(&sealer, &root.proof).unwrap();
     for verifier in [&loaded, &trusted] {
-        verifier.verify_claims(&root.proof, &root.claims).unwrap();
+        assert!(matches!(
+            verifier.verify_claims(&root.proof, &root.claims),
+            Err(TreeError::SealRequired)
+        ));
         verifier
             .verify_claims_sealed(&root.proof, &root.claims, verifier.seal_roots().unwrap(), &seal)
             .unwrap();
@@ -166,9 +169,11 @@ fn member_classes_fold_deduplicate_close_and_load() {
     let misconfigured = Tree::mixed_classes_from_trusted_bytes(&f.classes, f.tree.shape, &bytes, &wrong_pin).unwrap();
     for first in &firsts {
         let empty = f.tree.seal(&sealer, &first.proof).unwrap();
-        misconfigured
-            .verify_claims_sealed(&first.proof, &first.claims, &sealer.roots(), &empty)
-            .unwrap();
+        assert!(
+            misconfigured
+                .verify_claims_sealed(&first.proof, &first.claims, &sealer.roots(), &empty)
+                .is_err()
+        );
     }
     assert!(
         misconfigured

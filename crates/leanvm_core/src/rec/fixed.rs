@@ -68,6 +68,14 @@ impl FixedColumn {
 }
 
 impl FixedColumns {
+    /// Markers only: compact verifiers never evaluate these absent columns locally.
+    pub(crate) fn absent() -> Self {
+        // Bus evaluation caches by Arc identity: distinct columns need distinct markers.
+        Self {
+            columns: (0..FixedColumn::COUNT).map(|_| Arc::new(Vec::new())).collect(),
+        }
+    }
+
     /// The fixed columns of a circuit at its heights.
     ///
     /// The slots of a wire class, in table, row and slot order, form one cycle: each slot's `next` is the following one's key.
@@ -120,16 +128,6 @@ impl FixedColumns {
             .map(|c| Arc::new(vec![F64::ZERO; 1 << taus[FixedColumn::at(c).table()]]))
             .collect();
         Self { columns }
-    }
-
-    /// Columns computed before, in stacking order.
-    pub(crate) const fn from_columns(columns: Vec<Arc<Vec<F64>>>) -> Self {
-        Self { columns }
-    }
-
-    /// The columns, in stacking order.
-    pub(crate) fn columns(&self) -> &[Arc<Vec<F64>>] {
-        &self.columns
     }
 
     /// A column.

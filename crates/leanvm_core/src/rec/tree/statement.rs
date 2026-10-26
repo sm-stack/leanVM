@@ -43,6 +43,8 @@ pub(crate) enum Section {
     DensePoint,
     /// Each dense polynomial's value at its prefix of the point.
     DenseValues,
+    /// One Boolean per fixed tier, indicating a carried nonzero-weight claim.
+    Usage,
     /// The matrix claims' row point.
     Rows,
     /// The matrix claims' column point.
@@ -95,11 +97,12 @@ impl Kind {
 
 impl Section {
     /// Every section, in statement order.
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Kind,
         Self::Digest,
         Self::DensePoint,
         Self::DenseValues,
+        Self::Usage,
         Self::Rows,
         Self::Cols,
         Self::Matrices,
@@ -128,6 +131,7 @@ impl StatementLayout {
             Section::Digest => 2,
             Section::DensePoint => self.n_dense,
             Section::DenseValues => self.n_polys,
+            Section::Usage => self.n_polys - 2,
             Section::Rows | Section::Cols => self.n_matrix,
             Section::Matrices => 2 * N_CIRCUITS,
         }
@@ -202,6 +206,11 @@ impl<E: Copy> TreeStatement<E> {
     /// A dense polynomial's claimed value at its prefix of the point.
     pub(crate) fn dense_value(&self, poly: DensePoly) -> E {
         self.section(Section::DenseValues)[poly.index()]
+    }
+
+    /// The constrained usage bit of a fixed tier.
+    pub(crate) fn usage(&self, tier: usize) -> E {
+        self.section(Section::Usage)[tier]
     }
 
     /// The matrices' row point.

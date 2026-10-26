@@ -86,16 +86,14 @@ fn main() {
         let proof = TreeProof::from_bytes(&std::fs::read(path.join("root.bin")).unwrap()).unwrap();
         let claims = ClaimSet::from_bytes(&std::fs::read(path.join("claims.bin")).unwrap()).unwrap();
         let seal = ProofTranscript::from_bytes(&std::fs::read(path.join("seal.bin")).unwrap()).unwrap();
-        let (_, direct) = plan.warm_then_measure(|| tree.verify_claims(&proof, &claims).unwrap());
         let (_, sealed) = plan.warm_then_measure(|| {
             tree.verify_claims_sealed(&proof, &claims, tree.seal_roots().unwrap(), &seal)
                 .unwrap();
         });
         println!(
-            "class_key_bytes={} load_ms={:.4} direct_ms={:.4} sealed_ms={:.4}",
+            "class_key_bytes={} load_ms={:.4} sealed_ms={:.4}",
             key.len(),
             load.mean() * 1000.0,
-            direct.mean() * 1000.0,
             sealed.mean() * 1000.0
         );
         return;
@@ -233,8 +231,8 @@ fn main() {
             ]
         });
         let (root, node_time) = plan.warm_then_measure(|| tree.aggregate(&[&firsts[0], &firsts[1]], None).unwrap());
-        let (_, verify) = Plan::new(7, Duration::ZERO)
-            .warm_then_measure(|| verifier.verify_claims(&root.proof, &root.claims).unwrap());
+        let (_, verify) =
+            Plan::new(7, Duration::ZERO).warm_then_measure(|| tree.verify_claims(&root.proof, &root.claims).unwrap());
         let path = directory.join(format!("distinct-{distinct}"));
         std::fs::create_dir_all(&path).unwrap();
         let (seal, seal_time) = plan.warm_then_measure(|| tree.seal(&sealer, &root.proof).unwrap());

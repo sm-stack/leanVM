@@ -178,6 +178,10 @@ impl Circuit {
     }
 }
 
+#[path = "root_fixed.rs"]
+mod root_fixed;
+pub(crate) use root_fixed::FixedEvaluation;
+
 impl CircuitKey {
     /// The key of a circuit: its layout at its heights, and its fixed columns.
     ///

@@ -453,19 +453,24 @@ mod tests {
         let mut wrong_digest = digest;
         wrong_digest[0] ^= 1;
         let wrong_session = Tree::mixed_from_trusted_bytes(f.class, shape, &bytes, &wrong_digest).unwrap();
-        for (index, root) in [&first, &large, &wrap, &narrowed].into_iter().enumerate() {
+        for root in [&first, &large, &wrap, &narrowed] {
             let seal = tree.seal(&prover, &root.proof).unwrap();
-            wrong_session.verify_claims(&root.proof, &root.claims).unwrap();
+            assert!(matches!(
+                wrong_session.verify_claims(&root.proof, &root.claims),
+                Err(TreeError::SealRequired)
+            ));
             let result = wrong_session.verify_claims_sealed(&root.proof, &root.claims, &roots, &seal);
-            if index == 0 {
-                assert!(seal.narg.is_empty());
-                result.unwrap();
-            } else {
-                assert!(!seal.narg.is_empty(), "node and wrap roots carry fixed claims");
-                assert!(result.is_err(), "a wrong digest must refuse the node or wrap seal");
-            }
+            assert!(!seal.narg.is_empty());
+            assert!(result.is_err(), "a wrong digest must refuse every v3 seal");
             for verifier in [&tree, &loaded, &trusted] {
-                verifier.verify_claims(&root.proof, &root.claims).unwrap();
+                if verifier.verifier_only {
+                    assert!(matches!(
+                        verifier.verify_claims(&root.proof, &root.claims),
+                        Err(TreeError::SealRequired)
+                    ));
+                } else {
+                    verifier.verify_claims(&root.proof, &root.claims).unwrap();
+                }
                 verifier
                     .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
                     .unwrap();
@@ -676,18 +681,18 @@ mod tests {
             ));
         }
         // Re-pin malformed encodings to exercise the parser rather than only authentication.
-        let header = 8 + (1 + 5 + crate::N_TABLES + 1 + 6 + 1) * 8;
+        let header = 8 + (2 + 5 + crate::N_TABLES + 2 + 6 + 1) * 8;
         let tier_count = header + 8 + 32 + 32;
         let tier_heights = tier_count + 8;
         let key_count = tier_heights + Table::ALL.len() * 8;
-        let column_count = key_count + 8 + 8 + Table::ALL.len() * 8;
+        let circuit_start = key_count + 8;
         for at in [
             header,
             tier_count,
             tier_heights,
             key_count,
-            column_count,
-            column_count + 8,
+            circuit_start,
+            circuit_start + 8,
         ] {
             let mut bad = bytes.clone();
             bad[at..at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -698,7 +703,7 @@ mod tests {
             let result = std::panic::catch_unwind(|| Tree::mixed_from_trusted_bytes(f.class, f.shape, &bad, &pin));
             assert!(result.is_ok_and(|r| r.is_err()), "trusted malformed word at {at}");
         }
-        for end in [0, 7, 8, header, column_count, bytes.len() - 1] {
+        for end in [0, 7, 8, header, circuit_start, bytes.len() - 1] {
             let short = &bytes[..end];
             assert!(Tree::mixed_from_trusted_bytes(f.class, f.shape, short, &pin).is_err());
             assert!(Tree::mixed_from_bytes(f.class, f.shape, short, &Tree::mixed_class_key_digest(short)).is_err());
@@ -710,7 +715,10 @@ mod tests {
         let root = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
         let sealer = f.tree.seal_prover().unwrap();
         let seal = f.tree.seal(&sealer, &root.proof).unwrap();
-        loaded.verify_claims(&root.proof, &root.claims).unwrap();
+        assert!(matches!(
+            loaded.verify_claims(&root.proof, &root.claims),
+            Err(TreeError::SealRequired)
+        ));
         loaded
             .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
             .unwrap();
@@ -747,7 +755,14 @@ mod tests {
             let mut bad_roots = roots.clone();
             bad_roots.0[0][0] ^= 1;
             for verifier in [&checked, &trusted] {
-                verifier.verify_claims(&root.proof, &root.claims).unwrap();
+                if verifier.verifier_only {
+                    assert!(matches!(
+                        verifier.verify_claims(&root.proof, &root.claims),
+                        Err(TreeError::SealRequired)
+                    ));
+                } else {
+                    verifier.verify_claims(&root.proof, &root.claims).unwrap();
+                }
                 verifier
                     .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
                     .unwrap();
@@ -778,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_loader_wrong_digest_rejects_node_seals_but_not_empty_first_seals() {
+    fn trusted_loader_wrong_digest_rejects_first_and_node_seals() {
         let f = fixture();
         let sealer = f.tree.seal_prover().unwrap();
         let roots = sealer.roots();
@@ -791,15 +806,20 @@ mod tests {
         ));
         let trusted = Tree::mixed_from_trusted_bytes(f.class, f.shape, &bytes, &digest).unwrap();
         let first = f.tree.aggregate_programs(&f.leaves(), None).unwrap();
-        // A v2 first-level seal has no opening, so no challenge-dependent check binds its session.
+        // V3 authenticates the root's own columns, even for a first level.
         let first_seal = f.tree.seal(&sealer, &first.proof).unwrap();
-        assert!(first_seal.narg.is_empty() && first_seal.hints.is_empty());
-        trusted
-            .verify_claims_sealed(&first.proof, &first.claims, &roots, &first_seal)
-            .unwrap();
+        assert!(!first_seal.narg.is_empty());
+        assert!(
+            trusted
+                .verify_claims_sealed(&first.proof, &first.claims, &roots, &first_seal)
+                .is_err()
+        );
         let node = f.tree.aggregate(&[&first, &first], None).unwrap();
         let seal = f.tree.seal(&sealer, &node.proof).unwrap();
-        trusted.verify_claims(&node.proof, &node.claims).unwrap();
+        assert!(matches!(
+            trusted.verify_claims(&node.proof, &node.claims),
+            Err(TreeError::SealRequired)
+        ));
         assert!(
             trusted
                 .verify_claims_sealed(&node.proof, &node.claims, &roots, &seal)

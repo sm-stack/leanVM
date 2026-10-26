@@ -39,7 +39,7 @@ use primitives::multilinear::mle_eval_par;
 use std::ops::Range;
 
 /// The protocol half of every recursion proof's session tag.
-const DOMAIN: &[u8] = b"leanvm-tree-18";
+const DOMAIN: &[u8] = b"leanvm-tree-19";
 
 /// The tier of a tree of one tier, or of a claim-set tree's small tier: the first level's.
 pub(crate) const SMALL: usize = 0;
@@ -178,6 +178,8 @@ pub(crate) struct NodeRows {
     digest: Dw,
     /// The claims its rows leave.
     claims: NodeClaims<Ew>,
+    /// Boolean OR of fresh and carried fixed-tier claims, enforced by the circuit.
+    usage: Vec<Ew>,
 }
 
 impl<T> NodeInputs<'_, T> {
@@ -441,6 +443,7 @@ impl<'p> Design<'p> {
         };
         let mut b = Builder::new();
         let mut claims = NodeClaims::default();
+        let usage = vec![b.zero(); self.tiers.len()];
         let mut outputs = Vec::with_capacity(self.arity_0);
         let mut sets = Vec::with_capacity(self.arity_0);
         for i in 0..self.arity_0 {
@@ -490,6 +493,7 @@ impl<'p> Design<'p> {
             position,
             digest,
             claims,
+            usage,
         }
     }
 
@@ -506,6 +510,8 @@ impl<'p> Design<'p> {
         let mut b = Builder::new();
         let zeros = matches!(inputs, NodeInputs::Shape).then(|| FixedColumns::zeros(&tier.taus));
         let mut claims = NodeClaims::default();
+        let mut usage = vec![b.zero(); self.tiers.len()];
+        usage[child_tier] = b.one();
         let mut words = Vec::with_capacity(arity);
         let mut digests = Vec::with_capacity(arity);
         for i in 0..arity {
@@ -534,7 +540,23 @@ impl<'p> Design<'p> {
             claims.bound.extend(rows.hints.iter().map(|h| h.value));
             claims.dense.push(self.fixed_claim(&rows.hints, &kind.top, child_tier));
             claims.matrices.push(MatrixClaim::fresh(hash::CIRCUIT, &rows.matrix));
-            self.carried(&statement, kind.is_node, &mut claims);
+            // The verified child circuit fixes each bit. Recheck Booleanity locally, and
+            // force first-level bits to zero: a first level has no carried fixed claims.
+            for (tier, used) in usage.iter_mut().enumerate() {
+                let bit = statement.usage(tier);
+                let one = b.one();
+                let complement = b.add(bit, one);
+                let non_boolean = b.mul(bit, complement);
+                let zero = b.zero();
+                b.eq(non_boolean, zero);
+                let first = b.add(kind.is_node, one);
+                let forbidden = b.mul(first, bit);
+                b.eq(forbidden, zero);
+                // OR(a,b) = a + b + ab over characteristic two.
+                let sum = b.add(*used, bit);
+                *used = b.mul_add(*used, bit, sum);
+            }
+            self.carried(&statement, &mut claims);
             let digest = statement.digest_wire(&mut b);
             if self.claims.is_some() {
                 digests.push(digest);
@@ -553,6 +575,7 @@ impl<'p> Design<'p> {
             position,
             digest,
             claims,
+            usage,
         }
     }
 
@@ -664,15 +687,15 @@ impl<'p> Design<'p> {
 
     /// The claims a child's statement carries.
     ///
-    /// A first-level node reduces no claim on a fixed polynomial, so its carried ones are scaled by `is_node`, zero.
-    fn carried(&self, statement: &TreeStatement<Ew>, is_node: Ew, claims: &mut NodeClaims<Ew>) {
+    /// Each fixed claim is scaled by its verified usage bit; first-level usage is zero.
+    fn carried(&self, statement: &TreeStatement<Ew>, claims: &mut NodeClaims<Ew>) {
         let point = statement.dense_point();
         for poly in self.statement.polys() {
             if self.mixed && !poly.is_fixed() {
                 continue;
             }
             let n = self.vars.0[poly.index()];
-            let scale = poly.is_fixed().then_some(is_node);
+            let scale = poly.is_fixed().then(|| statement.usage(poly.index() - 2));
             claims.dense.push(DenseClaim::at(
                 poly,
                 point[..n].to_vec(),
@@ -725,7 +748,16 @@ impl NodeRows {
             });
         }
         let kind = design.code(self.position);
-        let statement = TreeStatement::from_reduced(b, design.statement, kind, self.digest, &reduced);
+        let mut statement = TreeStatement::from_reduced(b, design.statement, kind, self.digest, &reduced);
+        statement
+            .section_mut(super::statement::Section::Usage)
+            .copy_from_slice(&self.usage);
+        // An unused polynomial's reduction has only zero-weight terms. Its auxiliary
+        // evaluation is immaterial; publish zero, so the root omits that claim canonically.
+        for (tier, &used) in self.usage.iter().enumerate() {
+            let slot = &mut statement.section_mut(super::statement::Section::DenseValues)[tier + 2];
+            *slot = b.mul(used, *slot);
+        }
         for &w in statement.words() {
             b.expose(w);
         }

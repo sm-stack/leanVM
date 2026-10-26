@@ -232,17 +232,97 @@ fn mixed_zk_classes_wrap_fold_seal_and_refuse_foreign_leaves() {
     let roots = sealer.roots();
     let seal = tree.seal(&sealer, &root.proof).unwrap();
     let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
-    assert_eq!(&bytes[..8], b"LVMXCK03");
+    assert_eq!(&bytes[..8], b"LVMXCK04");
     let digest = Tree::mixed_class_key_digest(&bytes);
     for verifier in [
         Tree::mixed_classes_from_bytes(&classes, shape, &bytes, &digest).unwrap(),
         Tree::mixed_classes_from_trusted_bytes(&classes, shape, &bytes, &digest).unwrap(),
     ] {
-        verifier.verify_claims(&root.proof, &root.claims).unwrap();
+        assert!(matches!(
+            verifier.verify_claims(&root.proof, &root.claims),
+            Err(TreeError::SealRequired)
+        ));
         verifier
             .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
             .unwrap();
-        verifier.verify_claims(&wrapped.proof, &wrapped.claims).unwrap();
+        assert!(matches!(
+            verifier.verify_claims(&wrapped.proof, &wrapped.claims),
+            Err(TreeError::SealRequired)
+        ));
+    }
+    // Carried usage excludes the root's own columns (the seal adds those separately).
+    let usage = |a: &Aggregate| {
+        let statement = a.proof.statement(tree.design.statement);
+        (0..3).map(|t| statement.usage(t)).collect::<Vec<_>>()
+    };
+    assert_eq!(usage(&raw), vec![F192::ZERO; 3]);
+    assert_eq!(usage(&wrapped), vec![F192::ZERO, F192::ZERO, F192::ONE]);
+    assert_eq!(usage(&root), vec![F192::ONE, F192::ZERO, F192::ONE]);
+    let plain_node = tree.aggregate(&[&first, &signature], None).unwrap();
+    assert_eq!(usage(&plain_node), vec![F192::ONE, F192::ZERO, F192::ZERO]);
+    let loaded = Tree::mixed_classes_from_bytes(&classes, shape, &bytes, &digest).unwrap();
+    assert!(
+        loaded.tables.0.is_empty(),
+        "compact loading allocates no polynomial tables"
+    );
+    assert!(bytes.len() < 2000);
+    for root in [&raw, &wrapped, &plain_node] {
+        let seal = tree.seal(&sealer, &root.proof).unwrap();
+        loaded
+            .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+            .unwrap();
+        let mut altered = seal.clone();
+        altered.narg[8] ^= 1; // Root fixed-column evaluation: native or PCS checking must refuse.
+        assert!(
+            loaded
+                .verify_claims_sealed(&root.proof, &root.claims, &roots, &altered)
+                .is_err()
+        );
+        let mut pin = digest;
+        pin[0] ^= 1;
+        let wrong = Tree::mixed_classes_from_trusted_bytes(&classes, shape, &bytes, &pin).unwrap();
+        assert!(
+            wrong
+                .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                .is_err()
+        );
+    }
+    // The plain node uses one opening: its root columns and recursive claim share the small tier.
+    let seal = tree.seal(&sealer, &plain_node.proof).unwrap();
+    let count = u64::from_le_bytes(seal.narg[..8].try_into().unwrap()) as usize;
+    let prefix = 8 + 24 * count;
+    let mut dropped = seal.clone();
+    dropped.narg.truncate(prefix);
+    dropped.hints.clear();
+    assert!(
+        loaded
+            .verify_claims_sealed(&plain_node.proof, &plain_node.claims, &roots, &dropped)
+            .is_err()
+    );
+    let mut added = seal.clone();
+    added.narg.extend_from_slice(&seal.narg[prefix..]);
+    added.hints.extend_from_slice(&seal.hints);
+    assert!(
+        loaded
+            .verify_claims_sealed(&plain_node.proof, &plain_node.claims, &roots, &added)
+            .is_err()
+    );
+    let seal = tree.seal(&sealer, &root.proof).unwrap();
+    for tier in 0..3 {
+        let mut forged = root.proof.clone();
+        let at = tree
+            .design
+            .statement
+            .range(super::super::statement::Section::Usage)
+            .start
+            + tier;
+        forged.words[at] += F192::ONE;
+        assert!(tree.verify_claims(&forged, &root.claims).is_err());
+        assert!(
+            loaded
+                .verify_claims_sealed(&forged, &root.claims, &roots, &seal)
+                .is_err()
+        );
     }
     // Class zero can itself be ZK, including a tree without a large aggregation tier.
     let single_shape = TreeShape {
@@ -266,7 +346,10 @@ fn mixed_zk_classes_wrap_fold_seal_and_refuse_foreign_leaves() {
     let pair_bytes = pair.mixed_verifier_bytes(&roots).unwrap();
     let pair_digest = Tree::mixed_class_key_digest(&pair_bytes);
     let loaded = Tree::mixed_classes_from_bytes(&pair_classes, single_shape, &pair_bytes, &pair_digest).unwrap();
-    loaded.verify_claims(&root.proof, &root.claims).unwrap();
+    assert!(matches!(
+        loaded.verify_claims(&root.proof, &root.claims),
+        Err(TreeError::SealRequired)
+    ));
     loaded
         .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
         .unwrap();

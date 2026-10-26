@@ -1,13 +1,14 @@
 //! Settle a mixed root's fixed-polynomial claims by PCS openings, not by evaluating the polynomials.
 //!
-//! A mixed tree's fixed polynomials (`Fixed`, and `Wide` for a tree of two tiers) are functions of its class. Each is
+//! A mixed tree has one fixed polynomial per tier. Each is
 //! committed at [`SEAL_LOG_INV_RATE`]; built trees cache their genuine roots, and loaded trees authenticate them with the class. A root's fixed
 //! claims (`W(r) = v`, read from its verified statement) are then proven by one opening per polynomial, in a
 //! transcript of its own:
 //!
 //! - session: [`SEAL_DOMAIN`] and the authenticated class-key digest for mixed trees;
 //!   the tree's session tag and commitment roots for same-program trees;
-//! - instance: the root's statement words, which carry every `r` and `v` the openings prove.
+//! - instance: the root statement and a hash of the complete root proof;
+//! - prefix: every root fixed-column evaluation in canonical column order.
 //!
 //! So the claims are bound before the opening's challenges, and the verifier builds them from the root it verified,
 //! never from the seal. The opening of a public polynomial at a public point needs no witness: anyone holding the
@@ -20,7 +21,7 @@ use pcs::stack::{CommittedStack, StackClaim, StackCommitment, Statement};
 use pcs::whir::Config;
 
 /// The seal transcript's domain.
-const SEAL_DOMAIN: &[u8] = b"leanvm/mixed-tree-seal/v2";
+const SEAL_DOMAIN: &[u8] = b"leanvm/mixed-tree-seal/v3";
 
 /// The rate the fixed polynomials are committed at, a base-two logarithm: lower than the trees' own rate keeps the
 /// prover's codeword small, higher would shorten the opening.
@@ -34,14 +35,19 @@ fn stack_shape(len: usize) -> Result<(usize, Config, usize), TreeError> {
     Ok((log_n, config, len.div_ceil(lane)))
 }
 
-/// The fixed polynomials a root's statement carries claims on, as `settle` checks them.
-fn fixed_polys<'a>(design: &'a Design<'_>, position: usize) -> impl Iterator<Item = DensePoly> + 'a {
-    // A first-level node reduces no claim on a fixed polynomial.
-    (design.statement.polys())
-        .filter(move |poly| poly.is_fixed() && !matches!(design.places[position].level, Level::First(_)))
+/// The complete root proof is bound before hinted fixed values and PCS challenges.
+/// Its bus points depend on its transcript, so binding only the statement is insufficient.
+fn instance(root: &TreeProof) -> Vec<u64> {
+    let digest = primitives::hash::hash(&root.to_bytes());
+    root.limbs()
+        .as_flattened()
+        .iter()
+        .copied()
+        .chain(primitives::hash::digest_words(&digest))
+        .collect()
 }
 
-/// The roots of a mixed class's committed fixed polynomials: `Fixed`, then `Wide` if the tree has two tiers.
+/// The roots of a mixed class's committed fixed polynomials, in tier order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealRoots(pub Vec<Hash>);
 
@@ -120,40 +126,38 @@ impl Tree<'_> {
         Ok(SealProver { stacks })
     }
 
-    /// The seal of a root: one opening per fixed polynomial its statement claims.
+    /// The seal of a root: one opening per used tier, including the root's own columns.
     ///
     /// # Errors
     ///
     /// A root that is not of this tree.
     #[expect(
         clippy::disallowed_methods,
-        reason = "every claim's point and value is in the instance, the root's statement"
+        reason = "root proof and statement are bound as the instance, values are absorbed before opening challenges"
     )]
     pub fn seal(&self, prover: &SealProver, root: &TreeProof) -> Result<ProofTranscript, TreeError> {
         self.require_prover()?;
         let _span = info_span!("seal").entered();
         let d = &self.design;
         let position = self.known(root)?;
-        let statement = root.statement(d.statement);
-        let mut ps = ProverState::new(
-            &session(self, &prover.roots())?,
-            &LengthPrefixed(root.limbs().as_flattened()),
-        );
-        for poly in fixed_polys(d, position) {
-            let (_, words, stack) = (prover.stacks.iter())
-                .find(|(p, _, _)| *p == poly)
-                .ok_or(TreeError::MixedClass)?;
-            let point = statement.dense_point()[..d.vars.0[poly.index()]].to_vec();
-            let claim = StackClaim::Point {
-                offset: 0,
-                low_point: point,
-                value: statement.dense_value(poly),
-            };
+        let evaluations = self.keys[position]
+            .verify_fixed(&root.limbs(), &d.session(), d.rate, &root.proof, None)
+            .map_err(|e| TreeError::Root(e.into()))?;
+        let mut ps = ProverState::new(&session(self, &prover.roots())?, &LengthPrefixed(&instance(root)));
+        ps.prover_message(&(evaluations.len() as u64));
+        for evaluation in &evaluations {
+            ps.prover_message(&evaluation.value);
+        }
+        for (tier, claims) in self.seal_claims(root, position, &evaluations)?.into_iter().enumerate() {
+            if claims.is_empty() {
+                continue;
+            }
+            let (_, words, stack) = &prover.stacks[tier];
             stack.open(
                 &mut ps,
                 words,
                 Statement {
-                    points: &[claim],
+                    points: &claims,
                     rings: &[],
                 },
             );
@@ -174,7 +178,7 @@ impl Tree<'_> {
         seal: &ProofTranscript,
     ) -> Result<(), TreeError> {
         self.check_seal_roots(roots)?;
-        let position = self.verify_claims_unsettled(root, claims)?;
+        let position = self.check_claims_statement(root, claims)?;
         self.settle_sealed(root, position, roots, seal)
     }
 
@@ -210,38 +214,78 @@ impl Tree<'_> {
         let d = &self.design;
         let statement = root.statement(d.statement);
         let session = session(self, roots)?;
-        self.settle_with(&statement, position, false)?;
-        let mut v = VerifierState::new(&session, &LengthPrefixed(root.limbs().as_flattened()), seal);
-        let fixed: Vec<DensePoly> = fixed_polys(d, position).collect();
-        let n_fixed = d.statement.polys().filter(|p| p.is_fixed()).count();
-        if roots.0.len() != n_fixed {
+        let mut v = VerifierState::new(&session, &LengthPrefixed(&instance(root)), seal);
+        let count: u64 = v.prover_message().map_err(|_| TreeError::MixedClass)?;
+        // Exactly one value per fixed column, in column-index order; no allocation from an untrusted count.
+        if count != crate::rec::fixed::FixedColumn::COUNT as u64 {
             return Err(TreeError::MixedClass);
         }
-        let committed: Vec<DensePoly> = d.statement.polys().filter(|p| p.is_fixed()).collect();
-        for poly in fixed {
-            let index = committed
-                .iter()
-                .position(|&p| p == poly)
-                .ok_or(TreeError::Claim(FalseClaim::Dense(poly)))?;
+        let values = (0..count)
+            .map(|_| v.prover_message())
+            .collect::<Result<Vec<F192>, _>>()
+            .map_err(|_| TreeError::MixedClass)?;
+        let evaluations = self.keys[position]
+            .verify_fixed(&root.limbs(), &d.session(), d.rate, &root.proof, Some(&values))
+            .map_err(|e| TreeError::Root(e.into()))?;
+        self.settle_with(&statement, position, false)?;
+        for (tier, claims) in self.seal_claims(root, position, &evaluations)?.into_iter().enumerate() {
+            if claims.is_empty() {
+                continue;
+            }
+            let poly = DensePoly::at(2 + tier);
             let (log_n, config, lanes) = stack_shape(1 << d.vars.0[poly.index()])?;
-            let point = statement.dense_point()[..d.vars.0[poly.index()]].to_vec();
-            let claim = StackClaim::Point {
-                offset: 0,
-                low_point: point,
-                value: statement.dense_value(poly),
-            };
-            StackCommitment::new(roots.0[index], log_n, lanes, config)
+            StackCommitment::new(roots.0[tier], log_n, lanes, config)
                 .verify(
                     &mut v,
                     Statement {
-                        points: &[claim],
+                        points: &claims,
                         rings: &[],
                     },
                 )
                 .map_err(|_| TreeError::Claim(FalseClaim::Dense(poly)))?;
         }
-        v.check_eof()
-            .map_err(|_| TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed)))?;
+        v.check_eof().map_err(|_| TreeError::MixedClass)?;
         Ok(())
+    }
+
+    /// The opening set is computed from the verified statement, never from a seal bitmap.
+    /// A zero usage bit means every carried term's scale was zero in the verified circuit;
+    /// the published evaluation is canonically zero. Fresh child-column claims set their
+    /// tier's bit unconditionally. OR propagation prevents a used tier disappearing.
+    /// The root's own columns are also opened, irrespective of its carried usage bits.
+    fn seal_claims(
+        &self,
+        root: &TreeProof,
+        position: usize,
+        evaluations: &[crate::rec::proof::FixedEvaluation],
+    ) -> Result<Vec<Vec<StackClaim>>, TreeError> {
+        let d = &self.design;
+        let statement = root.statement(d.statement);
+        let mut claims = vec![Vec::new(); d.tiers.len()];
+        for (tier, out) in claims.iter_mut().enumerate() {
+            let used = statement.usage(tier);
+            let poly = DensePoly::at(2 + tier);
+            if used == F192::ONE {
+                out.push(StackClaim::Point {
+                    offset: 0,
+                    low_point: statement.dense_point()[..d.vars.0[poly.index()]].to_vec(),
+                    value: statement.dense_value(poly),
+                });
+            } else if used != F192::ZERO || statement.dense_value(poly) != F192::ZERO {
+                return Err(TreeError::MixedClass);
+            }
+        }
+        let tier = d.places[position].tier;
+        let layout = &d.tiers[tier].fixed;
+        let local = position - d.tiers[tier].places.start;
+        for e in evaluations {
+            let offset = (local << layout.kappa()) + (layout.block(e.column) << layout.tau(e.column));
+            claims[tier].push(StackClaim::Point {
+                offset,
+                low_point: e.point.clone(),
+                value: e.value,
+            });
+        }
+        Ok(claims)
     }
 }

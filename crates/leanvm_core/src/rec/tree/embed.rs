@@ -1,25 +1,18 @@
-//! Authenticated mixed-class keys: bounds, shape, verifier columns and seal roots in one canonical encoding.
+//! Authenticated mixed-class keys: bounds, shape, circuit dimensions and seal roots in one canonical encoding.
 //! A consumer pins the digest from a trusted setup; a self-reported digest does not authenticate a class.
 
 use super::*;
-use crate::rec::fixed::FixedColumn;
 use pcs::merkle::Hash;
 use primitives::hash::Hasher;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 /// The encoding's tag and version.
-const MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK02");
+const MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK04");
 
-const DOMAIN: &[u8] = b"leanvm/mixed-class-key/v2";
-const ZK_MAGIC: u64 = u64::from_le_bytes(*b"LVMXCK03");
-
+const DOMAIN: &[u8] = b"leanvm/mixed-class-key/v4";
 fn digest(bytes: &[u8]) -> Hash {
     let mut h = Hasher::new();
-    h.update(if bytes.starts_with(&ZK_MAGIC.to_le_bytes()) {
-        b"leanvm/mixed-class-key/v3"
-    } else {
-        DOMAIN
-    });
+    h.update(DOMAIN);
     h.update(bytes);
     h.finalize()
 }
@@ -29,11 +22,8 @@ fn descriptor(classes: &[LeafClass], shape: TreeShape, split_zk: bool) -> Result
     if classes.is_empty() || classes[0].shape != shape.leaf || classes.iter().any(|c| c.program.max_members == 0) {
         return Err(TreeError::MixedClass);
     }
-    let zk = classes.iter().any(|c| c.shape.is_zero_knowledge());
     let mut out = Vec::new();
-    if zk {
-        put(&mut out, u64::from(split_zk));
-    }
+    put(&mut out, u64::from(split_zk));
     put(&mut out, classes.len() as u64);
     for leaf in classes {
         let c = leaf.program;
@@ -44,9 +34,7 @@ fn descriptor(classes: &[LeafClass], shape: TreeShape, split_zk: bool) -> Result
         {
             put(&mut out, word as u64);
         }
-        if zk {
-            put(&mut out, u64::from(leaf.shape.is_zero_knowledge()));
-        }
+        put(&mut out, u64::from(leaf.shape.is_zero_knowledge()));
     }
     for word in [
         shape.arity_0,
@@ -101,7 +89,7 @@ fn put_heights(out: &mut Vec<u8>, heights: &PerRecTable<usize>) {
 }
 
 impl Tree<'_> {
-    /// The complete mixed class key: class, shape, verifier columns and seal roots.
+    /// The complete mixed class key: class, shape, circuit dimensions and seal roots.
     /// Generate `roots` with this tree's [`Tree::seal_prover`], then authenticate the whole encoding.
     ///
     /// # Errors
@@ -136,14 +124,7 @@ impl Tree<'_> {
             })
             .collect();
         let mut out = Vec::new();
-        put(
-            &mut out,
-            if classes.iter().any(|c| c.shape.is_zero_knowledge()) {
-                ZK_MAGIC
-            } else {
-                MAGIC
-            },
-        );
+        put(&mut out, MAGIC);
         out.extend_from_slice(&descriptor(&classes, self.shape, self.design.split_zk)?);
         put(&mut out, roots.0.len() as u64);
         for root in &roots.0 {
@@ -160,15 +141,6 @@ impl Tree<'_> {
         for key in &self.keys {
             put(&mut out, key.circuit().statement_len as u64);
             put_heights(&mut out, &key.circuit().heights());
-            let columns = key.fixed().columns();
-            put(&mut out, columns.len() as u64);
-            for column in columns {
-                put(&mut out, column.len() as u64);
-                out.reserve(8 * column.len());
-                for w in column.iter() {
-                    put(&mut out, w.0);
-                }
-            }
         }
         Ok(out)
     }
@@ -257,8 +229,8 @@ impl Tree<'static> {
     /// rejection of a wrong digest is a misconfiguration check, not the source of soundness.
     /// With untrusted bytes this accepts forged verifier data, even when `digest` is a genuine pinned digest.
     /// Structural validation cannot establish circuit authenticity. A wrong digest may load successfully;
-    /// it changes the seal session and is not checked by direct verification. Existing seals with PCS
-    /// openings then fail, but a first-level root's empty v2 seal cannot detect a wrong digest.
+    /// it changes the seal session. Every v3 seal opens the root circuit's own columns, so a wrong digest
+    /// invalidates existing seals even for first-level roots. Loaded keys require sealed verification.
     ///
     /// # Errors
     ///
@@ -285,8 +257,8 @@ impl Tree<'static> {
     ///
     /// # Security
     /// Exactly the same trust obligation as [`Tree::mixed_from_trusted_bytes`]: the bytes must be genuine,
-    /// and the supplied digest is assumed correct without being hashed. Empty first-level seals do not detect
-    /// a wrong digest. Prefer [`Tree::mixed_classes_from_bytes`] for untrusted input.
+    /// and the supplied digest is assumed correct without being hashed. All v3 seals bind the digest, including
+    /// first-level roots. Prefer [`Tree::mixed_classes_from_bytes`] for untrusted input.
     pub fn mixed_classes_from_trusted_bytes(
         classes: &[LeafClass],
         shape: TreeShape,
@@ -297,7 +269,7 @@ impl Tree<'static> {
         shape.check()?;
         let mut r = Words(bytes);
         let zk_count = classes.iter().filter(|c| c.shape.is_zero_knowledge()).count();
-        if r.next()? != if zk_count == 0 { MAGIC } else { ZK_MAGIC } {
+        if r.next()? != MAGIC {
             return Err(TreeError::MixedClass);
         }
         let expected = descriptor(classes, shape, true)?;
@@ -355,54 +327,13 @@ impl Tree<'static> {
             if statement_len != design.statement.len() || heights != taus[place.tier] {
                 return Err(TreeError::MixedClass);
             }
-            let n_columns = r.usize()?;
-            if n_columns != FixedColumn::COUNT {
-                return Err(TreeError::MixedClass);
-            }
-            let mut columns = Vec::with_capacity(n_columns);
-            for index in 0..n_columns {
-                let len = r.usize()?;
-                if len != 1usize << heights[FixedColumn::at(index).table()] {
-                    return Err(TreeError::MixedClass);
-                }
-                let byte_len = len.checked_mul(8).ok_or(TreeError::MixedClass)?;
-                let words = r.0.get(..byte_len).ok_or(TreeError::MixedClass)?;
-                r.0 = &r.0[byte_len..];
-                let column: Vec<F64> = words
-                    .as_chunks::<8>()
-                    .0
-                    .iter()
-                    .map(|&w| F64(u64::from_le_bytes(w)))
-                    .collect();
-                columns.push(Arc::new(column));
-            }
             let circuit = Circuit::verifier_stub(statement_len, heights);
-            keys.push(
-                CircuitKey::from_parts(circuit, FixedColumns::from_columns(columns))
-                    .map_err(|_| TreeError::TooLarge)?,
-            );
+            keys.push(CircuitKey::from_parts(circuit, FixedColumns::absent()).map_err(|_| TreeError::TooLarge)?);
         }
         if !r.0.is_empty() {
             return Err(TreeError::MixedClass);
         }
-        let fixed = |tier: usize| {
-            design.tiers.get(tier).map_or_else(
-                || vec![F64::ZERO],
-                |t| {
-                    let columns: Vec<&FixedColumns> = keys[t.places.clone()].iter().map(CircuitKey::fixed).collect();
-                    t.fixed.polynomial(&columns)
-                },
-            )
-        };
-        let rv = placeholder.rv();
-        let mut image: Vec<F64> = rv.image().iter().map(|&w| F64(w)).collect();
-        image.resize(1 << design.vars.0[DensePoly::Image.index()], F64::ZERO);
-        let tables = DenseTables(
-            std::iter::once(Lookup::Bytecode.table(rv))
-                .chain([image])
-                .chain((0..design.tiers.len().max(2)).map(fixed))
-                .collect(),
-        );
+        let tables = DenseTables(Vec::new());
         Ok(Self {
             shape,
             design,

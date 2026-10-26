@@ -23,3 +23,4 @@ cargo test --release -p leanvm_guest -p leansphincs-members-host --target "$targ
 cargo run --release -p leanvm --example endian_verifier --target "$target" -- verify "$fixture"
 cargo run --release -p leanvm --example endian_verifier --target "$target" -- verify "$fixture-zk" zk
 cargo run --release -p leanvm --example compact_class_key --target "$target" -- conformance/mixed-class-key-v4 16385 verify
+cargo run --release -p leanvm --example shared_zk --target "$target" -- conformance/mixed-class-key-v4-shared-zk verify

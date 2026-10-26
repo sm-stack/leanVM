@@ -55,13 +55,13 @@ All integers below are unsigned little-endian u64. Hashes are raw 32 bytes. No o
 | Order | Length | Value |
 | --- | ---: | --- |
 | Magic | 8 | ASCII `LVMXCK04` |
-| Placement | 8 | 1, dedicated ZK First tiers (0 is internal comparison-only and public loaders reject it) |
+| Placement | 8 | caller-pinned placement: 0 Shared, 1 Isolated (default) |
 | Class count | 8 | N, nonzero |
 | Classes | 144 × N | records below, in caller-specified order |
 | Tree descriptor | 48 | first arity, largest node arity, tree log inverse rate, exclusive claim capacity, group capacity, small-tier flag |
 | Small tier | 0 or 24 | if flag 1: arity, exclusive claim capacity, group capacity |
 | Seal rate | 8 | exactly 2 |
-| Seal root count | 8 | T = base aggregation tiers + number of ZK classes |
+| Seal root count | 8 | T = base aggregation tiers + (Isolated ? number of ZK classes : 0) |
 | Seal roots | 32 × T | in tier order |
 | Template program roots | 32 × N | in class order |
 | Tier count | 8 | exactly T |
@@ -71,9 +71,34 @@ All integers below are unsigned little-endian u64. Hashes are raw 32 bytes. No o
 
 Each class record is: bytecode log, RAM log, advice log, image words, max members, eleven leaf table logs (ALU, LOAD, STORE, LD, SD, SHIFT, MUL, MULH, DIV, HASH, EXT), leaf log inverse rate, proof kind (0 plain, 1 ZK). There is no column count or column data after a circuit's heights.
 
-Circuit order remains: plain First classes in class order; SMALL Nodes in increasing arity; the SMALL Wrap for LARGE children if present; LeafWrap circuits in ZK class order; the LARGE Node if present; dedicated ZK First circuits in class order. Each dedicated tier holds exactly its one First. All circuits in a tier share heights. Tier zero is SMALL; tier one is LARGE when configured; ZK tiers follow the base tiers.
+In Isolated mode, circuit order remains: plain First classes in class order; SMALL Nodes in increasing arity; the SMALL Wrap for LARGE children if present; LeafWrap circuits in ZK class order; the LARGE Node if present; dedicated ZK First circuits in class order. Each dedicated tier holds exactly its one First. All circuits in a tier share heights. Tier zero is SMALL; tier one is LARGE when configured; ZK tiers follow the base tiers.
 
 Fixed-column stacking is unchanged: indices 0–97 are Next columns in global slot order, 98–101 are PUB constants. EMUL slots are 0–3, EXK 4–7, HASH 8–23, SPLIT 24–88, CAST 89–96, PUB 97. Columns are stably sorted by decreasing height (ties by column index), placed consecutively at aligned offsets, and the circuit block is zero-padded to `2^kappa`, where `kappa = ceil(log2(sum column lengths))`. A tier concatenates its circuit blocks in local circuit order and zero-pads circuit count to a power of two. All data elements are polynomial-basis GF(2^64) words. The compact key authenticates the resulting PCS roots, not these rows themselves.
+
+## Caller-pinned ZK placement
+
+`ZkPlacement::{Isolated, Shared}` is exported by `leanvm::aggregate`. The explicit APIs are:
+
+```rust
+Tree::mixed_classes_with(classes: &[LeafClass], shape: TreeShape, placement: ZkPlacement)
+Tree::mixed_classes_from_bytes_with(classes: &[LeafClass], shape: TreeShape,
+    placement: ZkPlacement, bytes: &[u8], expected_digest: &Hash)
+Tree::mixed_classes_from_trusted_bytes_with(classes: &[LeafClass], shape: TreeShape,
+    placement: ZkPlacement, bytes: &[u8], digest: &Hash)
+// Each returns Result<Tree<'static>, TreeError> for a class built/loaded without borrowed programs.
+```
+
+The methods without `_with` retain Isolated behavior, including the single-class convenience methods. No existing key, digest, session or fixture changes. The placement word at key byte offset 8 was already in v4; Shared makes its existing value 0 publicly usable, without a format/domain bump. Both explicit loaders reconstruct the expected descriptor from the **caller** placement, reject any differing word, count tiers using that placement and construct the design with it. Even a correctly hashed key for the other placement fails with `MixedClass`. The trusted loader retains the same genuine-bytes/digest-association obligation.
+
+Let `B=1` if `small=None`, otherwise `B=2`, and let `Z` be the number of ZK classes. Isolated has `T=B+Z`; Shared has `T=B`. Shared circuit order is **all First classes, including ZK, in class order**; base-tier Nodes in increasing arity (2 through `arity` for one tier, or 2 through `small.arity` for two); if `small` exists, the SMALL Wrap for LARGE children and then the one LARGE Node. There are **no LeafWraps and no dedicated ZK tiers**. Every First occupies tier 0. The global circuit record order, local indices and kind encodings follow that list. One-tier shared classes have `N+(arity-1)` circuits, all in tier 0.
+
+Shared First circuits share padded tier heights, including ZK verifier rows. `aggregate_programs_at` returns that First directly; it is both a valid final root and a legal Node child. For Isolated, the existing LeafWrap behavior is unchanged. With `small` configured Shared is also supported: all Firsts still share SMALL; the existing LARGE Node/SMALL Wrap path remains. Its cost is higher SMALL padding, which is the reason Isolated remains the default.
+
+For any class list containing ZK, the existing `/zk-leaves/1` tree tag contains the placement byte **0 or 1**, followed by all class-kind bytes in order. Dimensions and statement length in the rest of the tag follow the chosen design. No-ZK class lists still omit that suffix (their circuit sessions can coincide), but their v4 descriptors and key digests distinguish caller placement. Seal session v3 binds the full class-key digest as before.
+
+The circuit soundness mechanism is unchanged: each First publishes zero carried usage; every Node verifies its children against the class-selected fixed columns and sets tier 0 usage, ORing inherited usage. Shared ZK Firsts need no special bypass. In a shared single-tier Node root, the carried fixed claim and all root-own column claims target the same authenticated polynomial, so seal v3 has **exactly one** stack opening. A raw First also has one opening for its own columns. Dropping that opening cannot succeed; no empty-seal exception is introduced.
+
+See [the shared placement report and fixtures](shared-zk-placement.md) for the exact new monorepo class, measurements, compatibility checks and big-endian results.
 
 ## Statement and root bytes
 
@@ -108,7 +133,7 @@ Tree session construction is unchanged except `leanvm-tree-18` becomes `leanvm-t
 The exact tree tag concatenation (no framing except the lengths explicitly listed) is:
 
 1. ASCII `leanvm-tree-19`, then the first template program digest (32 bytes).
-2. For mixed trees: ASCII `/mixed-members/2`. If any class is ZK, append ASCII `/zk-leaves/1`, one placement byte `1`, then one proof-kind byte per class in order (0 plain, 1 ZK). Append `u64le(first_max_members)`, `u64le(N-1)`. For each remaining class append its template digest (32 bytes), eleven `u64le` leaf heights, `u64le(max_members)`, then one leaf-rate byte. For same-program trees, this whole step is instead ASCII `/deferred-program/1`.
+2. For mixed trees: ASCII `/mixed-members/2`. If any class is ZK, append ASCII `/zk-leaves/1`, one placement byte (0 Shared, 1 Isolated), then one proof-kind byte per class in order (0 plain, 1 ZK). Append `u64le(first_max_members)`, `u64le(N-1)`. For each remaining class append its template digest (32 bytes), eleven `u64le` leaf heights, `u64le(max_members)`, then one leaf-rate byte. For same-program trees, this whole step is instead ASCII `/deferred-program/1`.
 3. Eleven first-class leaf heights as u64le; `u64le(arity_0)`, `u64le(arity)`, `u64le(S)`; three u64le claim semantics words `(1, claims, groups)` (or `(0,0,0)` for output trees); the three small-tier u64le words `(arity,claims,groups)` iff present; every tier's six u64le heights, in tier order.
 4. One first-leaf-rate byte and one tree-rate byte.
 

@@ -33,7 +33,7 @@ jobs:
         run: cargo testall
 
   big-endian:
-    name: Big-endian build and verification (s390x)
+    name: Big-endian builds (MIPS64) and verification (s390x)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -45,11 +45,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95
         with:
           targets: s390x-unknown-linux-gnu
+          components: rust-src
       - name: Install the cross compiler and emulator
         run: sudo apt-get update && sudo apt-get install -y gcc-s390x-linux-gnu libc6-dev-s390x-cross qemu-user
       - uses: Swatinem/rust-cache@v2
       - name: Build and execute the big-endian verifier
         run: scripts/check-big-endian.sh
+      - name: Generate MIPS64 verifier machine code
+        # Tier 3 has no distributed std. Bootstrap is scoped to compiling std with the pinned compiler.
+        run: RUSTC_BOOTSTRAP=1 cargo build -Z build-std=std,panic_abort --release -p leanvm --lib --target mips64-unknown-linux-gnuabi64
 
   clippy:
     name: Clippy (${{ matrix.arch }})

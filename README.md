@@ -38,7 +38,7 @@ Expect leanVM to change significantly:
 
 * **hash**: BLAKE2s is a placeholder. SHA2, SHA3, BLAKE3 are actively considered.
 * **ISA**: leanVM proves RISC-V (rv64im) plus one custom instruction, the BLAKE2s compression. A run is one proof; continuations, for runs whose witness exceeds one commitment, are planned.
-* **zk**: Opt-in zero-knowledge leaf proofs use an outer Spartan proof over a masked verifier transcript. Same-program and mixed claim-set trees accept them; ordinary proofs and aggregation nodes are not zero knowledge. This remains experimental, not production-ready; see [privacy and limits](doc/mixed-program-tree-zk.md).
+* **zk**: Opt-in zero-knowledge leaf proofs use an outer Spartan proof over a masked verifier transcript. Same-program and mixed claim-set trees accept them; ordinary proofs and aggregation nodes are not zero knowledge. See [privacy and randomness](doc/compact-class-key.md#privacy-and-randomness) for the public data and randomness requirements.
 
 **note**: Prior to binary fields leanVM used [KoalaBear](https://crates.io/crates/p3-koala-bear) and [Poseidon](https://eprint.iacr.org/2019/458). The historical design is in [this branch](https://github.com/leanEthereum/leanVM/tree/koalabear).
 

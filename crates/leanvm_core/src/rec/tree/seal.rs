@@ -1,18 +1,12 @@
-//! Settle a mixed root's fixed-polynomial claims by PCS openings, not by evaluating the polynomials.
+//! Authenticate the root's own columns and carried fixed claims through tier PCS openings.
 //!
-//! A mixed tree has one fixed polynomial per tier. Each is
-//! committed at [`SEAL_LOG_INV_RATE`]; built trees cache their genuine roots, and loaded trees authenticate them with the class. A root's fixed
-//! claims (`W(r) = v`, read from its verified statement) are then proven by one opening per polynomial, in a
-//! transcript of its own:
+//! Each tier's fixed polynomial is committed at [`SEAL_LOG_INV_RATE`]. The verifier derives one claim list per tier and opens each nonempty list once.
 //!
-//! - session: [`SEAL_DOMAIN`] and the authenticated class-key digest for mixed trees;
-//!   the tree's session tag and commitment roots for same-program trees;
-//! - instance: the root statement and a hash of the complete root proof;
-//! - prefix: every root fixed-column evaluation in canonical column order.
+//! - Session: [`SEAL_DOMAIN`] and the class-key digest for mixed trees; the tree's session tag and commitment roots for same-program trees.
+//! - Instance: the root statement and a hash of the complete root proof.
+//! - Prefix: root fixed-column evaluations in column order, absorbed before opening challenges.
 //!
-//! So the claims are bound before the opening's challenges, and the verifier builds them from the root it verified,
-//! never from the seal. The opening of a public polynomial at a public point needs no witness: anyone holding the
-//! class's polynomials can make it.
+//! The verifier derives points from the root and authenticates supplied values against the class commitments. Anyone holding the fixed polynomials can produce the seal.
 
 use super::*;
 use fiat_shamir::{LengthPrefixed, ProofTranscript, ProverState, SessionId, VerifierState};
@@ -23,8 +17,7 @@ use pcs::whir::Config;
 /// The seal transcript's domain.
 const SEAL_DOMAIN: &[u8] = b"leanvm/mixed-tree-seal/v3";
 
-/// The rate the fixed polynomials are committed at, a base-two logarithm: lower than the trees' own rate keeps the
-/// prover's codeword small, higher would shorten the opening.
+/// The log inverse rate used to commit fixed polynomials.
 pub const SEAL_LOG_INV_RATE: usize = 2;
 
 /// A committed fixed polynomial's stack: its size, its configuration and how many lane blocks are committed.
@@ -35,8 +28,7 @@ fn stack_shape(len: usize) -> Result<(usize, Config, usize), TreeError> {
     Ok((log_n, config, len.div_ceil(lane)))
 }
 
-/// The complete root proof is bound before hinted fixed values and PCS challenges.
-/// Its bus points depend on its transcript, so binding only the statement is insufficient.
+/// The complete root proof is bound before hinted fixed values and PCS challenges. Its bus points depend on its transcript, so binding only the statement is insufficient.
 fn instance(root: &TreeProof) -> Vec<u64> {
     let digest = primitives::hash::hash(&root.to_bytes());
     root.limbs()
@@ -248,11 +240,7 @@ impl Tree<'_> {
         Ok(())
     }
 
-    /// The opening set is computed from the verified statement, never from a seal bitmap.
-    /// A zero usage bit means every carried term's scale was zero in the verified circuit;
-    /// the published evaluation is canonically zero. Fresh child-column claims set their
-    /// tier's bit unconditionally. OR propagation prevents a used tier disappearing.
-    /// The root's own columns are also opened, irrespective of its carried usage bits.
+    /// The opening set is computed from the verified statement, never from a seal bitmap. A zero usage bit means every carried term's scale was zero in the verified circuit; the published evaluation is canonically zero. Fresh child-column claims set their tier's bit unconditionally. OR propagation prevents a used tier disappearing. The root's own columns are also opened, irrespective of its carried usage bits.
     pub(super) fn seal_claims(
         &self,
         root: &TreeProof,

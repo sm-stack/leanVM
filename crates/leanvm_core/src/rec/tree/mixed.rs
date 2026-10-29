@@ -89,7 +89,7 @@ impl MixedLeaf<'_> {
 /// Where mixed classes verify zero-knowledge leaves. The caller pins this with the class shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ZkPlacement {
-    /// Dedicated First tiers and SMALL LeafWrap circuits (the compatibility default).
+    /// Dedicated First tiers and SMALL LeafWrap circuits.
     #[default]
     Isolated,
     /// First circuits share the base tier, including its padded heights; no LeafWrap circuits.
@@ -1058,9 +1058,904 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "member_tests.rs"]
-mod member_tests;
+mod member_tests {
+    //! Member-list and multi-class regression tests, including witnesses bypassing native prechecks.
+    use super::*;
+    use crate::rec::circuit::Finished;
+    use crate::tables::TableId;
+    use std::sync::OnceLock;
+
+    fn constant_list(members: &[[u64; 4]]) -> Program {
+        constant_output(leanvm_guest::members::output(members))
+    }
+
+    fn constant_output(output: [u64; 4]) -> Program {
+        let mut a = Asm::new();
+        a.li(Reg::T0, 9000)
+            .label("loop")
+            .i(crate::rv::asm::Addi, Reg::T0, Reg::T0, -1)
+            .branch(crate::rv::asm::Bne, Reg::T0, Reg::ZERO, "loop");
+        for (reg, value) in [Reg::A0, Reg::A1, Reg::A2, Reg::A3].into_iter().zip(output) {
+            a.li(reg, value);
+        }
+        a.exit();
+        Program::new(&a.finish(), Region::TEXT.base(), vec![], 0, 0).unwrap()
+    }
+
+    fn class(program: &Program, advice: &[u64]) -> (Program, LeafClass) {
+        let rv = program.rv();
+        let bounds = ProgramClass {
+            log_bytecode: (rv.entries().len().ilog2() as usize).max(10),
+            log_ram: rv.log_ram(),
+            log_advice: rv.log_advice(),
+            image_words: rv.image().len().max(1).next_power_of_two(),
+            max_members: 4,
+        };
+        let program = bounds.normalize(program).unwrap();
+        let mut stats = program.measure(advice).unwrap();
+        stats.counts[TableId::ALU] *= 2;
+        let shape = LeafShape::measured(&stats, Rate::MIN);
+        (program, LeafClass { program: bounds, shape })
+    }
+
+    struct Fixture {
+        tree: Tree<'static>,
+        classes: [LeafClass; 2],
+        programs: [Program; 2],
+        runs: [ProvenRun; 2],
+        members: [Vec<[u64; 4]>; 2],
+    }
+
+    fn fixture() -> &'static Fixture {
+        static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+        FIXTURE.get_or_init(|| {
+            let members = vec![[1, 2, 3, 4], [2, 3, 4, 5], [2, 3, 4, 5], [3, 4, 5, 6]];
+            let (sk, key) = leansphincs::key_gen([3; 32]);
+            let messages = [[1; 4], [2; 4]];
+            let sigs = messages.map(|m| sk.sign(&m).unwrap());
+            let batch =
+                leansphincs_members_host::batch(&[(&key, &messages[0], &sigs[0]), (&key, &messages[1], &sigs[1])]);
+            let (small, a) = class(&constant_list(&members), &[]);
+            let (large, b) = class(
+                &Program::from_elf(leansphincs_members_host::ELF).unwrap(),
+                &batch.run.advice,
+            );
+            assert_ne!(a.shape, b.shape);
+            let runs = [
+                a.program.prover(a.shape).prove(&small, &[]).unwrap(),
+                b.program.prover(b.shape).prove(&large, &batch.run.advice).unwrap(),
+            ];
+            let shape = TreeShape {
+                leaf: a.shape,
+                arity_0: 1,
+                arity: 2,
+                rate: Rate::MIN,
+                claims: Some(ClaimShape {
+                    capacity: Capacity { claims: 8, groups: 4 },
+                    small: Some(Tier {
+                        arity: 2,
+                        capacity: Capacity { claims: 5, groups: 2 },
+                    }),
+                }),
+            };
+            let classes = [a, b];
+            let tree = Tree::mixed_classes(&classes, shape).unwrap();
+            Fixture {
+                tree,
+                classes,
+                programs: [small, large],
+                runs,
+                members: [members, batch.members],
+            }
+        })
+    }
+
+    impl Fixture {
+        fn leaf(&self, i: usize) -> MixedLeaf<'_> {
+            MixedLeaf {
+                key: self.programs[i].verifying_key(),
+                proof: &self.runs[i].proof,
+                output: self.runs[i].output,
+                members: &self.members[i],
+            }
+        }
+        fn first(&self, i: usize) -> Aggregate {
+            self.tree.aggregate_programs_at(i, &[self.leaf(i)], None).unwrap()
+        }
+    }
+
+    fn verify_both(tree: &Tree<'_>, sealer: &SealProver, root: &Aggregate) {
+        tree.verify_claims(&root.proof, &root.claims).unwrap();
+        let seal = tree.seal(sealer, &root.proof).unwrap();
+        tree.verify_claims_sealed(&root.proof, &root.claims, &sealer.roots(), &seal)
+            .unwrap();
+    }
+
+    #[test]
+    fn member_classes_fold_deduplicate_close_and_load() {
+        let f = fixture();
+        let sealer = f.tree.seal_prover().unwrap();
+        let firsts = [f.first(0), f.first(1)];
+        assert_eq!(firsts[0].claims.n_claims(), 3);
+        assert_eq!(firsts[0].claims.groups.len(), 1);
+        assert_eq!(firsts[1].proof.kind(), Kind::First);
+        for first in &firsts {
+            verify_both(&f.tree, &sealer, first);
+        }
+        let mut acc = Accumulator::default();
+        assert!(acc.close().is_none());
+        f.tree.fold(&mut acc, &firsts[0]).unwrap();
+        assert_eq!(acc.root().unwrap().proof, firsts[0].proof);
+        f.tree.fold(&mut acc, &firsts[1]).unwrap();
+        f.tree.fold(&mut acc, &firsts[0]).unwrap();
+        assert_eq!(acc.root().unwrap().claims.n_claims(), 5);
+        assert_eq!(acc.root().unwrap().claims.groups.len(), 2);
+        let more = [[9; 4], [10; 4], [11; 4], [12; 4]];
+        let p = f.classes[0].program.normalize(&constant_list(&more)).unwrap();
+        let run = f.classes[0].program.prover(f.classes[0].shape).prove(&p, &[]).unwrap();
+        let next = f
+            .tree
+            .aggregate_programs_at(
+                0,
+                &[MixedLeaf {
+                    key: p.verifying_key(),
+                    proof: &run.proof,
+                    output: run.output,
+                    members: &more,
+                }],
+                None,
+            )
+            .unwrap();
+        let before = acc.root().unwrap().proof.clone();
+        assert_eq!(f.tree.fold(&mut acc, &next), Err(TreeError::Capacity));
+        assert_eq!(acc.root().unwrap().proof, before);
+        let root = acc.close().unwrap();
+        assert!(acc.root().is_none());
+        verify_both(&f.tree, &sealer, &root);
+        let bytes = f.tree.mixed_verifier_bytes(&sealer.roots()).unwrap();
+        let digest = Tree::mixed_class_key_digest(&bytes);
+        let loaded = Tree::mixed_classes_from_bytes(&f.classes, f.tree.shape, &bytes, &digest).unwrap();
+        let trusted = Tree::mixed_classes_from_trusted_bytes(&f.classes, f.tree.shape, &bytes, &digest).unwrap();
+        let seal = f.tree.seal(&sealer, &root.proof).unwrap();
+        for verifier in [&loaded, &trusted] {
+            assert!(matches!(
+                verifier.verify_claims(&root.proof, &root.claims),
+                Err(TreeError::SealRequired)
+            ));
+            verifier
+                .verify_claims_sealed(&root.proof, &root.claims, verifier.seal_roots().unwrap(), &seal)
+                .unwrap();
+        }
+        let mut wrong_pin = digest;
+        wrong_pin[0] ^= 1;
+        let misconfigured =
+            Tree::mixed_classes_from_trusted_bytes(&f.classes, f.tree.shape, &bytes, &wrong_pin).unwrap();
+        for first in &firsts {
+            let empty = f.tree.seal(&sealer, &first.proof).unwrap();
+            assert!(
+                misconfigured
+                    .verify_claims_sealed(&first.proof, &first.claims, &sealer.roots(), &empty)
+                    .is_err()
+            );
+        }
+        assert!(
+            misconfigured
+                .verify_claims_sealed(&root.proof, &root.claims, &sealer.roots(), &seal)
+                .is_err()
+        );
+        let mut changed = f.classes;
+        changed[1].program.max_members += 1;
+        assert!(Tree::mixed_classes_from_bytes(&changed, f.tree.shape, &bytes, &digest).is_err());
+        let mut wrong = f.classes;
+        wrong.swap(0, 1);
+        assert!(Tree::mixed_classes_from_bytes(&wrong, f.tree.shape, &bytes, &digest).is_err());
+        assert!(Tree::mixed_from_bytes(f.classes[0].program, f.tree.shape, &bytes, &digest).is_err());
+        // One-member leaves use the same list convention and union rows.
+        let one = &more[..1];
+        let p = f.classes[0].program.normalize(&constant_list(one)).unwrap();
+        let run = f.classes[0].program.prover(f.classes[0].shape).prove(&p, &[]).unwrap();
+        let first = f
+            .tree
+            .aggregate_programs_at(
+                0,
+                &[MixedLeaf {
+                    key: p.verifying_key(),
+                    proof: &run.proof,
+                    output: run.output,
+                    members: one,
+                }],
+                None,
+            )
+            .unwrap();
+        verify_both(&f.tree, &sealer, &first);
+    }
+
+    // Bypass aggregate_programs' list and shape prechecks, then execute the union and reduction rows.
+    fn row_failures(f: &Fixture, position: usize, leaf: MixedLeaf<'_>, declared: &ClaimSet) -> Vec<Unsatisfied> {
+        let set = leaf.claims();
+        let shape = f.tree.design.union_shape(position).unwrap();
+        let fill = super::super::union::tests::unbacked(&shape, &[&set], declared);
+        let items = [LeafWitness {
+            key: Some(leaf.key),
+            members: leaf.members,
+            proof: &leaf.proof.0,
+            openings: leaf.key.verify_recording(leaf.output, leaf.proof).unwrap(),
+            output: *leaf.output.words(),
+            set: set.digest(),
+        }];
+        let rows = f.tree.design.first_rows_at(
+            position,
+            &NodeInputs::Prove {
+                items: &items,
+                tables: &f.tree.tables,
+                union: Some(&fill),
+            },
+        );
+        let reduction = rows
+            .claim_values()
+            .prove(&f.tree.design.session(), &f.tree.design.vars, &f.tree.tables);
+        rows.reduce(&f.tree.design, ProofSource::Proof(&reduction, &[]))
+            .failures
+    }
+
+    #[test]
+    fn member_list_forgeries_fail_union_rows_and_both_root_paths() {
+        let f = fixture();
+        let honest = f.first(0);
+        let sealer = f.tree.seal_prover().unwrap();
+        let seal = f.tree.seal(&sealer, &honest.proof).unwrap();
+        let mut unlisted = f.members[0].clone();
+        unlisted[0][0] ^= 1;
+        let mut mislabeled = honest.claims.clone();
+        mislabeled.groups[0].label[0] ^= 1;
+        for (members, declared) in [(&unlisted[..], None), (&f.members[0][..], Some(mislabeled))] {
+            let leaf = MixedLeaf { members, ..f.leaf(0) };
+            let declared = declared.unwrap_or_else(|| ClaimSet::from_claims(leaf.claims().claims()));
+            assert!(!row_failures(f, 0, leaf, &declared).is_empty());
+            assert!(f.tree.verify_claims(&honest.proof, &declared).is_err());
+            assert!(
+                f.tree
+                    .verify_claims_sealed(&honest.proof, &declared, &sealer.roots(), &seal)
+                    .is_err()
+            );
+        }
+        // A genuine execution committing five members cannot be truncated into a four-member class.
+        let too_many = [[11; 4], [12; 4], [13; 4], [14; 4], [15; 4]];
+        let set_as_list = [honest.claims.digest()];
+        for (members, output) in [
+            (&too_many[..], leanvm_guest::members::output(&too_many)),
+            (&set_as_list[..], chain(&honest.claims.digest())),
+        ] {
+            let p = f.classes[0].program.normalize(&constant_output(output)).unwrap();
+            let run = f.classes[0].program.prover(f.classes[0].shape).prove(&p, &[]).unwrap();
+            let leaf = MixedLeaf {
+                key: p.verifying_key(),
+                proof: &run.proof,
+                output: run.output,
+                members,
+            };
+            let declared = ClaimSet::from_claims(leaf.claims().claims());
+            assert!(!row_failures(f, 0, leaf, &declared).is_empty());
+            assert!(f.tree.verify_claims(&honest.proof, &declared).is_err());
+            assert!(
+                f.tree
+                    .verify_claims_sealed(&honest.proof, &declared, &sealer.roots(), &seal)
+                    .is_err()
+            );
+        }
+        let list = leanvm_guest::members::digest(&f.members[0]);
+        assert_ne!(list, f.leaf(0).claims().digest());
+        // A list output cannot authorize a set digest chosen by the prover, in the reverse direction either.
+        let mut listed_as_set = honest.claims.clone();
+        listed_as_set.groups[0].label[..4].copy_from_slice(&list);
+        let shape = f.tree.design.union_shape(0).unwrap();
+        let fill = UnionFill::new(&shape, &[&listed_as_set], &listed_as_set).unwrap();
+        let mut b = Builder::new();
+        let digest = b.free_d(list);
+        shape.rows(&mut b, &f.tree.design.session(), &[digest], Some(&fill));
+        assert!(!b.finish().failures.is_empty());
+        assert!(f.tree.verify_claims(&honest.proof, &listed_as_set).is_err());
+        assert!(
+            f.tree
+                .verify_claims_sealed(&honest.proof, &listed_as_set, &sealer.roots(), &seal)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn leaf_shape_is_bound_by_its_kind_and_fixed_polynomial() {
+        let f = fixture();
+        let d = &f.tree.design;
+        // A VK does not bind the execution table heights. A different valid announcement must fail in rows.
+        let mut heights = f.classes[0].shape.heights();
+        heights[TableId::ALU] += 1;
+        let shape = LeafShape::plain(heights, Rate::MIN).unwrap();
+        let run = f.classes[0].program.prover(shape).prove(&f.programs[0], &[]).unwrap();
+        let leaf = MixedLeaf {
+            key: f.programs[0].verifying_key(),
+            proof: &run.proof,
+            output: run.output,
+            members: &f.members[0],
+        };
+        assert!(matches!(
+            f.tree.aggregate_programs_at(0, &[leaf], None),
+            Err(TreeError::ForeignLeaf { index: 0 })
+        ));
+        let declared = ClaimSet::from_claims(leaf.claims().claims());
+        assert!(!row_failures(f, 0, leaf, &declared).is_empty());
+
+        // An attacker supplies its own same-height first-level circuit under the other leaf class's kind.
+        // Its own proof is valid, and the honest node's rows accept its columns. Only authenticated Fixed closes it.
+        let honest = f.first(0);
+        let foreign_position = d.place(SMALL, Level::First(1)).unwrap();
+        let mut words = honest.proof.words.clone();
+        words[0] = F192::new(d.code(foreign_position) as u64, 0, 0);
+        let mut b = Builder::new();
+        for word in words {
+            let w = b.free_e(word);
+            b.expose(w);
+        }
+        let Finished {
+            mut circuit,
+            assignment,
+            failures,
+        } = b.finish();
+        assert!(failures.is_empty());
+        circuit.floor = d.tiers[SMALL].taus;
+        let fake = CircuitKey::new(circuit).unwrap();
+        let child = TreeProof::new(
+            d.code(foreign_position),
+            &assignment,
+            fake.prove(&assignment, &d.session(), d.rate),
+            d.rate,
+        );
+        assert!(f.tree.read(&child, foreign_position).is_err());
+        let openings = fake.verify(&child.limbs(), &d.session(), d.rate, &child.proof).unwrap();
+        let mut tables = f.tree.tables.clone();
+        let columns: Vec<_> = d.tiers[SMALL]
+            .places
+            .clone()
+            .map(|p| {
+                if p == foreign_position {
+                    fake.fixed()
+                } else {
+                    f.tree.keys[p].fixed()
+                }
+            })
+            .collect();
+        tables.0[DensePoly::Fixed.index()] = d.tiers[SMALL].fixed.polynomial(&columns);
+        let statement = child.statement(d.statement);
+        let items: Vec<_> = (0..2)
+            .map(|_| ChildWitness {
+                statement: &statement,
+                proof: &child.proof,
+                openings: openings.clone(),
+                columns: fake.fixed(),
+            })
+            .collect();
+        let position = d.place(SMALL, Level::Node(2)).unwrap();
+        let (union, claims) = f.tree.fill(position, &[&honest.claims, &honest.claims], None).unwrap();
+        let rows = d.node_rows(
+            &NodeInputs::Prove {
+                items: &items,
+                tables: &tables,
+                union: Some(&union),
+            },
+            position,
+        );
+        let reduction = rows.claim_values().prove(&d.session(), &d.vars, &tables);
+        let Finished {
+            assignment, failures, ..
+        } = rows.reduce(d, ProofSource::Proof(&reduction, &[]));
+        assert!(failures.is_empty(), "{failures:?}");
+        let root = TreeProof::new(
+            d.code(position),
+            &assignment,
+            f.tree.keys[position].prove(&assignment, &d.session(), d.rate),
+            d.rate,
+        );
+        f.tree.read(&root, position).unwrap();
+        let refusal = TreeError::Claim(FalseClaim::Dense(DensePoly::Fixed));
+        assert_eq!(f.tree.verify_claims(&root, &claims), Err(refusal.clone()));
+        let sealer = f.tree.seal_prover().unwrap();
+        let seal = f.tree.seal(&sealer, &root).unwrap();
+        assert_eq!(
+            f.tree.verify_claims_sealed(&root, &claims, &sealer.roots(), &seal),
+            Err(refusal)
+        );
+    }
+
+    #[test]
+    fn member_list_rows_match_sdk_for_odd_even_and_empty_boundaries() {
+        let label = [7, 8, 9, 10];
+        for max in 1..=5 {
+            for count in 0..=max {
+                let members: Vec<_> = (0..count).map(|i| [i as u64, 3, 4, 5]).collect();
+                let mut b = Builder::new();
+                let digest = b.free_d(label);
+                let output = leanvm_guest::members::output(&members).map(|w| b.free_k(w));
+                let group = member_rows(&mut b, digest, output, max, Some(&members));
+                let expected = ClaimSet {
+                    groups: vec![ClaimGroup {
+                        label: [7, 8, 9, 10, 0, 0],
+                        members,
+                    }],
+                };
+                if count != 0 {
+                    assert_eq!(b.d(group), expected.digest());
+                }
+                assert_eq!(b.finish().failures.is_empty(), count != 0);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
-#[path = "zk_tests.rs"]
-mod zk_tests;
+mod zk_tests {
+    //! Mixed ZK witnesses, isolated first levels and their authenticated wraps.
+    use super::*;
+    use crate::rv::asm::{Addi, Bne, Ld};
+    use crate::tables::TableId;
+    use zk::Randomness;
+
+    fn program(members: &[[u64; 4]]) -> Program {
+        let mut a = Asm::new();
+        // The witnessed entry differs from the placeholder's. Advice is used internally but is not the output.
+        a.i(Addi, Reg::T2, Reg::ZERO, 0)
+            .li(Reg::T0, Region::ADVICE.base())
+            .load(Ld, Reg::T2, 0, Reg::T0)
+            .li(Reg::T1, 9000)
+            .label("loop")
+            .i(Addi, Reg::T1, Reg::T1, -1)
+            .branch(Bne, Reg::T1, Reg::ZERO, "loop");
+        for (reg, value) in [Reg::A0, Reg::A1, Reg::A2, Reg::A3]
+            .into_iter()
+            .zip(leanvm_guest::members::output(members))
+        {
+            a.li(reg, value);
+        }
+        Program::new(&a.exit().finish(), Region::TEXT.base() + 4, vec![3, 5], 2, 0).unwrap()
+    }
+
+    fn class(p: &Program, advice: &[u64]) -> (Program, LeafClass) {
+        let rv = p.rv();
+        let bounds = ProgramClass {
+            log_bytecode: (rv.entries().len().ilog2() as usize).max(10),
+            log_ram: rv.log_ram(),
+            log_advice: rv.log_advice(),
+            image_words: rv.image().len().max(1).next_power_of_two(),
+            max_members: 4,
+        };
+        let p = bounds.normalize(p).unwrap();
+        let mut stats = p.measure(advice).unwrap();
+        stats.counts[TableId::ALU] *= 2;
+        (
+            p,
+            LeafClass {
+                program: bounds,
+                shape: LeafShape::measured(&stats, Rate::MIN),
+            },
+        )
+    }
+
+    fn raw_first(tree: &Tree<'_>, class: usize, leaf: MixedLeaf<'_>) -> Aggregate {
+        let position = tree.design.first_place(class).unwrap();
+        let set = leaf.claims();
+        let (union, claims) = tree.fill(position, &[&set], None).unwrap();
+        let items = [LeafWitness {
+            key: Some(leaf.key),
+            members: leaf.members,
+            proof: &leaf.proof.0,
+            openings: leaf.key.verify_recording(leaf.output, leaf.proof).unwrap(),
+            output: *leaf.output.words(),
+            set: set.digest(),
+        }];
+        let rows = tree.design.first_rows_at(
+            position,
+            &NodeInputs::Prove {
+                items: &items,
+                tables: &tree.tables,
+                union: Some(&union),
+            },
+        );
+        Aggregate {
+            proof: tree.prove_rows(rows).unwrap(),
+            claims,
+        }
+    }
+
+    #[test]
+    fn mixed_zk_classes_wrap_fold_seal_and_refuse_foreign_leaves() {
+        let members = [[1, 2, 3, 4], [5, 6, 7, 8]];
+        let (program, plain_class) = class(&program(&members), &[37]);
+        let (sk, pk) = leansphincs::key_gen([7; 32]);
+        let message = [8; 4];
+        let signature = sk.sign(&message).unwrap();
+        let batch = leansphincs_members_host::batch(&[(&pk, &message, &signature)]);
+        let (signature_program, signature_class) = class(
+            &Program::from_elf(leansphincs_members_host::ELF).unwrap(),
+            &batch.run.advice,
+        );
+        let zk_class = LeafClass {
+            shape: plain_class.shape.zero_knowledge(),
+            ..plain_class
+        };
+        let classes = [plain_class, signature_class, zk_class];
+        let shape = TreeShape {
+            leaf: plain_class.shape,
+            arity_0: 1,
+            arity: 2,
+            rate: Rate::MIN,
+            claims: Some(ClaimShape {
+                capacity: Capacity { claims: 16, groups: 4 },
+                small: Some(Tier {
+                    arity: 2,
+                    capacity: Capacity { claims: 8, groups: 4 },
+                }),
+            }),
+        };
+        let tree = Tree::mixed_classes(&classes, shape).unwrap();
+        assert_eq!(tree.design.tiers.len(), 3);
+        let plain = plain_class
+            .program
+            .prover(plain_class.shape)
+            .prove(&program, &[37])
+            .unwrap();
+        let hidden = zk_class
+            .program
+            .prover(zk_class.shape)
+            .zero_knowledge(Randomness::Fixed([19; 32]))
+            .prove(&program, &[41])
+            .unwrap();
+        assert_eq!(LeafShape::of(&hidden.proof).unwrap(), zk_class.shape);
+        let signed = signature_class
+            .program
+            .prover(signature_class.shape)
+            .prove(&signature_program, &batch.run.advice)
+            .unwrap();
+        let plain_leaf = MixedLeaf {
+            key: program.verifying_key(),
+            proof: &plain.proof,
+            output: plain.output,
+            members: &members,
+        };
+        let zk_leaf = MixedLeaf {
+            proof: &hidden.proof,
+            output: hidden.output,
+            ..plain_leaf
+        };
+        assert!(tree.aggregate_programs_at(2, &[plain_leaf], None).is_err());
+        assert!(tree.aggregate_programs_at(0, &[zk_leaf], None).is_err());
+        let mut key_bytes = program.verifying_key().to_bytes();
+        key_bytes[0] ^= 1;
+        let bad_key = VerifyingKey::from_bytes(&key_bytes).unwrap();
+        assert!(
+            tree.aggregate_programs_at(
+                2,
+                &[MixedLeaf {
+                    key: &bad_key,
+                    ..zk_leaf
+                }],
+                None
+            )
+            .is_err()
+        );
+        let wrong = [[9, 2, 3, 4], members[1]];
+        assert!(
+            tree.aggregate_programs_at(
+                2,
+                &[MixedLeaf {
+                    members: &wrong,
+                    ..zk_leaf
+                }],
+                None
+            )
+            .is_err()
+        );
+        // Bypass the native prechecks: the verifier rows themselves bind key, session, kind and list.
+        for (class, offered, expected_failure) in [
+            (2, zk_leaf, false),
+            (
+                2,
+                MixedLeaf {
+                    key: &bad_key,
+                    ..zk_leaf
+                },
+                true,
+            ),
+            (
+                2,
+                MixedLeaf {
+                    members: &wrong,
+                    ..zk_leaf
+                },
+                true,
+            ),
+            (2, plain_leaf, true),
+            (0, zk_leaf, true),
+        ] {
+            let leaf_shape = if class == 0 {
+                &tree.design.leaf
+            } else {
+                &tree.design.extra_leaves[class - 1].0
+            };
+            let honest = if offered.proof.is_zero_knowledge() {
+                zk_leaf
+            } else {
+                plain_leaf
+            };
+            let openings = honest.key.verify_recording(honest.output, honest.proof).unwrap();
+            let mut b = crate::rec::circuit::Builder::new();
+            let output = offered.output.words().map(|w| b.free_k(w));
+            let (_, digest) = leaf_shape.verify_mixed(
+                &mut b,
+                output,
+                ProofSource::Proof(&offered.proof.0, &openings),
+                Some(offered.key),
+            );
+            member_rows(&mut b, digest, output, 4, Some(offered.members));
+            assert_eq!(!b.finish().failures.is_empty(), expected_failure);
+        }
+        let raw = raw_first(&tree, 2, zk_leaf);
+        assert_ne!(tree.design.places[tree.known(&raw.proof).unwrap()].tier, SMALL);
+        assert!(tree.aggregate(&[&raw], None).is_err());
+        let wrapped = tree.aggregate_programs_at(2, &[zk_leaf], None).unwrap();
+        assert_eq!(
+            tree.design.places[tree.known(&wrapped.proof).unwrap()].level,
+            Level::LeafWrap(2)
+        );
+        let first = tree.aggregate_programs_at(0, &[plain_leaf], None).unwrap();
+        let signature = tree
+            .aggregate_programs_at(
+                1,
+                &[MixedLeaf {
+                    key: signature_program.verifying_key(),
+                    proof: &signed.proof,
+                    output: signed.output,
+                    members: &batch.members,
+                }],
+                None,
+            )
+            .unwrap();
+        let mut acc = Accumulator::default();
+        for a in [&first, &signature, &wrapped] {
+            tree.fold(&mut acc, a).unwrap();
+        }
+        let root = acc.close().unwrap();
+        let sealer = tree.seal_prover().unwrap();
+        let roots = sealer.roots();
+        let seal = tree.seal(&sealer, &root.proof).unwrap();
+        let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
+        assert_eq!(&bytes[..8], b"LVMXCK04");
+        let digest = Tree::mixed_class_key_digest(&bytes);
+        for verifier in [
+            Tree::mixed_classes_from_bytes(&classes, shape, &bytes, &digest).unwrap(),
+            Tree::mixed_classes_from_trusted_bytes(&classes, shape, &bytes, &digest).unwrap(),
+        ] {
+            assert!(matches!(
+                verifier.verify_claims(&root.proof, &root.claims),
+                Err(TreeError::SealRequired)
+            ));
+            verifier
+                .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                .unwrap();
+            assert!(matches!(
+                verifier.verify_claims(&wrapped.proof, &wrapped.claims),
+                Err(TreeError::SealRequired)
+            ));
+        }
+        // Carried usage excludes the root's own columns (the seal adds those separately).
+        let usage = |a: &Aggregate| {
+            let statement = a.proof.statement(tree.design.statement);
+            (0..3).map(|t| statement.usage(t)).collect::<Vec<_>>()
+        };
+        assert_eq!(usage(&raw), vec![F192::ZERO; 3]);
+        assert_eq!(usage(&wrapped), vec![F192::ZERO, F192::ZERO, F192::ONE]);
+        assert_eq!(usage(&root), vec![F192::ONE, F192::ZERO, F192::ONE]);
+        let plain_node = tree.aggregate(&[&first, &signature], None).unwrap();
+        assert_eq!(usage(&plain_node), vec![F192::ONE, F192::ZERO, F192::ZERO]);
+        let loaded = Tree::mixed_classes_from_bytes(&classes, shape, &bytes, &digest).unwrap();
+        assert!(
+            loaded.tables.0.is_empty(),
+            "compact loading allocates no polynomial tables"
+        );
+        assert!(bytes.len() < 2000);
+        for root in [&raw, &wrapped, &plain_node] {
+            let seal = tree.seal(&sealer, &root.proof).unwrap();
+            loaded
+                .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                .unwrap();
+            let mut altered = seal.clone();
+            altered.narg[8] ^= 1; // Root fixed-column evaluation: native or PCS checking must refuse.
+            assert!(
+                loaded
+                    .verify_claims_sealed(&root.proof, &root.claims, &roots, &altered)
+                    .is_err()
+            );
+            let mut pin = digest;
+            pin[0] ^= 1;
+            let wrong = Tree::mixed_classes_from_trusted_bytes(&classes, shape, &bytes, &pin).unwrap();
+            assert!(
+                wrong
+                    .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                    .is_err()
+            );
+        }
+        // The plain node uses one opening: its root columns and recursive claim share the small tier.
+        let seal = tree.seal(&sealer, &plain_node.proof).unwrap();
+        let count = u64::from_le_bytes(seal.narg[..8].try_into().unwrap()) as usize;
+        let prefix = 8 + 24 * count;
+        let mut dropped = seal.clone();
+        dropped.narg.truncate(prefix);
+        dropped.hints.clear();
+        assert!(
+            loaded
+                .verify_claims_sealed(&plain_node.proof, &plain_node.claims, &roots, &dropped)
+                .is_err()
+        );
+        let mut added = seal.clone();
+        added.narg.extend_from_slice(&seal.narg[prefix..]);
+        added.hints.extend_from_slice(&seal.hints);
+        assert!(
+            loaded
+                .verify_claims_sealed(&plain_node.proof, &plain_node.claims, &roots, &added)
+                .is_err()
+        );
+        let seal = tree.seal(&sealer, &root.proof).unwrap();
+        for tier in 0..3 {
+            let mut forged = root.proof.clone();
+            let at = tree
+                .design
+                .statement
+                .range(super::super::statement::Section::Usage)
+                .start
+                + tier;
+            forged.words[at] += F192::ONE;
+            assert!(tree.verify_claims(&forged, &root.claims).is_err());
+            assert!(
+                loaded
+                    .verify_claims_sealed(&forged, &root.claims, &roots, &seal)
+                    .is_err()
+            );
+        }
+        // Class zero can itself be ZK, including a tree without a large aggregation tier.
+        let single_shape = TreeShape {
+            leaf: zk_class.shape,
+            claims: Some(ClaimShape::new(Capacity { claims: 8, groups: 4 })),
+            ..shape
+        };
+        let single = Tree::mixed_classes(&[zk_class], single_shape).unwrap();
+        let first = single.aggregate_programs_at(0, &[zk_leaf], None).unwrap();
+        single.verify_claims(&first.proof, &first.claims).unwrap();
+        assert!(single.aggregate(&[&raw_first(&single, 0, zk_leaf)], None).is_err());
+        // Distinct ZK classes keep distinct fixed roots, even when their leaf shapes coincide.
+        let pair_classes = [zk_class, zk_class];
+        let pair = Tree::mixed_classes(&pair_classes, single_shape).unwrap();
+        let a = pair.aggregate_programs_at(0, &[zk_leaf], None).unwrap();
+        let b = pair.aggregate_programs_at(1, &[zk_leaf], None).unwrap();
+        let root = pair.aggregate(&[&a, &b], None).unwrap();
+        let sealer = pair.seal_prover().unwrap();
+        let roots = sealer.roots();
+        let seal = pair.seal(&sealer, &root.proof).unwrap();
+        let pair_bytes = pair.mixed_verifier_bytes(&roots).unwrap();
+        let pair_digest = Tree::mixed_class_key_digest(&pair_bytes);
+        let loaded = Tree::mixed_classes_from_bytes(&pair_classes, single_shape, &pair_bytes, &pair_digest).unwrap();
+        assert!(matches!(
+            loaded.verify_claims(&root.proof, &root.claims),
+            Err(TreeError::SealRequired)
+        ));
+        loaded
+            .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+            .unwrap();
+        let mut wrong_classes = classes;
+        wrong_classes[2].shape = plain_class.shape;
+        assert!(Tree::mixed_classes_from_bytes(&wrong_classes, shape, &bytes, &digest).is_err());
+    }
+
+    #[test]
+    fn public_zk_placement_round_trips_and_pins_the_caller() {
+        let members = [[1, 2, 3, 4]];
+        let (program, plain) = class(&program(&members), &[37]);
+        let hidden = LeafClass {
+            shape: plain.shape.zero_knowledge(),
+            ..plain
+        };
+        let classes = [plain, hidden];
+        let run = hidden.program.prover(hidden.shape).prove(&program, &[37]).unwrap();
+        let leaf = MixedLeaf {
+            key: program.verifying_key(),
+            proof: &run.proof,
+            output: run.output,
+            members: &members,
+        };
+        let other_members = [[9, 10, 11, 12]];
+        let other_program = plain.program.normalize(&self::program(&other_members)).unwrap();
+        let other_run = plain.program.prover(plain.shape).prove(&other_program, &[37]).unwrap();
+        let other_leaf = MixedLeaf {
+            key: other_program.verifying_key(),
+            proof: &other_run.proof,
+            output: other_run.output,
+            members: &other_members,
+        };
+        for small in [
+            None,
+            Some(Tier {
+                arity: 2,
+                capacity: Capacity { claims: 2, groups: 2 },
+            }),
+        ] {
+            let shape = TreeShape {
+                leaf: plain.shape,
+                arity_0: 1,
+                arity: 2,
+                rate: Rate::MIN,
+                claims: Some(ClaimShape {
+                    capacity: Capacity { claims: 8, groups: 4 },
+                    small,
+                }),
+            };
+            for placement in [ZkPlacement::Shared, ZkPlacement::Isolated] {
+                let tree = Tree::mixed_classes_with(&classes, shape, placement).unwrap();
+                let isolated = placement == ZkPlacement::Isolated;
+                assert_eq!(
+                    tree.design.tiers.len(),
+                    1 + usize::from(small.is_some()) + usize::from(isolated)
+                );
+                assert_eq!(
+                    tree.design.places.iter().any(|p| matches!(p.level, Level::LeafWrap(_))),
+                    isolated
+                );
+                let first = tree.aggregate_programs_at(1, &[leaf], None).unwrap();
+                let root = tree.aggregate(&[&first, &first], None).unwrap();
+                let wide = small.map(|_| {
+                    let second = tree.aggregate_programs_at(0, &[other_leaf], None).unwrap();
+                    let large = tree.aggregate(&[&first, &second], None).unwrap();
+                    assert_eq!(tree.design.places[tree.known(&large.proof).unwrap()].tier, LARGE);
+                    // Feeding a LARGE child through another Node exercises its SMALL Wrap too.
+                    tree.aggregate(&[&large, &first], None).unwrap()
+                });
+                let prover = tree.seal_prover().unwrap();
+                let roots = prover.roots();
+                let bytes = tree.mixed_verifier_bytes(&roots).unwrap();
+                let digest = Tree::mixed_class_key_digest(&bytes);
+                for trusted in [false, true] {
+                    let load = |p| {
+                        if trusted {
+                            Tree::mixed_classes_from_trusted_bytes_with(&classes, shape, p, &bytes, &digest)
+                        } else {
+                            Tree::mixed_classes_from_bytes_with(&classes, shape, p, &bytes, &digest)
+                        }
+                    };
+                    let loaded = load(placement).unwrap();
+                    assert_eq!(loaded.mixed_verifier_bytes(&roots).unwrap(), bytes);
+                    let other = if isolated {
+                        ZkPlacement::Shared
+                    } else {
+                        ZkPlacement::Isolated
+                    };
+                    assert!(matches!(load(other), Err(TreeError::MixedClass)));
+                    for root in [&first, &root].into_iter().chain(wide.iter()) {
+                        let seal = tree.seal(&prover, &root.proof).unwrap();
+                        loaded
+                            .verify_claims_sealed(&root.proof, &root.claims, &roots, &seal)
+                            .unwrap();
+                    }
+                }
+                if !isolated {
+                    let position = tree.known(&root.proof).unwrap();
+                    let evaluations = tree.keys[position]
+                        .verify_fixed(
+                            &root.proof.limbs(),
+                            &tree.design.session(),
+                            shape.rate,
+                            &root.proof.proof,
+                            None,
+                        )
+                        .unwrap();
+                    let claims = tree.seal_claims(&root.proof, position, &evaluations).unwrap();
+                    assert_eq!(claims.iter().filter(|c| !c.is_empty()).count(), 1);
+                }
+            }
+        }
+    }
+}

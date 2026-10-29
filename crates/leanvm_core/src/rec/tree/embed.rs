@@ -1,5 +1,4 @@
-//! Authenticated mixed-class keys: bounds, shape, circuit dimensions and seal roots in one canonical encoding.
-//! A consumer pins the digest from a trusted setup; a self-reported digest does not authenticate a class.
+//! Authenticated mixed-class keys: bounds, shape, circuit dimensions and seal roots in one canonical encoding. A consumer pins the digest from a trusted setup; a self-reported digest does not authenticate a class.
 
 use super::*;
 use pcs::merkle::Hash;
@@ -89,8 +88,7 @@ fn put_heights(out: &mut Vec<u8>, heights: &PerRecTable<usize>) {
 }
 
 impl Tree<'_> {
-    /// The complete mixed class key: class, shape, circuit dimensions and seal roots.
-    /// Generate `roots` with this tree's [`Tree::seal_prover`], then authenticate the whole encoding.
+    /// The complete mixed class key: class, shape, circuit dimensions and seal roots. Generate `roots` with this tree's [`Tree::seal_prover`], then authenticate the whole encoding.
     ///
     /// # Errors
     ///
@@ -174,12 +172,9 @@ impl Tree<'static> {
 
     /// Authenticate and load a verifier-only mixed tree from [`Tree::mixed_verifier_bytes`].
     ///
-    /// This is the recommended loader for class-key bytes.
-    ///
     /// # Errors
     ///
-    /// A digest differing from the trusted pin, a mismatched class or shape, or malformed data.
-    /// All proving methods on the returned tree refuse with [`TreeError::VerifierOnly`].
+    /// A digest differing from the trusted pin, a mismatched class or shape, or malformed data. All proving methods on the returned tree refuse with [`TreeError::VerifierOnly`].
     pub fn mixed_from_bytes(
         class: ProgramClass,
         shape: TreeShape,
@@ -207,8 +202,7 @@ impl Tree<'static> {
         Self::mixed_classes_from_bytes_with(classes, shape, ZkPlacement::Isolated, bytes, expected_digest)
     }
 
-    /// Authenticate a key against the caller's ordered classes, shape and placement.
-    /// The placement is never inferred from untrusted bytes.
+    /// Authenticate a key against the caller's ordered classes, shape and placement. The placement is never inferred from untrusted bytes.
     pub fn mixed_classes_from_bytes_with(
         classes: &[LeafClass],
         shape: TreeShape,
@@ -225,29 +219,17 @@ impl Tree<'static> {
 
     /// Load a verifier-only mixed tree from bytes already authenticated by the caller, without hashing them.
     ///
-    /// Prefer [`Tree::mixed_from_bytes`], which checks the digest. This method performs the same structural
-    /// validation but takes `digest` as given for the seal session, in both debug and release builds.
+    /// Prefer [`Tree::mixed_from_bytes`] for untrusted input. This loader checks structure but does not hash the bytes.
     ///
     /// # Security
     ///
-    /// Use only when an outer mechanism guarantees that `bytes` are exactly the class key whose BLAKE2s
-    /// class-key digest is `digest`. For example, bind both the bytes and this digest in a trusted binary or
-    /// prestate, or pin a content-addressed oracle key together with the corresponding class-key digest.
-    /// An oracle's keccak256 key authenticates the bytes, but does not by itself authenticate their mapping
-    /// to the supplied BLAKE2s digest. The caller must establish that association through trusted setup.
+    /// The caller must authenticate the exact bytes and their association with `digest`, for example by embedding both in a trusted binary or pinning a content-addressed oracle key and its corresponding class-key digest. An oracle's keccak256 key alone does not establish that BLAKE2s association.
     ///
-    /// Soundness rests entirely on the bytes being genuine. The supplied digest is assumed correct and
-    /// is not checked against the bytes, including in release builds. It only binds the seal session;
-    /// rejection of a wrong digest is a misconfiguration check, not the source of soundness.
-    /// With untrusted bytes this accepts forged verifier data, even when `digest` is a genuine pinned digest.
-    /// Structural validation cannot establish circuit authenticity. A wrong digest may load successfully;
-    /// it changes the seal session. Every v3 seal opens the root circuit's own columns, so a wrong digest
-    /// invalidates existing seals even for first-level roots. Loaded keys require sealed verification.
+    /// Soundness depends on genuine key bytes: untrusted bytes can supply forged verifier data. The digest is assumed correct and is not checked in debug or release builds. It binds the seal session; a wrong digest can load successfully but invalidates existing seals, including First-root seals.
     ///
     /// # Errors
     ///
-    /// A mismatched class or shape, or malformed data. All proving methods on the returned tree refuse
-    /// with [`TreeError::VerifierOnly`].
+    /// A mismatched class or shape, or malformed data. All proving methods on the returned tree refuse with [`TreeError::VerifierOnly`].
     pub fn mixed_from_trusted_bytes(
         class: ProgramClass,
         shape: TreeShape,
@@ -268,9 +250,7 @@ impl Tree<'static> {
     /// Load an externally authenticated class key for all expected leaf classes.
     ///
     /// # Security
-    /// Exactly the same trust obligation as [`Tree::mixed_from_trusted_bytes`]: the bytes must be genuine,
-    /// and the supplied digest is assumed correct without being hashed. All v3 seals bind the digest, including
-    /// first-level roots. Prefer [`Tree::mixed_classes_from_bytes`] for untrusted input.
+    /// Same requirements as [`Tree::mixed_from_trusted_bytes`].
     pub fn mixed_classes_from_trusted_bytes(
         classes: &[LeafClass],
         shape: TreeShape,
@@ -283,9 +263,7 @@ impl Tree<'static> {
     /// Load externally authenticated bytes with caller-pinned placement.
     ///
     /// # Security
-    /// The exact obligation of [`Tree::mixed_from_trusted_bytes`] applies: the bytes must be genuine
-    /// and associated with `digest`. The digest is not checked against the bytes, including in release.
-    /// Prefer [`Tree::mixed_classes_from_bytes_with`] for untrusted input.
+    /// Same requirements as [`Tree::mixed_from_trusted_bytes`].
     pub fn mixed_classes_from_trusted_bytes_with(
         classes: &[LeafClass],
         shape: TreeShape,

@@ -1,18 +1,13 @@
-# Shared-ZK compact-key fixtures
+# Shared compact-key fixtures
 
-Exact requested monorepo class: three ordered leaf classes, arities 1/2, tree rate 1/8,
-capacity `(4097,64)`, no small tier, Shared placement, seal rate 1/4.
-The root covers eight plain, four signature-member and four ZK leaves: 1168 claims.
-See [the report](../../doc/shared-zk-placement.md) and [byte-level format](../../doc/compact-class-key.md).
+Three ordered leaf classes use capacity `(4097,64)`, no small tier, arities 1/2, tree log inverse rate 3 and Shared ZK placement. Class bounds and heights are defined in `crates/leanvm_core/tests/fixtures/shared_zk.rs`. The root covers plain programs, the signature-member guest and ZK programs.
 
-`verdicts.tsv` lists name, expected verdict, key, digest, root, claims and seal, tab-separated.
-Paths are relative to this directory. Digests are raw 32 bytes; all other artifacts use public API encodings.
-The isolated-key mutation includes its genuine digest so descriptor checking, not a stale pin, rejects it.
+See the [format specification](../../doc/compact-class-key.md). `verdicts.tsv` gives the expected verdict and relative artifact paths for each case. Digest files contain 32 raw bytes. Other files use the public Rust API's byte encoding. The isolated-key case supplies its genuine digest so placement checking must reject it.
 
 ```sh
 cargo test --release -p leanvm --test verifiers shared_zk_differential_fixtures
-cargo run --release -p leanvm --example shared_zk -- conformance/mixed-class-key-v4-shared-zk verify
+cargo run --release -p leanvm --example fixtures -- verify shared conformance/mixed-class-key-v4-shared-zk
+cargo run --release -p leanvm --example fixtures -- export shared target/shared-fixture
 ```
 
-Generate fresh artifacts with `shared_zk DIRECTORY`; proofs and sizes may vary with randomness.
-Root + seal totals exclude the separate claims encoding and application framing.
+Regeneration verifies fresh artifacts before returning; proof randomness can change proof bytes while the class key remains deterministic. Claims are a separate artifact from the root and seal.

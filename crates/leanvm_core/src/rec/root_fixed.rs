@@ -1,9 +1,6 @@
-//! Native root verification with deferred, seal-authenticated fixed-column evaluations.
+//! Native root verification with deferred fixed-column evaluations.
 //!
-//! This is the native counterpart of `Rows::hinting`. Accepting its result alone is
-//! UNSOUND: every returned evaluation must be opened against the authenticated tier
-//! commitment, at the column block and root circuit's local index. The seal binds
-//! the entire root proof and all hinted values before its opening challenges.
+//! Every returned evaluation must be opened against the authenticated tier commitment at the column block and root circuit's local index. The seal binds the entire root proof and supplied values before its opening challenges; the native check alone does not authenticate those values.
 use super::*;
 use crate::bus::PublicColumn;
 use crate::rec::fixed::FixedColumn;
@@ -44,7 +41,7 @@ impl PublicColumns for RootVerifier<'_, '_> {
         match fixed {
             FixedColumn::Next(_) => value,
             FixedColumn::Constant(limb) => {
-                // Constants are zero on statement rows; add precisely the public statement's share.
+                // Constants are zero on statement rows; add the public statement's share.
                 let statement = self.statement.iter().enumerate().fold(F192::ZERO, |acc, (row, word)| {
                     let weight = point.iter().enumerate().fold(F192::ONE, |w, (bit, &p)| {
                         w * if row >> bit & 1 == 1 { p } else { p + F192::ONE }

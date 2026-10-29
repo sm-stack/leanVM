@@ -1,20 +1,13 @@
-# Compact class-key v4 fixtures
+# Isolated compact-key fixtures
 
-The exact monorepo three-class shape at capacity `(16385, 1024)`, SMALL `(257, 64)`.
-See [the protocol specification](../../doc/compact-class-key.md) for encodings, class descriptors and soundness assumptions.
+Three ordered leaf classes use capacity `(16385,1024)`, SMALL `(257,64)`, arities 1/2, tree log inverse rate 1 and Isolated ZK placement. Class bounds and heights are defined in the `compact` suite of `crates/leanvm_core/examples/fixtures.rs`.
 
-`verdicts.tsv` is the complete eight-case manifest. Its paths are relative to this directory.
-All `.bin` files contain the public Rust API's byte encoding; `.digest` files contain 32 raw bytes.
-Valid cases share the authenticated key. Mutations share unmodified artifacts where possible.
-
-Run the frozen suite with:
+See the [format specification](../../doc/compact-class-key.md). `verdicts.tsv` gives the expected verdict and relative artifact paths for each case. Digest files contain 32 raw bytes. Other files use the public Rust API's byte encoding.
 
 ```sh
 cargo test --release -p leanvm --test verifiers compact_class_key_differential_fixtures
-cargo run --release -p leanvm --example compact_class_key -- conformance/mixed-class-key-v4 16385 verify
+cargo run --release -p leanvm --example fixtures -- verify compact conformance/mixed-class-key-v4
+cargo run --release -p leanvm --example fixtures -- export compact target/compact-fixture
 ```
 
-Generate fresh proofs in a separate directory with `compact_class_key DIRECTORY 16385`.
-Proof randomness can change proof sizes and bytes. The class key is deterministic.
-The generator includes the signature-member class in the key; the fixture leaves use the plain program
-and private program classes. Actual signature-member proofs are exercised by the unit suite.
+The suite covers SMALL/LARGE plain roots and ZK roots, plus dropped/added openings, a changed usage bit and a wrong digest. Regeneration verifies fresh artifacts before returning; proof randomness can change proof bytes while the class key remains deterministic.

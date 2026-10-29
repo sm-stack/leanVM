@@ -22,7 +22,7 @@ use super::{ClaimShape, TreeError, reduce};
 use crate::bus::N_TUPLE_BITS;
 use crate::commitment::Rate;
 use crate::cpu::{Claim, Program, ProgramPoint};
-use crate::rec::circuit::{Builder, Dw, Ew, Finished, Kw};
+use crate::rec::circuit::{BuildSizes, Builder, Dw, Ew, Finished, Kw};
 use crate::rec::fixed::{FixedColumns, FixedLayout};
 use crate::rec::hash;
 use crate::rec::table::PerRecTable;
@@ -37,6 +37,7 @@ use pcs::ring_switch::inverse_frobenius_ladder;
 use primitives::field::F192;
 use primitives::multilinear::mle_eval_par;
 use std::ops::Range;
+use std::sync::OnceLock;
 
 /// The protocol half of every recursion proof's session tag.
 const DOMAIN: &[u8] = b"leanvm-tree-19";
@@ -115,6 +116,8 @@ pub(crate) struct Design<'p> {
     pub(crate) vars: DenseVars,
     /// Where each part of a statement sits.
     pub(crate) statement: StatementLayout,
+    /// What each position's first build made, so that every later build of it reserves its rows up front.
+    sizes: Vec<OnceLock<BuildSizes>>,
 }
 
 /// A child's kind, as its node's rows read it.
@@ -323,6 +326,7 @@ impl<'p> Design<'p> {
             arity,
             rate,
             claims,
+            sizes: places.iter().map(|_| OnceLock::new()).collect(),
             places,
             tiers,
             tier_shift,
@@ -441,7 +445,7 @@ impl<'p> Design<'p> {
             let (leaf, max) = &self.extra_leaves[class - 1];
             (leaf, *max)
         };
-        let mut b = Builder::new();
+        let mut b = self.builder(position);
         let mut claims = NodeClaims::default();
         let usage = vec![b.zero(); self.tiers.len()];
         let mut outputs = Vec::with_capacity(self.arity_0);
@@ -507,7 +511,7 @@ impl<'p> Design<'p> {
         };
         let tier = &self.tiers[child_tier];
         let session = self.session();
-        let mut b = Builder::new();
+        let mut b = self.builder(position);
         let zeros = matches!(inputs, NodeInputs::Shape).then(|| FixedColumns::zeros(&tier.taus));
         let mut claims = NodeClaims::default();
         let mut usage = vec![b.zero(); self.tiers.len()];
@@ -603,6 +607,15 @@ impl<'p> Design<'p> {
         }
         let top = bits[..t.kind_bits].iter().map(|&bit| b.k_to_e1(bit)).collect();
         KindBits { top, is_node }
+    }
+
+    /// A builder for the circuit at `position`, with room for what its first build made.
+    ///
+    /// Every build of a position makes the same rows, since rows never depend on values.
+    fn builder(&self, position: usize) -> Builder {
+        self.sizes[position]
+            .get()
+            .map_or_else(Builder::new, Builder::with_sizes)
     }
 
     /// A circuit built from the shapes alone.
@@ -761,6 +774,7 @@ impl NodeRows {
         for &w in statement.words() {
             b.expose(w);
         }
+        design.sizes[self.position].get_or_init(|| self.b.sizes());
         self.b.finish()
     }
 }

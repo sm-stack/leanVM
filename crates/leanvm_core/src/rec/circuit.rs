@@ -142,7 +142,7 @@ pub struct Builder {
     /// Sources of public row values, in insertion order.
     pubs: Vec<PubSource>,
     /// Deduplicated constant wires, keyed by kind and padded value.
-    consts: HashMap<(WireKind, Limbs), u32>,
+    consts: HashMap<ConstKey, u32, BuildHasherDefault<RowHasher>>,
     /// Cached arithmetic identities used to fold operations.
     units: Units,
     /// Each `EMUL` and `EXK` row's output by its key, `EMUL`'s two factors in order.
@@ -173,6 +173,27 @@ struct Units {
 /// An arithmetic row's table and input wires, as one key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct RowKey(u128);
+
+/// A constant wire's kind and padded value, as one key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ConstKey(WireKind, Limbs);
+
+/// How much a build made, so that a build of the same circuit reserves it all up front.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BuildSizes {
+    /// Wires.
+    wires: usize,
+    /// Each table's slots.
+    slots: PerRecTable<usize>,
+    /// Public rows.
+    pubs: usize,
+    /// Constant wires.
+    consts: usize,
+    /// Arithmetic rows.
+    arith: usize,
+    /// Hash rows.
+    hash: usize,
+}
 
 /// Hashes a row key: wire numbers the builder made, never adversarial, so two rounds of a 64-bit finalizer suffice.
 #[derive(Default)]
@@ -398,9 +419,19 @@ impl RowKey {
     }
 }
 
+impl std::hash::Hash for ConstKey {
+    /// One `u128` folding the kind and the four words, for the row hasher; equal keys still compare whole.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let Self(kind, [a, b, c, d]) = *self;
+        let low = a ^ c.rotate_left(32) ^ kind as u64;
+        let high = b ^ d.rotate_left(32);
+        state.write_u128(u128::from(high) << 64 | u128::from(low));
+    }
+}
+
 impl Hasher for RowHasher {
     fn write(&mut self, _: &[u8]) {
-        unreachable!("a row key is one u128");
+        unreachable!("a row or constant key is one u128");
     }
 
     fn write_u128(&mut self, key: u128) {
@@ -426,6 +457,34 @@ impl Builder {
     /// An empty circuit.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty circuit with room for everything a build of `sizes` made, so that it never grows.
+    pub(crate) fn with_sizes(sizes: &BuildSizes) -> Self {
+        let mut b = Self::new();
+        b.values.reserve(sizes.wires);
+        b.kinds.reserve(sizes.wires);
+        b.parent.reserve(sizes.wires);
+        for (t, &n) in sizes.slots.iter() {
+            b.rows.0[t].reserve(n);
+        }
+        b.pubs.reserve(sizes.pubs);
+        b.consts.reserve(sizes.consts);
+        b.arith.reserve(sizes.arith);
+        b.hash.reserve(sizes.hash);
+        b
+    }
+
+    /// How much this build has made, for [`Builder::with_sizes`].
+    pub(crate) fn sizes(&self) -> BuildSizes {
+        BuildSizes {
+            wires: self.values.len(),
+            slots: PerRecTable::from_fn(|t| self.rows.0[t].len()),
+            pubs: self.pubs.len(),
+            consts: self.consts.len(),
+            arith: self.arith.len(),
+            hash: self.hash.len(),
+        }
     }
 
     /// Run `f` under a name, which an equality that fails reports.
@@ -596,13 +655,13 @@ impl Builder {
 
     /// The constant wire of a kind and value, a public row the first time it is asked for.
     fn constant(&mut self, kind: WireKind, value: Limbs) -> u32 {
-        if let Some(&w) = self.consts.get(&(kind, value)) {
+        if let Some(&w) = self.consts.get(&ConstKey(kind, value)) {
             return w;
         }
         let w = self.wire(kind, value);
         self.pubs.push(PubSource::Const(value));
         self.row(Table::Pub, &[w]);
-        self.consts.insert((kind, value), w);
+        self.consts.insert(ConstKey(kind, value), w);
         let unit = match (kind, value) {
             (WireKind::E, [0, 0, 0, 0]) => &mut self.units.e_zero,
             (WireKind::E, [1, 0, 0, 0]) => &mut self.units.e_one,

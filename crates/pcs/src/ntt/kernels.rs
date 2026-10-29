@@ -8,7 +8,7 @@ use core::arch::aarch64::*;
 use core::arch::x86_64::*;
 use primitives::field::F64;
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
-use primitives::field::gf2_64::aarch64::reduce_pair_pmull4;
+use primitives::field::gf2_64::aarch64::{reduce_pair_pmull2, reduce_pair_pmull4};
 use primitives::field::gf2_64::mul_wide;
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 use primitives::field::neon::xor3_u64;
@@ -138,6 +138,8 @@ pub(super) fn transposed_butterfly_lanes(top: &mut [F64], bot: &mut [F64], twidd
 /// The butterflies of every lane of a row pair, forward or transposed.
 ///
 /// - A zero twiddle needs no product, so the butterfly is one addition.
+/// - A twiddle below `2^61` leaves products whose high word times `0x1B` fits a word, so each reduction folds once.
+///   The two deepest layers' twiddles all are.
 /// - Otherwise a SIMD kernel takes whole vectors of lanes, and the scalar butterfly the rest.
 /// - On NEON a call takes eight lanes as four independent reductions, so their PMULL chains overlap.
 /// - There a two-lane kernel takes an even tail, and the scalar butterfly an odd last lane.
@@ -156,13 +158,23 @@ fn lane_butterflies<const TRANSPOSED: bool>(top: &mut [F64], bot: &mut [F64], tw
         }
         return;
     }
+    if twiddle.0 >> 61 == 0 {
+        lane_products::<TRANSPOSED, true>(top, bot, twiddle);
+    } else {
+        lane_products::<TRANSPOSED, false>(top, bot, twiddle);
+    }
+}
+
+/// The butterflies of a row pair under a nonzero twiddle, `SMALL` when it is below `2^61`.
+#[inline]
+fn lane_products<const TRANSPOSED: bool, const SMALL: bool>(top: &mut [F64], bot: &mut [F64], twiddle: F64) {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
     let done = {
         let vectors = top.len() / 8;
         // SAFETY: the features are enabled at compile time, and call `i` touches words `8i..8i + 8` of both rows.
         unsafe {
             for i in 0..vectors {
-                butterfly_lanes_avx512::<TRANSPOSED>(
+                butterfly_lanes_avx512::<TRANSPOSED, SMALL>(
                     top.as_mut_ptr().add(8 * i),
                     bot.as_mut_ptr().add(8 * i),
                     twiddle.0,
@@ -182,7 +194,11 @@ fn lane_butterflies<const TRANSPOSED: bool>(top: &mut [F64], bot: &mut [F64], tw
         // SAFETY: the features are enabled at compile time, and call `i` touches words `4i..4i + 4` of both rows.
         unsafe {
             for i in 0..vectors {
-                butterfly_lanes_avx2::<TRANSPOSED>(top.as_mut_ptr().add(4 * i), bot.as_mut_ptr().add(4 * i), twiddle.0);
+                butterfly_lanes_avx2::<TRANSPOSED, SMALL>(
+                    top.as_mut_ptr().add(4 * i),
+                    bot.as_mut_ptr().add(4 * i),
+                    twiddle.0,
+                );
             }
         }
         4 * vectors
@@ -196,14 +212,14 @@ fn lane_butterflies<const TRANSPOSED: bool>(top: &mut [F64], bot: &mut [F64], tw
         // - The eight-lane calls touch words `8i..8i + 8`, and the pair calls `lane..lane + 2`, all inside both rows.
         unsafe {
             for i in 0..vectors {
-                butterfly_lanes_neon_8::<TRANSPOSED>(
+                butterfly_lanes_neon_8::<TRANSPOSED, SMALL>(
                     top.as_mut_ptr().add(8 * i),
                     bot.as_mut_ptr().add(8 * i),
                     twiddle.0,
                 );
             }
             while lane + 2 <= top.len() {
-                butterfly_lane_pair_neon::<TRANSPOSED>(
+                butterfly_lane_pair_neon::<TRANSPOSED, SMALL>(
                     top.as_mut_ptr().add(lane),
                     bot.as_mut_ptr().add(lane),
                     twiddle.0,
@@ -262,7 +278,11 @@ fn butterfly_one<const TRANSPOSED: bool>(u: &mut F64, v: &mut F64, t: F64) {
 #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 #[inline]
 #[target_feature(enable = "vpclmulqdq", enable = "avx512f", enable = "avx2")]
-unsafe fn butterfly_lanes_avx512<const TRANSPOSED: bool>(top: *mut F64, bot: *mut F64, twiddle: u64) {
+unsafe fn butterfly_lanes_avx512<const TRANSPOSED: bool, const SMALL: bool>(
+    top: *mut F64,
+    bot: *mut F64,
+    twiddle: u64,
+) {
     // SAFETY:
     // - The caller supplies two valid eight-word rows.
     // - This function's target features cover every intrinsic below.
@@ -287,14 +307,18 @@ unsafe fn butterfly_lanes_avx512<const TRANSPOSED: bool>(top: *mut F64, bot: *mu
 
         // Reduce modulo x^64 + x^4 + x^3 + x + 1 with shifts and three-way XORs.
         const XOR3: i32 = 0x96;
-        // The bits of hi * (x^4 + x^3 + x + 1) that land past x^63.
-        let spill = _mm512_ternarylogic_epi64::<XOR3>(
-            _mm512_srli_epi64::<63>(hi),
-            _mm512_srli_epi64::<61>(hi),
-            _mm512_srli_epi64::<60>(hi),
-        );
+        // The bits of hi * (x^4 + x^3 + x + 1) that land past x^63, none when hi is below 2^60.
         // Both hi and spill are multiplied by the same constant, so fold them first.
-        let x = _mm512_xor_si512(hi, spill);
+        let x = if SMALL {
+            hi
+        } else {
+            let spill = _mm512_ternarylogic_epi64::<XOR3>(
+                _mm512_srli_epi64::<63>(hi),
+                _mm512_srli_epi64::<61>(hi),
+                _mm512_srli_epi64::<60>(hi),
+            );
+            _mm512_xor_si512(hi, spill)
+        };
         // g(x) = x ^ x<<1 ^ x<<3 ^ x<<4, split across two three-way XORs.
         let fx = _mm512_ternarylogic_epi64::<XOR3>(x, _mm512_slli_epi64::<1>(x), _mm512_slli_epi64::<3>(x));
         // acc + m * t, with the product's lo and g(x) folded in one step.
@@ -334,7 +358,7 @@ unsafe fn butterfly_lanes_avx512<const TRANSPOSED: bool>(top: *mut F64, bot: *mu
 ))]
 #[inline]
 #[target_feature(enable = "vpclmulqdq", enable = "avx2")]
-unsafe fn butterfly_lanes_avx2<const TRANSPOSED: bool>(top: *mut F64, bot: *mut F64, twiddle: u64) {
+unsafe fn butterfly_lanes_avx2<const TRANSPOSED: bool, const SMALL: bool>(top: *mut F64, bot: *mut F64, twiddle: u64) {
     // SAFETY:
     // - The caller supplies two valid four-word rows.
     // - This function's target features cover every intrinsic below.
@@ -356,7 +380,7 @@ unsafe fn butterfly_lanes_avx2<const TRANSPOSED: bool>(top: *mut F64, bot: *mut 
         let lo = _mm256_unpacklo_epi64(even, odd);
         let hi = _mm256_unpackhi_epi64(even, odd);
 
-        // The spill of every top nibble.
+        // The spill of every top nibble, none when hi is below 2^60.
         const SPILL: [u8; 16] = {
             let mut table = [0u8; 16];
             let mut n = 0;
@@ -366,10 +390,13 @@ unsafe fn butterfly_lanes_avx2<const TRANSPOSED: bool>(top: *mut F64, bot: *mut 
             }
             table
         };
-        let table = _mm256_broadcastsi128_si256(_mm_loadu_si128(SPILL.as_ptr().cast()));
-        let spill = _mm256_shuffle_epi8(table, _mm256_srli_epi64::<60>(hi));
         // Both hi and spill are multiplied by the same constant, so fold them first.
-        let x = _mm256_xor_si256(hi, spill);
+        let x = if SMALL {
+            hi
+        } else {
+            let table = _mm256_broadcastsi128_si256(_mm_loadu_si128(SPILL.as_ptr().cast()));
+            _mm256_xor_si256(hi, _mm256_shuffle_epi8(table, _mm256_srli_epi64::<60>(hi)))
+        };
         let x2 = _mm256_add_epi64(x, x);
         let x8 = {
             let x4 = _mm256_add_epi64(x2, x2);
@@ -402,7 +429,11 @@ unsafe fn butterfly_lanes_avx2<const TRANSPOSED: bool>(top: *mut F64, bot: *mut 
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 #[inline]
 #[target_feature(enable = "aes")]
-unsafe fn butterfly_lanes_neon_8<const TRANSPOSED: bool>(top: *mut F64, bot: *mut F64, twiddle: u64) {
+unsafe fn butterfly_lanes_neon_8<const TRANSPOSED: bool, const SMALL: bool>(
+    top: *mut F64,
+    bot: *mut F64,
+    twiddle: u64,
+) {
     // SAFETY:
     // - The caller supplies two valid eight-word rows, and F64 is repr(transparent) over u64.
     // - This function's target feature covers every intrinsic below.
@@ -437,10 +468,10 @@ unsafe fn butterfly_lanes_neon_8<const TRANSPOSED: bool>(top: *mut F64, bot: *mu
         let p30 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_u64::<0>(m3), twiddle));
         let p31 = vreinterpretq_u64_p128(vmull_high_p64(vreinterpretq_p64_u64(m3), vreinterpretq_p64_u64(tw)));
 
-        let sum0 = veorq_u64(a0, reduce_pair_pmull4(p00, p01));
-        let sum1 = veorq_u64(a1, reduce_pair_pmull4(p10, p11));
-        let sum2 = veorq_u64(a2, reduce_pair_pmull4(p20, p21));
-        let sum3 = veorq_u64(a3, reduce_pair_pmull4(p30, p31));
+        let sum0 = veorq_u64(a0, reduce_pair::<SMALL>(p00, p01));
+        let sum1 = veorq_u64(a1, reduce_pair::<SMALL>(p10, p11));
+        let sum2 = veorq_u64(a2, reduce_pair::<SMALL>(p20, p21));
+        let sum3 = veorq_u64(a3, reduce_pair::<SMALL>(p30, p31));
         // Forward: u' = u + v * t, then v' = v + u'. Transposed: u' = u + v, then v' = v + u' * t.
         let ((new_u0, new_v0), (new_u1, new_v1), (new_u2, new_v2), (new_u3, new_v3)) = if TRANSPOSED {
             ((m0, sum0), (m1, sum1), (m2, sum2), (m3, sum3))
@@ -464,6 +495,25 @@ unsafe fn butterfly_lanes_neon_8<const TRANSPOSED: bool>(top: *mut F64, bot: *mu
     }
 }
 
+/// Two products reduced as a lane pair, folding once when `SMALL`.
+///
+/// # Safety
+///
+/// Requires the `aes` target feature.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+#[inline]
+#[target_feature(enable = "aes")]
+unsafe fn reduce_pair<const SMALL: bool>(p0: uint64x2_t, p1: uint64x2_t) -> uint64x2_t {
+    // SAFETY: this function's target feature covers both reductions.
+    unsafe {
+        if SMALL {
+            reduce_pair_pmull2(p0, p1)
+        } else {
+            reduce_pair_pmull4(p0, p1)
+        }
+    }
+}
+
 /// Two butterflies with a shared twiddle, kept in NEON registers end to end.
 ///
 /// - PMULL and PMULL2 multiply the loaded row's two words, with no lane extraction.
@@ -476,7 +526,11 @@ unsafe fn butterfly_lanes_neon_8<const TRANSPOSED: bool>(top: *mut F64, bot: *mu
 #[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
 #[inline]
 #[target_feature(enable = "aes")]
-unsafe fn butterfly_lane_pair_neon<const TRANSPOSED: bool>(top: *mut F64, bot: *mut F64, twiddle: u64) {
+unsafe fn butterfly_lane_pair_neon<const TRANSPOSED: bool, const SMALL: bool>(
+    top: *mut F64,
+    bot: *mut F64,
+    twiddle: u64,
+) {
     // SAFETY:
     // - The caller supplies two valid two-word rows, and F64 is repr(transparent) over u64.
     // - This function's target feature covers every intrinsic below.
@@ -489,7 +543,7 @@ unsafe fn butterfly_lane_pair_neon<const TRANSPOSED: bool>(top: *mut F64, bot: *
         let tw = vdupq_n_u64(twiddle);
         let p0 = vreinterpretq_u64_p128(vmull_p64(vgetq_lane_u64::<0>(m), twiddle));
         let p1 = vreinterpretq_u64_p128(vmull_high_p64(vreinterpretq_p64_u64(m), vreinterpretq_p64_u64(tw)));
-        let prod = reduce_pair_pmull4(p0, p1);
+        let prod = reduce_pair::<SMALL>(p0, p1);
         let (new_u, new_v) = if TRANSPOSED {
             (m, veorq_u64(v, prod))
         } else {

@@ -663,10 +663,17 @@ impl AdditiveNtt {
     /// - The residue is below `step`, so that shift drops it.
     /// - The scratch transform therefore takes the same twiddles as the full one.
     ///
+    /// # Runs of residues
+    ///
+    /// - A group takes `w` consecutive residues at once: their rows are contiguous, so each is one wide row.
+    /// - Every residue of a run shares the twiddles, so the scratch transform runs over `w * lanes` lanes.
+    /// - `w` makes a run at least one page: gathers reading less than a page per visit measured slower.
+    /// - It stays a power of two dividing `step`, and widens the scratch only while it fits `L3_WORDS`.
+    ///
     /// # With a message
     ///
     /// - Every block's rows come from the message, plus the block's share of the padding.
-    /// - One task takes one residue across all blocks, block 0 last.
+    /// - One task takes one run of residues across all blocks, block 0 last.
     ///
     /// # Part of the domain
     ///
@@ -687,13 +694,22 @@ impl AdditiveNtt {
         let log_step = log_d - layer - g;
         let (rows, step) = (1usize << g, 1usize << log_step);
         let blocks = data.len() / (num_ntts << (log_d - layer));
-        // With a message, a task is one residue across every block.
-        // Without one, a task is one (block, residue) pair.
-        let n_tasks = if msg.is_some() { step } else { step * blocks };
+        // A group is `w` consecutive residues, one wide row of `wide` words.
+        let budget = (L3_WORDS / (rows * num_ntts)).max(1);
+        let w = PAGE_WORDS
+            .div_ceil(num_ntts)
+            .next_power_of_two()
+            .min(1 << budget.ilog2())
+            .min(step);
+        let wide = w * num_ntts;
+        // With a message, a task is one run of residues across every block.
+        // Without one, a task is one (block, run) pair.
+        let runs = step / w;
+        let n_tasks = if msg.is_some() { runs } else { runs * blocks };
         let base = SendPtr(data.as_mut_ptr());
         parallel::for_each_chunk(n_tasks, |lo, hi| {
-            // One L2-resident scratch of 2^g rows serves every group of the task.
-            with_scratch(rows * num_ntts, |scratch| {
+            // One scratch of 2^g wide rows serves every group of the task.
+            with_scratch(rows * wide, |scratch| {
                 // One fence at the end of the task covers all its streaming stores.
                 let stream = (store == Store::Streamed).then(Stream::new);
                 let mut group = |block: usize, r: usize| {
@@ -702,16 +718,16 @@ impl AdditiveNtt {
                     let block_off = (block << (log_d - layer)) * num_ntts;
                     // The first pass enters at the message's layer, so a block is a replica.
                     let pad = msg.and_then(|m| m.pad).filter(|p| row(0) < p.words.len());
-                    // Gather: the scattered rows become one contiguous 2^g-row buffer.
-                    for (i, dst) in scratch.chunks_exact_mut(num_ntts).enumerate() {
+                    // Gather: the scattered runs become one contiguous 2^g-row buffer.
+                    for (i, dst) in scratch.chunks_exact_mut(wide).enumerate() {
                         // SAFETY:
                         // - The message and the codeword both cover every row addressed here.
-                        // - Tasks own disjoint residues, so no other task writes these rows.
+                        // - Tasks own disjoint runs of residues, so no other task writes these rows.
                         // - Block 0 is written last, after every read of the message in it.
                         let src = unsafe {
                             match msg {
-                                Some(m) => std::slice::from_raw_parts(m.msg.add(row(i)), num_ntts),
-                                None => base.slice(block_off + row(i), num_ntts),
+                                Some(m) => std::slice::from_raw_parts(m.msg.add(row(i)), wide),
+                                None => base.slice(block_off + row(i), wide),
                             }
                         };
                         dst.copy_from_slice(src);
@@ -722,13 +738,13 @@ impl AdditiveNtt {
                     // Transform: a (layer + g)-layer domain whose layer-`layer` block is the global block.
                     let group_domain = Domain {
                         log_d: layer + g,
-                        lanes: num_ntts,
+                        lanes: wide,
                     };
                     self.run_layers(scratch, group_domain, layer, first_block + block);
                     // Scatter: every row returns to its place.
-                    for (i, src) in scratch.chunks_exact(num_ntts).enumerate() {
+                    for (i, src) in scratch.chunks_exact(wide).enumerate() {
                         // SAFETY: this group alone owns these rows of the codeword.
-                        let dst = unsafe { base.slice(block_off + row(i), num_ntts) };
+                        let dst = unsafe { base.slice(block_off + row(i), wide) };
                         match &stream {
                             Some(s) => s.copy(dst, src),
                             None => dst.copy_from_slice(src),
@@ -736,14 +752,16 @@ impl AdditiveNtt {
                     }
                 };
                 for t in lo..hi {
+                    // A run's first residue: runs are `w` residues, and `w` divides `step`.
+                    let first = t * w;
                     if msg.is_some() {
                         // Block 0 may be the message itself, so it is transformed last.
                         for block in (0..blocks).rev() {
-                            group(block, t);
+                            group(block, first);
                         }
                     } else {
-                        // Task index = block * step + residue.
-                        group(t >> log_step, t & (step - 1));
+                        // Run index = block * runs + run.
+                        group(first >> log_step, first & (step - 1));
                     }
                 }
             });
@@ -982,6 +1000,12 @@ const MIN_TASK_LOG: usize = 6;
 /// - Such a sub-block spills from L2 into L3.
 /// - That costs extra L3 traffic, but saves a whole sweep of DRAM.
 const L3_WORDS: usize = 1 << 18;
+
+/// Words of one memory page: macOS on Apple silicon maps 16 KiB pages, other targets 4 KiB.
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+const PAGE_WORDS: usize = 1 << 11;
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+const PAGE_WORDS: usize = 1 << 9;
 
 /// Words a row-only encode builds per round when a replica outgrows L3.
 ///

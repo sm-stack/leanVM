@@ -313,6 +313,30 @@ pub mod aarch64 {
         }
     }
 
+    /// [`reduce_pair_pmull4`] for products whose high words are below `2^60`, as a factor below `2^61` leaves.
+    ///
+    /// Then `hi * 0x1B` fits lane 0, so the second fold is zero and is skipped: five instructions for the pair.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`pmull`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn reduce_pair_pmull2(p0: uint64x2_t, p1: uint64x2_t) -> uint64x2_t {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let r = vdupq_n_u64(R64);
+            let (mut e0, mut e1) = (veorq_u64(p0, pmull_hi(p0, r)), veorq_u64(p1, pmull_hi(p1, r)));
+            // Why: as in `reduce_pair_pmull4`, only lane 0 of each sum survives the zip.
+            core::arch::asm!(
+                "/* {0:v} {1:v} */",
+                inout(vreg) e0,
+                inout(vreg) e1,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+            vzip1q_u64(e0, e1)
+        }
+    }
+
     /// One field product in three PMULLs: the product, then two folds of its high word by `0x1B`.
     ///
     /// The second fold takes the first's overflow exactly, since four bits times `0x1B` fit in eight.
@@ -532,6 +556,11 @@ mod tests {
                 let pair = aarch64::reduce_pair_pmull4(p0, p1);
                 assert_eq!(vgetq_lane_u64::<0>(pair), reference_mul(a, b));
                 assert_eq!(vgetq_lane_u64::<1>(pair), reference_mul(b, b));
+                // The one-fold reduction, for a factor below 2^61: the all-ones corner gives its largest.
+                let s = b >> 3;
+                let pair = aarch64::reduce_pair_pmull2(aarch64::pmull(a, s), aarch64::pmull(b, s));
+                assert_eq!(vgetq_lane_u64::<0>(pair), reference_mul(a, s));
+                assert_eq!(vgetq_lane_u64::<1>(pair), reference_mul(b, s));
             }
         }
     }

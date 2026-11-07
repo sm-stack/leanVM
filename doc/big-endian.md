@@ -22,7 +22,7 @@ To run a frozen suite separately:
 CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER=s390x-linux-gnu-gcc \
 CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER='qemu-s390x -L /usr/s390x-linux-gnu' \
 RUSTFLAGS='-C target-cpu=generic' \
-cargo run --release -p leanvm --example fixtures --target s390x-unknown-linux-gnu \
+cargo run --release -p leanvm_rv --example fixtures --target s390x-unknown-linux-gnu \
   -- verify shared conformance/mixed-class-key-v4-shared-zk
 ```
 
@@ -33,7 +33,7 @@ The tier-3 MIPS64 target needs a standard library built from the matching compil
 ```sh
 rustup component add rust-src --toolchain 1.95
 RUSTFLAGS='-C target-cpu=generic' RUSTC_BOOTSTRAP=1 \
-rustup run 1.95 cargo build -Z build-std=std,panic_abort --release -p leanvm --lib \
+rustup run 1.95 cargo build -Z build-std=std,panic_abort --release -p leanvm_rv --lib \
   --target mips64-unknown-linux-gnuabi64
 ```
 

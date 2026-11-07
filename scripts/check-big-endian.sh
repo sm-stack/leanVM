@@ -16,11 +16,11 @@ case "$target" in
         ;;
     *) echo "Set the Cargo linker and runner for $target explicitly." ;;
 esac
-cargo run --release -p leanvm --example fixtures -- export endian "$fixture"
-cargo run --release -p leanvm --example fixtures -- export endian-zk "$fixture-zk"
-cargo build --release -p leanvm --lib --target "$target"
+cargo run --release -p leanvm_rv --example fixtures -- export endian "$fixture"
+cargo run --release -p leanvm_rv --example fixtures -- export endian-zk "$fixture-zk"
+cargo build --release -p leanvm_rv --lib --target "$target"
 cargo test --release -p leanvm_guest -p leansphincs-members-host --target "$target"
-cargo run --release -p leanvm --example fixtures --target "$target" -- verify endian "$fixture"
-cargo run --release -p leanvm --example fixtures --target "$target" -- verify endian-zk "$fixture-zk"
-cargo run --release -p leanvm --example fixtures --target "$target" -- verify compact conformance/mixed-class-key-v4
-cargo run --release -p leanvm --example fixtures --target "$target" -- verify shared conformance/mixed-class-key-v4-shared-zk
+cargo run --release -p leanvm_rv --example fixtures --target "$target" -- verify endian "$fixture"
+cargo run --release -p leanvm_rv --example fixtures --target "$target" -- verify endian-zk "$fixture-zk"
+cargo run --release -p leanvm_rv --example fixtures --target "$target" -- verify compact conformance/mixed-class-key-v4
+cargo run --release -p leanvm_rv --example fixtures --target "$target" -- verify shared conformance/mixed-class-key-v4-shared-zk

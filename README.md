@@ -169,6 +169,37 @@ Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   verifying                   : 5.963 ms
 ```
 
+## the RISC-V machine
+
+`leanvm::rv` proves RISC-V (rv64im) plus custom instructions for the BLAKE2s compression and the 192-bit field product, with [Flock](https://github.com/succinctlabs/flock/tree/main) proving each instruction class's Boolean circuit. Its proofs use BLAKE2s and share no format with the leanISA proofs above. Zero-knowledge leaf proofs are opt-in; see [privacy and randomness](doc/compact-class-key.md#privacy-and-randomness).
+
+A program is a guest: a `no_std` Rust program built for `riscv64im-unknown-none-elf` against the SDK in [`sdk`](./sdk/src/lib.rs). Its `main` does all its I/O: `leanvm_guest::read::<T>()` takes the next value from the advice (a region of memory the prover fills, which the statement says nothing about), in place with no copy or decoding, and `leanvm_guest::commit(&value)` makes a value public. The run's output is the BLAKE2s digest of everything committed, in order, which a verifier recomputes from the public values. Everything else in a guest is ordinary Rust. The SDK's linker script fixes the memory map. Each program lives in its own folder, `programs/<name>/guest`, a standalone package that `cargo build --release` builds there (a dated nightly toolchain, pinned by its `rust-toolchain.toml`, for `-Zbuild-std`); a program whose advice takes work to make also has a host, `programs/<name>/host`, its code off the VM. `programs/build.sh` builds every guest and refreshes its checked-in `programs/<name>/<name>.elf`; then prove and verify a run:
+
+```bash
+cargo leanvm rv guest programs/preimage/preimage.elf --advice 5,0x6f6c6c6568
+```
+
+The statement a proof makes is the program (an ELF file) and its four output words, the digest of what it committed; everything a guest reads from its advice it has to check itself, which is what makes a proof a proof of knowledge (`preimage` commits the digest of a message only the prover has).
+
+Benchmarks (the timing subcommands use 16 threads unless `LEANVM_NUM_THREADS` is set):
+
+```bash
+cargo leanvm rv fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
+cargo leanvm rv guest programs/blake2s/blake2s.elf --advice 10000 --repeat 3    # BLAKE2s in plain Rust
+cargo leanvm rv guest programs/hash/hash.elf --advice 50000 --repeat 3          # BLAKE2s through the precompile
+cargo leanvm rv leanxmss --n 400 --repeat 3
+cargo leanvm rv leansphincs --n 104 --repeat 3
+cargo leanvm rv leanda --blobs 1 --repeat 3
+cargo leanvm rv falcon --n 28 --repeat 3
+cargo leanvm rv stateproof --n 21 --repeat 3
+cargo leanvm rv shielded --n 1035 --repeat 3
+cargo leanvm rv aggregate --program leanxmss --n 400 --leaves 16 --arity0 4 --arity 4 --repeat 3
+cargo leanvm rv bench --cycles-only --markdown    # exact cycle and witness counts, no proof
+BENCH_REPEAT=3 FLOCK_N_LOG=18 cargo bench -p leanvm_rv --bench class_batch -- hash
+```
+
+The workloads check leanXMSS and leanSPHINCS signatures, leanDA blobs, Falcon-512 signatures, Ethereum L1 state proofs (`eth_getProof`) and shielded transfers, each at the most one proof holds (continuations are not implemented). `rv aggregate` proves an aggregation tree over leaf proofs, at `--leaf-log-inv-rate` for the leaves and `--log-inv-rate` for the tree; `--signers` makes it a signer-set tree. Mobile proving benchmarks are in [`bench-mobile`](bench-mobile/README.md), and the [benchmark website](./site/benchmarks/index.html) reads one JSON snapshot of the desktop and mobile results.
+
 ## SNARK machinery
 
 - 192-bit binary field (degree-3 tower over the 64-bit field)

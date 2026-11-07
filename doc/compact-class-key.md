@@ -165,7 +165,7 @@ Fixed-column stacking uses these indices: indices 0..=97 are Next columns in glo
 
 ## Caller-pinned ZK placement
 
-`ZkPlacement::{Isolated, Shared}` is exported by `leanvm::aggregate`. The explicit APIs are:
+`ZkPlacement::{Isolated, Shared}` is exported by `leanvm::rv::aggregate`. The explicit APIs are:
 
 ```rust
 Tree::mixed_classes_with(classes: &[LeafClass], shape: TreeShape, placement: ZkPlacement)
@@ -259,10 +259,10 @@ The checked-in suites use `verdicts.tsv` with seven tab-separated fields: `name`
 Generate fresh fixtures in a separate directory; proof randomness can change root and seal bytes. The class key is deterministic. Run the `fixtures` example with `export` or `verify` and a suite name:
 
 ```sh
-cargo run --release -p leanvm --example fixtures -- export compact target/compact-fixture
-cargo run --release -p leanvm --example fixtures -- verify compact conformance/mixed-class-key-v4
-cargo run --release -p leanvm --example fixtures -- export shared target/shared-fixture
-cargo run --release -p leanvm --example fixtures -- verify shared conformance/mixed-class-key-v4-shared-zk
+cargo run --release -p leanvm_rv --example fixtures -- export compact target/compact-fixture
+cargo run --release -p leanvm_rv --example fixtures -- verify compact conformance/mixed-class-key-v4
+cargo run --release -p leanvm_rv --example fixtures -- export shared target/shared-fixture
+cargo run --release -p leanvm_rv --example fixtures -- verify shared conformance/mixed-class-key-v4-shared-zk
 ```
 
 [Big-endian verification](big-endian.md) describes cross-compilation and execution of the same artifacts. The fixture command performs no timing; performance benchmarks belong in the CLI or `benches/`.

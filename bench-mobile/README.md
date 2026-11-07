@@ -1,6 +1,6 @@
 # Mobile proving benchmarks
 
-This directory is a separate Cargo workspace for the `leanvm-mobile-bench` package and `leanvm_mobile_bench` library. It depends on the repository's public `leanvm` API and shielded, Falcon and stateproof host fixtures through path dependencies. Its SDK dependencies and lockfile stay outside the production workspace. The native C ABI runner exports real proving benchmarks, not host timing estimates or emulator measurements.
+This directory is a separate Cargo workspace for the `leanvm-mobile-bench` package and `leanvm_mobile_bench` library. It depends on the repository's RISC-V machine (`leanvm_rv`, public as `leanvm::rv`) and shielded, Falcon and stateproof host fixtures through path dependencies. Its SDK dependencies and lockfile stay outside the production workspace. The native C ABI runner exports real proving benchmarks, not host timing estimates or emulator measurements.
 
 ## Workloads
 
@@ -76,7 +76,7 @@ An authorized administrator should add those two **repository Actions secrets** 
 After the workflows are installed and secrets are available upstream, request a complete website snapshot:
 
 ```sh
-gh workflow run benchmark-site.yml --repo leanEthereum/leanVM --ref riscv-exploration
+gh workflow run benchmark-site.yml --repo leanEthereum/leanVM --ref main
 ```
 
 The fixed candidates are `Google Pixel 7-13.0` for Android and `iPhone 14-16` for iOS. Neither is assumed available: the runner first queries that platform's authenticated catalog, records only the matching model/OS/availability fields, and validates the identifier before submission. Missing credentials, missing device availability, or provider entitlement errors fail the run instead of falling back to a different phone or emulator. Catalog validation is not proof of a completed hardware run; successful device reports are required for that.
@@ -87,7 +87,7 @@ Within the trusted workflow, the wrapper runs from this directory as `python3 ..
 
 `.github/workflows/mobile-bench.yml` runs credential-free Android and iOS ARM64 release packaging for all four workloads on pull requests, including fork PRs. Its `workflow_call` entrypoint accepts the exact `source_sha` selected by the website workflow. It never uses `pull_request_target` or downloads a PR package into a credential-bearing job. Build/device jobs have only `contents: read`; there is no PR-comment publication job. Checkout credentials are not persisted, third-party actions are pinned by commit, and PR/trusted runs do not share build caches.
 
-Trusted device execution is restricted to scheduled or manual callers on `main` or `riscv-exploration` in `leanEthereum/leanVM`. Before any credential-bearing execution, the source job validates the input as a full SHA, checks out that commit and verifies its ancestry against upstream `riscv-exploration`. Every build then checks out that same SHA. Both website and reusable mobile workflow definitions must be installed on `main` for scheduled runs. A scheduled caller's `trigger_ref` may be `main`; it is not the benchmark source branch. The website owns the six-hour schedule and manual trigger; the mobile workflow has neither an independent schedule nor a dispatch entrypoint.
+Trusted device execution is restricted to scheduled or manual callers on `main` in `leanEthereum/leanVM`. Before any credential-bearing execution, the source job validates the input as a full SHA, checks out that commit and verifies its ancestry against upstream `main`. Every build then checks out that same SHA. Both website and reusable mobile workflow definitions must be installed on `main` for scheduled runs. The website owns the six-hour schedule and manual trigger; the mobile workflow has neither an independent schedule nor a dispatch entrypoint.
 
 BrowserStack secrets are scoped to the credential preflight and device execution steps. Trusted mobile runs share a non-cancelling concurrency group. The iPhone build and device run execute first; Android follows on success using the same source SHA, so the account runs at most one device session at a time. Android's job timeout is 120 minutes and iOS's is 150 minutes; each device step is additionally limited to 65 minutes. Build failures, unavailable credentials/devices, and provider or benchmark failures fail the complete snapshot, but timing differences do not.
 

@@ -1,0 +1,32 @@
+[package]
+name = "leanvm-mobile-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[lib]
+name = "leanvm_mobile_bench"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "mobile-bench-smoke"
+path = "src/bin/smoke.rs"
+
+[dependencies]
+leanvm = { path = "../crates/leanvm_core" }
+parallel = { path = "../crates/parallel" }
+shielded-host = { path = "../programs/shielded/host" }
+falcon-host = { path = "../programs/falcon/host" }
+stateproof-host = { path = "../programs/stateproof/host" }
+mobench-sdk = { git = "https://github.com/worldcoin/mobile-bench-rs", rev = "217cfd4f78db1284276a1a1da44e3bf473729f5c", default-features = false, features = ["registry"] }
+inventory = "0.3"
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

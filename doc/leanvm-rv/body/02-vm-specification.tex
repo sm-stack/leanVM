@@ -1,0 +1,71 @@
+% !TeX root = ../drafts/02-vm-specification.tex
+\section{VM specification}\label{sec:vm}
+
+Define the following two finite fields:
+\[
+  \K=\F_{2^{64}}=\F_2[x]/(x^{64}+x^4+x^3+x+1),
+  \qquad
+  \E=\K[y]/(y^3+y+1),
+  \qquad |\E|=2^{192}.
+\]
+
+And fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $2^{64}-1$.
+
+An element of $\K$ is a polynomial in $x$ of degree below $64$, written in hex with the coefficient of $x^{i}$ in bit $i$, so $\mathtt{2}$ is $x$ and $\mathtt{3}$ is $x+1$. An element of $\E$ is three of those, its coefficients on $1,y,y^{2}$.
+
+An integer $i<2^{64}$ names the element $\intk{i}\in\K$ with that hex writing, the coefficient of $x^{k}$ being bit $k$ of $i$. This is how a register or a memory word holds an integer. It is a bijection and nothing more: $\intk{i+j}$ is not $\intk{i}+\intk{j}$ in general, the field sum being the XOR of the integers.
+
+\vspace{5mm}
+
+The machine is RISC-V: the RV64I base integer instruction set with the M extension~\cite{riscv}, plus custom instructions for the BLAKE2s compression and for the multiplication in the extension field $\E$ (below). We do not restate the instruction semantics, which are the specification's; this section fixes what the specification leaves to the execution environment, and nothing else. A program is a text of $32$-bit instruction words and an entry point, compiled by an ordinary RISC-V toolchain (the repository's guests are Rust, built for \texttt{riscv64im-unknown-none-elf}).
+
+\paragraph{Memory map.} Memory holds $64$-bit words, word $z$ of a region being the bytes $8z,\dots,8z+7$ past its base, little-endian. Three regions exist, each at a base that is a multiple of the region's largest size, so that word $z$ sits at the byte address $\mathrm{base}\oplus 8z$ as well as $\mathrm{base}+8z$:
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lllX@{}}
+\hline
+Region & Base & Size & Holds\\
+\hline
+text   & $\tbase=\mathtt{0x1000\_0000}$ & $\nprog=2^{\kbc}\le2^{26}$ instructions & the program, readable by fetches only\\
+advice & $\abase=\mathtt{0x2000\_0000}$ & $2^{\kadv}\le2^{26}$ words & what the prover supplies (below)\\
+RAM    & $\rbase=\mathtt{0x4000\_0000}$ & $2^{\kmem}\le2^{27}$ words & the image, data and the stack\\
+\hline
+\end{tabularx}
+\end{center}
+The three sizes are constants of the program. The whole map lies in one $2$\,GiB window, which is what the \texttt{medany} code model reaches from any $\pc$, and all of it but the last $2$\,KiB of a maximal RAM lies below $\mathtt{0x7FFF\_F800}$, the most \texttt{lui} can form, since \texttt{lui} sign-extends bit $31$ on RV64: \texttt{medlow} code and \texttt{li} address that part. Loads and stores must be naturally aligned, each touching one word; the address of a load or a store is computed modulo $2^{64}$ as the specification says, and it is that address that has to fall in RAM or the advice. The text is not data: a load from it is an access outside memory.
+
+\paragraph{State.} The $32$ integer registers $\regs[0],\dots,\regs[31]$, each one word, and the program counter $\pc$, a byte address. Both parties know the initial state: every register is zero and $\pc$ is the program's entry point. A program sets its own stack pointer.
+
+\paragraph{Image and output.} RAM's first words hold the program's \emph{image}, its initialized data, and the rest of RAM is zero. The run ends when it executes \texttt{ecall} with $\regs[17]=93$ (\texttt{a7} holding the number of the \texttt{exit} system call): its public output is then $\regs[10],\dots,\regs[13]$ (\texttt{a0} to \texttt{a3}), four words. An \texttt{ecall} with another number is a trap. A run has no public input: what a program needs beyond its image it reads from the advice, and a statement about more than four words makes them public through the output, as their digest.
+
+\paragraph{Advice.} The advice region holds what the prover chooses, $2^{\kadv}$ words read and written like RAM, and the statement says nothing about them: for one program there is a valid execution per advice. A program therefore has to check whatever it reads there, and this is the one channel through which a witness reaches it.
+
+\paragraph{Traps.} An execution that traps is no execution at all, and has no proof: the prover is refused, not the verifier. The traps are an instruction the machine does not define (a reserved encoding, \texttt{ebreak}, the CSR and \texttt{fence.i} instructions, an unaligned or out-of-text $\pc$, or any $\pc$ in a slot the program left empty), a misaligned load or store, an access outside memory, and an \texttt{ecall} that is not \texttt{exit}. \texttt{fence} is a no-op.
+
+\paragraph{The execution loop.} Fetch the instruction at $\pc$; read its source registers; make its memory access if it has one; write its destination register and the next $\pc$; stop if the instruction was \texttt{exit}. Every instruction reads two registers and writes one, an instruction with fewer reading $\regs[0]$, and one with no destination or with $\regs[0]$ as its destination writing a $33$rd cell, the $\sink$, which nothing reads: this is how $\regs[0]$ is hardwired to zero (\S\ref{sec:e2e-bc}). Reads come before the write, so \texttt{jalr ra, ra} returns to the address it linked from.
+
+\paragraph{The BLAKE2s compression.} The custom instruction \texttt{blake2s rs1, rs2} (opcode \texttt{custom-0}, \texttt{0x0b}, R-type, with \texttt{funct7} and \texttt{rd} zero) is the compression function of BLAKE2s~\cite{blake2}, on the $128$-byte \emph{block} at the address $\regs[\mathit{rs1}]$: its words $0$ to $3$ hold the $32$-byte chaining value $h$, its words $8$ to $15$ the $64$-byte message $m$, and the instruction writes the $32$-byte result to its words $4$ to $7$, leaving the rest as it found it. The byte counter $t$ is $\regs[\mathit{rs2}]$, and the finalization word $f_0$ is all ones when \texttt{funct3} is $1$ (the final block) and zero when it is $0$; the last-node flag $f_1$ is always zero. Word $k$ of the block is the cell at the address $\regs[\mathit{rs1}]\oplus 8k$, which is $\regs[\mathit{rs1}]+8k$ when the block is aligned to $128$ bytes, as the guest library ensures; an unaligned block permutes the words, deterministically, which is a guest bug rather than a soundness problem, and a base that is no word address traps like a misaligned load. A guest hashes a message by keeping $h$ and $t$ across the blocks and copying each result into $h$; the instruction reads $h$ and writes the result in different words because a proof's padding rows can rewrite a cell but not update it (\S\ref{sec:e2e-pad}).
+
+\paragraph{The extension-field multiplication.} Four custom instructions multiply in the extension field $\E=\K[y]/(y^3+y+1)$, the field the proof's challenges live in. They are R-type, with opcode \texttt{custom-1} (\texttt{0x2b}) and \texttt{funct7} zero.
+
+An element of $\E$ is three words in memory, its \emph{limbs}: $c_0+c_1y+c_2y^2$ at the byte addresses $p$, $p+8$ and $p+16$. Each limb is an element of $\K$, read as above.
+
+The three registers hold addresses: $a$ is the element at $\regs[\mathit{rs1}]$, $b$ the one at $\regs[\mathit{rs2}]$, and $c$ the one at $\regs[\mathit{rd}]$. No register is written.
+\begin{center}
+\begin{tabular}{@{}cll@{}}
+\hline
+\texttt{funct3} & instruction & effect\\
+\hline
+$0$ & \texttt{extmul rd, rs1, rs2}  & $c = a\cdot b$\\
+$1$ & \texttt{extmac rd, rs1, rs2}  & $c = c+a\cdot b$\\
+$2$ & \texttt{extmulk rd, rs1, rs2} & $c = a\cdot b_0$\\
+$3$ & \texttt{extmack rd, rs1, rs2} & $c = c+a\cdot b_0$\\
+\hline
+\end{tabular}
+\end{center}
+Bit $0$ of \texttt{funct3} adds the product to $c$. Bit $1$ makes $b$ an element of $\K$: the one word $b_0$ at $\regs[\mathit{rs2}]$.
+
+Every operand is read before $c$ is written, so $c$ may be $a$ or $b$. For example, \texttt{extmul t0, t0, t0} squares the element at $\regs[5]$ in place.
+
+Every limb the instruction reads or writes must be an aligned word in RAM or the advice, as for \texttt{ld} and \texttt{sd}. Otherwise it traps.
+
+A destination of $\regs[0]$ would name the address $0$, which is unmapped. That encoding is undefined, like every other \texttt{custom-1} encoding.

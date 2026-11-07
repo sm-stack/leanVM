@@ -1,0 +1,222 @@
+% =====================================================================
+%  Notation.  One definition per notion, for the whole document.
+%
+%  A symbol means the same thing in the main matter and in the annexes.
+%  Where the source notes were merged, the annexes were adapted to the
+%  main matter, and where a letter was already taken the annex object was
+%  given a free symbol through the semantic macros below.  The map back to
+%  the notation of the cited papers is in Annex \ref{annex:pcs}, "Symbols".
+%
+%  Multilinear extensions are written \widetilde{\cdot} throughout
+%  (\mle below).  The hat is reserved for the normalized subspace
+%  polynomials of the additive NTT (\Wn).
+% =====================================================================
+
+% ---------- fields ----------
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\Ftwo}{\mathbb{F}_2}
+\newcommand{\K}{K}            % F_{2^64}:  memory words, addresses, counters, committed columns
+\newcommand{\E}{E}            % F_{2^192} = K[y]/(y^3+y+1): challenges
+\newcommand{\gen}{\mathsf{g}} % generator of K^*, order 2^64 - 1
+
+% ---------- checked relations ----------
+\newcommand{\qeq}{\stackrel{?}{=}}  % an equality the verifier checks, not one that holds by construction
+
+% ---------- multilinears ----------
+\newcommand{\mle}[1]{\widetilde{#1}}
+\newcommand{\eq}{\operatorname{eq}}
+\newcommand{\cube}[1]{\{0,1\}^{#1}}
+\newcommand{\inner}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\fc}{\chi}      % a sumcheck round challenge, everywhere in the document
+\newcommand{\flock}{\mathrm{flock}}
+
+% ---------- Flock protocol (Annex C) ----------
+\newcommand{\qflock}{q_{\flock}}             % packed Boolean Flock witness
+\newcommand{\qext}[1]{#1^{\sharp}}           % 64-point univariate / multilinear extension
+\newcommand{\kblock}{\kappa_{\mathrm{block}}} % variables in one BLAKE2s witness block
+\newcommand{\kbatch}{\kappa_{\mathrm{batch}}} % log number of BLAKE2s instances
+\newcommand{\kbool}{\kappa_{\mathrm{bool}}}   % variables of the unpacked Boolean batch witness
+\newcommand{\kskip}{\kappa_{\mathrm{skip}}}   % variables replaced by the univariate skip
+\newcommand{\skipdom}{\mathcal{H}}            % 64 skip-domain nodes
+\newcommand{\skipcoset}{\mathcal{H}'}         % 64 transmitted round-one nodes
+\newcommand{\fembed}{\varphi_{8}}             % embedding of F_{2^8} into E
+\newcommand{\zskip}{\upsilon_{\mathrm{zc}}}   % zerocheck univariate challenge
+\newcommand{\lcalpha}{\alpha_{\mathrm{lc}}}      % lincheck batching challenge (A, B, C, the pin, and the circuits)
+\newcommand{\zcbatch}{\lambda_{\mathrm{zc}}}    % batched zerocheck's challenge: circuit f's polynomial takes its f-th power
+\newcommand{\nflockmax}{\kappa_{\flock}^{\max}}  % rounds of the batched zerocheck: the most any circuit has
+\newcommand{\klcmax}{\kappa_{\mathrm{lc}}^{\max}} % rounds of the batched lincheck: the most any circuit has
+\newcommand{\lcterm}[1]{\Upsilon_{#1}}          % circuit #1's lincheck terminal terms the circuit does not fix, in the batched check
+\newcommand{\lcmat}[1]{\mathsf{M}_{#1}}         % the value the prover sends for circuit #1's matrix form, its deferred claim
+\newcommand{\kblockf}[1]{\kappa_{\mathrm{block},#1}} % \kblock of circuit #1 of the batch
+\newcommand{\kbatchf}[1]{\kappa_{\mathrm{batch},#1}} % \kbatch of circuit #1 of the batch
+\newcommand{\nflockf}[1]{\kappa_{\flock,#1}}         % \nflock of circuit #1 of the batch
+\newcommand{\ksk}{k_{\mathrm{sk}}}              % row index, the skipped half
+\newcommand{\kin}{k_{\mathrm{in}}}              % row index, the within-block half
+\newcommand{\jsk}{j_{\mathrm{sk}}}              % column index, the skipped half
+\newcommand{\jin}{j_{\mathrm{in}}}              % column index, the within-block half
+\newcommand{\jconst}{j_{\mathbf{1}}}            % position of the circuit's constant-one wire
+\newcommand{\posof}[1]{k(#1)}                 % position, equivalently R1CS row, of a committed wire
+\newcommand{\lform}[1]{\mathcal{F}_{#1}}        % a wire's expansion, over the block's positions
+\newcommand{\erow}{e_{\mathrm{row}}}                % lincheck's row weight, the quirky eq table
+\newcommand{\wcol}{w_{\mathrm{col}}}                % lincheck's column weight
+\newcommand{\chg}[1]{\Gamma_{#1}}                 % a wire's coefficient in the backward walk
+\newcommand{\colmar}{M_{\mathrm{col}}}           % column marginal of one matrix, A_0 or B_0
+
+% ---------- VM ----------
+\newcommand{\intk}[1]{\underline{#1}}   % the integer #1 as the element of K with those bits
+\newcommand{\pc}{\mathbf{pc}}
+\newcommand{\mem}{\mathbf{m}}           % RAM
+\newcommand{\regs}{\mathbf{x}}          % the register array: x0..x31, then the sink
+\newcommand{\adv}{\mathbf{a}}           % the advice region
+\newcommand{\tbase}{\mathsf{TEXT}}      % where the text sits
+\newcommand{\rbase}{\mathsf{RAM}}       % where RAM sits
+\newcommand{\abase}{\mathsf{ADVICE}}    % where the advice sits
+\newcommand{\sink}{\mathsf{sink}}       % the register cell an instruction with no destination writes
+\newcommand{\kadv}{\kappa_{\mathrm{adv}}}   % log advice length
+\newcommand{\qcls}[1]{q_{\mathsf{#1}}}   % the packed flock witness of one instruction class
+\newcommand{\qclk}[1]{q^{\mathsf{clk}}_{\mathsf{#1}}}   % the packed flock witness of one table's clock circuit
+\newcommand{\addr}{\mathit{addr}}
+\newcommand{\val}{\mathit{val}}
+\newcommand{\ts}{\mathbf{ts}}            % the execution clock, an integer below 2^41
+\newcommand{\exitflag}{\mathit{exit}} % public selector: one only for ecall
+\newcommand{\tsfinal}{\ts_{\mathrm{final}}} % the clock the run ends on, announced by the prover
+\newcommand{\tsprev}{\mathit{prev}}      % the timestamp of a cell's previous access, a port of the clock circuit
+\newcommand{\tsfin}{\mathit{ts}^{\mathrm{fin}}}  % committed column: each cell's last timestamp
+\newcommand{\meminit}{\mem^{\mathrm{init}}} % RAM before the run, a public column
+\newcommand{\memfin}{\mem^{\mathrm{fin}}}   % committed RAM after the run
+\newcommand{\regfin}{\regs^{\mathrm{fin}}}  % committed registers after the run
+\newcommand{\advinit}{\adv^{\mathrm{init}}} % committed advice before the run
+\newcommand{\advfin}{\adv^{\mathrm{fin}}}   % committed advice after the run
+\newcommand{\mlt}{\mathit{mult}}         % committed multiplicity column of a lookup array: entry x's read count, as a word
+\newcommand{\mbit}[1]{\mathit{mult}_{#1}} % bit #1 of \mlt: a one-bit column of the array's producer
+\newcommand{\nbit}{N_{\mathrm{bit}}}     % bits of \mlt the bus reads: the bit length of \nrd
+\newcommand{\regword}[1]{\mathit{regs}_{#1}} % committed register word #1: the register numbers of tables of one height, row by row
+\newcommand{\regbit}[2]{\mathit{regs}_{#1,#2}} % bit #2 of \regword{#1}: a one-bit column of each table it packs
+\newcommand{\nreg}{N_{\mathrm{reg}}}     % register numbers a table's rows read off their entries: 1 to 3
+\newcommand{\nregbit}[1]{B_{#1}}         % bits of table #1's register numbers: five per register read, six for a cell written
+\newcommand{\nrd}{N_{\mathrm{reads}}}    % the most reads the announced tables can make of one lookup array
+\newcommand{\pubp}[1]{\Psi_{#1}}         % a producer's public column (beta - pi_alpha(entry))^{2^#1} - 1
+\newcommand{\mset}[1]{\{\!\{#1\}\!\}}     % a multiset (plain braces stay sets)
+\newcommand{\lut}{\mathbf{L}}             % a lookup array (memory, or the program)
+\newcommand{\sep}{\dsep{sep}}             % the domain separator of a generic lookup array
+\newcommand{\ncomp}{N_{\mathrm{comp}}}    % components of a lookup entry (its width)
+\newcommand{\push}{\textsc{push}}
+\newcommand{\pull}{\textsc{pull}}
+\newcommand{\tup}[1]{( #1 )}
+\newcommand{\acc}[1]{\dsep{access}_{#1}}    % a memory access in clock slot #1: a pull and a push
+\newcommand{\dsep}[1]{\mathsf{#1}}
+\newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
+\newcommand{\nprog}{N_{\mathrm{prog}}}   % program length
+\newcommand{\nmem}{N_{\mathrm{mem}}}    % memory length
+\newcommand{\kbc}{\kappa_{\mathrm{bc}}}   % log program length: nprog = 2^kbc 
+\newcommand{\kmem}{\kappa_{\mathrm{mem}}}  % log memory length: nmem = 2^kmem
+\newcommand{\ntab}{N_{\mathrm{tab}}}     % number of tables (fixed by the arithmetization)
+\newcommand{\nside}{N_{\mathrm{side}}}   % grand-product sides: push, pull
+\newcommand{\taumax}{\tau_{\max}}      % rounds of the table sumcheck: the tallest table's log height
+\newcommand{\ncol}[1]{N_{\mathrm{col},#1}}  % columns of table #1
+\newcommand{\ncons}[1]{N_{\mathrm{cons},#1}}  % constraints of table #1
+\newcommand{\nconstot}{N_{\mathrm{cons}}}    % constraints of all tables, the batching offset
+\newcommand{\nfl}[1]{N_{\mathrm{flushes},#1}}    % bus flushes per row of table #1
+\newcommand{\btup}{\mathbf{f}}          % a bus tuple
+\newcommand{\bpull}{\mathsf{pull}}        % the state a row pulls from the bus
+\newcommand{\bpush}{\mathsf{push}}        % the state a row pushes onto the bus
+
+% ---------- codes and the PCS (Annex B) ----------
+% Letters that the main matter already spends on something else are routed
+% through these, so the annex reads with one meaning per symbol.
+\newcommand{\Enc}{\mathrm{Enc}}
+\newcommand{\kdim}{k}                 % message dimension, the convention
+\newcommand{\RS}{\mathrm{RS}}
+\newcommand{\nv}{M}                      % variable count of a level   (was m_i)
+\newcommand{\nlev}{\Lambda}              % number of levels            (was r)
+\newcommand{\rate}{\rho}                 % code rate, the convention
+\newcommand{\rexp}{\nu}                  % rate exponent, rate = 2^-nu  (was R)
+\newcommand{\rad}{\gamma}                % proximity radius, the convention
+\newcommand{\slack}{\eta}                % Johnson slack, the convention
+\newcommand{\mcapar}{\theta}            % MCA parameter, the convention
+\newcommand{\dmin}{\delta_{\min}}        % relative minimum distance   (was delta)
+\newcommand{\rc}[1]{c^{(#1)}}            % round-#1 running claim      (was sigma_j)
+\newcommand{\nq}{\omega}                 % query count                 (was t_i)
+\newcommand{\qset}{\mathcal{Q}}          % sampled column indices      (was J_i)
+\newcommand{\blen}{n}                    % code block length, the convention
+\newcommand{\dom}{\mathcal{D}}           % evaluation domain           (was S)
+\newcommand{\orc}{Z}                     % oracle / interleaved word   (was C)
+\newcommand{\nrows}{N_{\mathrm{rows}}}    % committed rows of the level-0 oracle (R is the bus root)
+\newcommand{\nstack}{N_{\mathrm{stack}}}  % field elements placed in the stack, before the zero padding
+\newcommand{\lst}{\mathcal{L}}           % list of nearby codewords    (was Lambda)
+\newcommand{\ffinal}{f^{\ast}}           % final plaintext table       (was p)
+\newcommand{\cood}{c_{\mathrm{ood}}}     % out-of-domain answer        (was y)
+\newcommand{\mcanum}{A_{\mathrm{mca}}}   % MCA error numerator         (was a)
+\newcommand{\mcanumi}[1]{A_{\mathrm{mca},#1}}  % ... at level #1
+\newcommand{\polyset}{\mathcal{G}}       % polynomials bound by a commitment
+\newcommand{\relopen}{\mathsf{R}_{\mathrm{open}}}
+\newcommand{\aset}{\mathcal{A}}          % Johnson agreement set       (was A_j)
+\newcommand{\strh}{h_{\mathrm{st}}}     % a group of stratified columns has 2^\strh columns
+\newcommand{\strs}{s_{\mathrm{st}}}     % the top index bits a group of stratified columns fixes
+\newcommand{\stcov}[1]{a_{\mathrm{st},#1}} % the fraction of coset #1 of a group's fixed bits that a set covers
+
+% ---------- the hiding commitment (Annex B) and zero knowledge (Annex F) ----------
+\newcommand{\npad}{N_{\mathrm{pad}}}     % coefficients a hiding commitment pads each level-0 row with, past its power of two
+\newcommand{\padc}{\mathsf{p}}           % a level-0 row's padding: its \npad coefficients past the power of two
+\newcommand{\padfold}{\bar{\mathsf{p}}}  % the paddings folded by the lane challenges, sent after the lane fold
+\newcommand{\padshift}{s_{\mathrm{pad}}} % the shift of the padding's factor: the first basis element past the domain
+\newcommand{\rndgrp}{G_{\mathrm{rnd}}}  % the random group: four uniform level-0 rows of a hiding commitment
+\newcommand{\cpad}{\mathcal{C}^{\mathrm{pad}}} % the padded level-0 code of a hiding commitment
+\newcommand{\zkey}{\mathsf{k}}          % a one-time-pad key of a zero-knowledge proof
+\newcommand{\zrec}{\mathcal{R}}         % the rank-one system the recording verifier records over the keys
+\newcommand{\zrho}{\varrho}             % the challenge batching a zero-knowledge proof's public evaluations
+
+% ---------- novel basis and additive NTT (Annex D) ----------
+\newcommand{\subsp}{\mathcal{U}}         % F_2-subspace                (was U_i)
+\newcommand{\vansub}{\mathcal{V}}        % subspace vanishing poly     (was W_i)
+\newcommand{\Wn}[1]{\widehat{\vansub}_{#1}} % its normalization (hat = normalized)
+\newcommand{\novel}{\mathcal{X}}         % novel-basis polynomial      (was X_j)
+\newcommand{\ntmap}{\psi}                % linearized NTT map          (was q_d)
+\newcommand{\bfarr}{\mathsf{B}}          % NTT butterfly array         (was B)
+\newcommand{\mpoly}{\mathcal{P}}         % message polynomial          (was P_u)
+
+% ---------- ring switching (Annex A) ----------
+\newcommand{\pair}{\Omega}               % error pairing values        (was V_k)
+\newcommand{\supp}{\mathcal{S}}          % support of \Phimap          (was S)
+\newcommand{\nflock}{\kappa_{\flock}}     % variables of the packed flock witness (was m, L)
+\newcommand{\lag}{\varpi}                 % Lagrange weights of flock's skip (was p_i)
+\newcommand{\fcoord}{\mathsf{a}}          % an F_2 coordinate function  (was A_w)
+\newcommand{\cbar}{\bar c}                % coefficient c_k under the inverse Frobenius, c_k^(2^-k)
+\newcommand{\fprod}{\Pi}                  % running product of the weight's k-th Frobenius term
+\newcommand{\nrs}{J_{\mathrm{rs}}}        % ring-switched claims in one opening
+\newcommand{\rsgamma}{\gamma_{\mathrm{rs}}} % challenge combining the ring-switched claims into one family
+\newcommand{\rsscale}{\varsigma}          % a ring-switched claim's scale in the family, a power of \rsgamma
+\newcommand{\sfam}[1]{s^{\mathrm{rs}}_{#1}} % the family's slice #1
+
+% ---------- recursion (Annex E) ----------
+\newcommand{\rcirc}{\mathfrak{C}}         % a recursion circuit: rows over the recursion machine's tables, and their wires
+\newcommand{\rgid}{\mathsf{sl}}           % a slot's index among all tables' slots
+\newcommand{\slotkey}{\mathsf{key}}       % the bus key a recursion slot pulls at
+\newcommand{\slotnext}{\mathsf{next}}     % the key of the next slot of the slot's wire, where it pushes
+\newcommand{\rfirst}{\rcirc_{\mathrm{first}}} % the first-level node's circuit, verifying RISC-V proofs
+\newcommand{\rnode}{\rcirc_{\mathrm{node}}}   % the node's circuit, verifying recursion proofs
+\newcommand{\arityz}{\mathsf{n}_0}        % RISC-V proofs a first-level node verifies
+\newcommand{\arity}{\mathsf{n}}           % recursion proofs a node verifies
+\newcommand{\kbit}{\mathsf{k}}            % a tree proof's kind: 0 for the first level, 1 for a node
+\newcommand{\tdig}{\mathsf{dig}}          % a tree proof's digest of its leaves' outputs
+\newcommand{\bctab}{\mathsf{T}}           % the program's stacked bytecode table
+\newcommand{\imgpoly}{\mathsf{I}}         % RAM's image, zero padded to a power of two
+\newcommand{\fixnode}{W_{\mathrm{node}}}  % the nodes' fixed polynomial: both circuits' fixed columns
+\newcommand{\fixwide}{W_{\mathrm{wide}}}  % a two-tier claim-set tree's large tier's fixed polynomial
+\newcommand{\fixdim}{\kappa_{\mathrm{fix}}} % variables of one circuit's stack of fixed columns
+\newcommand{\taufix}{\tau^{\mathrm{node}}} % the table heights both tree circuits share
+\newcommand{\fdense}{\mathbf{x}_{\mathrm{d}}} % the point of a tree proof's dense claims
+\newcommand{\frow}{\mathbf{x}_{\mathrm{r}}}   % the row point of a tree proof's matrix claims
+\newcommand{\fcol}{\mathbf{x}_{\mathrm{c}}}   % the column point of a tree proof's matrix claims
+\newcommand{\rbat}{\vartheta}             % a node's reduction's batching challenge
+\newcommand{\dwt}[1]{\Xi_{#1}}            % dense polynomial #1's weight in the dense reduction
+\newcommand{\mwt}[2]{\Theta^{#2}_{#1}}    % circuit #1's column weight on matrix #2 in the matrix reduction
+
+% ---------- Fiat-Shamir compression mode ----------
+\newcommand{\fsqueries}{Q_{\mathrm{FS}}} % total expanded compression-query cost
+\newcommand{\fsloss}{\varepsilon_{\mathrm{mode}}} % ideal-compression mode loss
+\newcommand{\fsromloss}{\varepsilon_{\mathrm{ROM}}} % matching canonical-ROM protocol loss
+\newcommand{\fsbatches}{B_{\mathrm{FS}}} % maximum challenge batches in one verification
+\newcommand{\fscoords}{K_{\mathrm{FS}}} % coordinate requests before final verification
+\newcommand{\fsvectors}{N_{\mathrm{FS}}} % allocated full-transcript challenge vectors
+\newcommand{\fsbatcherr}{\eta_{\mathrm{FS}}} % largest grouped round-by-round error

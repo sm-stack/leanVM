@@ -1,0 +1,6 @@
+name	expected	key	digest	root	claims	seal
+mixed	accept	class-key.bin	class-key.digest	root.bin	claims.bin	seal.bin
+isolated-key	reject	isolated-key.bin	isolated-key.digest	root.bin	claims.bin	seal.bin
+tier-bit-flipped	reject	class-key.bin	class-key.digest	tier-bit-flipped.bin	claims.bin	seal.bin
+opening-dropped	reject	class-key.bin	class-key.digest	root.bin	claims.bin	opening-dropped.bin
+wrong-digest	reject	class-key.bin	wrong.digest	root.bin	claims.bin	seal.bin

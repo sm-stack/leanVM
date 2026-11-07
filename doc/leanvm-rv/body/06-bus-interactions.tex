@@ -1,0 +1,181 @@
+% !TeX root = ../drafts/06-bus-interactions.tex
+\section{Bus interactions}\label{sec:omc}
+
+The machine runs four interactions on the bus, differentiated by their domain separators (\S\ref{sec:m3}): the VM state, the registers, the memory (RAM and the advice, which share a separator and never share an address), and the public bytecode. All but the first use offline memory checking~\cite{BEGKN94}: the three read-write arrays ordered by a clock (\S\ref{sec:memchan}), and the read-only bytecode in the simpler form of \S\ref{sec:lookup}.
+
+Two encodings of an integer $i$ coexist on the bus. What the machine indexes (a register, a memory cell, an instruction), what it holds (a register's value, an address) and when it does so (a clock, a timestamp) is the integer itself, $\intk{i}$ (\S\ref{sec:vm}). The powers of $\gen$ appear only as constants: the domain separators and the class tags. Nothing adds two integers on the bus: every address a row names is a field of its bytecode entry, a word its circuit computed, or an XOR (\S\ref{sec:exp}), and every clock a row pushes is its own clock XOR a word its clock circuit computed (\S\ref{sec:clock}).
+
+\subsection{VM State}\label{sec:state}
+
+\paragraph{Clocks.} A \emph{clock} is an integer below $2^{41}$, read as the element of $\K$ with those bits:
+\[
+  \intk{2^{40}\ell+2^{5}c+k},\qquad \ell\in\{0,1\},\quad c<2^{35},\quad k<2^{5}.
+\]
+Bit $40$, $\ell$, is the \emph{live} bit: every clock of the run has it, and so does every seed's timestamp (\S\ref{sec:memchan}), while a padding row's clock is $\intk{0}$ (\S\ref{sec:e2e-pad}). The bits $5$ to $39$ count the cycle $c$, and the five low ones are the slot $k$: zero in a row's clock, and the slot of an access in its timestamp, which is therefore $\ts\oplus\intk{k}=\ts+\intk{k}$, a column plus a constant.
+
+The state interaction uses domain separator $\dsep{ST} = \gen^{0}$ and carries the program counter, clock, and an exit marker. Each row pulls $\tup{\dsep{ST},\pc,\ts,0}$ and pushes $\tup{\dsep{ST},\pc',\ts',\exitflag}$, where $\exitflag$ is the bytecode's exit selector, $\ts'=\ts+\mathit{step}$, and $\mathit{step}$ is a word of the row's clock circuit (\S\ref{sec:clock}). That circuit makes $\ts'$ the clock one cycle on, $\intk{(2^{40}\ell+2^{5}c+2^{5}\ell)\bmod2^{41}}$, when the row's accesses are in order, so that a live clock advances and any other stays put, and sets bit $41$ of $\ts'$ when one of them is not. Only \texttt{ecall} has $\exitflag=1$.
+
+The boundary tuples are
+\begin{align*}
+  \sigma_{\mathrm{initial}} &= \tup{\dsep{ST},\intk{\pc_{\mathrm{entry}}},\intk{2^{40}+2^{5}},0},\\
+  \sigma_{\mathrm{final}} &= \tup{\dsep{ST},\intk{\tbase+4(\nprog-1)},\tsfinal,1}.
+\end{align*}
+The run starts on cycle $1$, and the verifier requires $\tsfinal$ to be a live clock at slot $0$: bit $40$ set, every higher bit and the five low ones clear. Every row but an exit row pushes the marker $0$, so only an exit row can meet the final tuple: a jump to the halt address is insufficient. An exit's padding row (\S\ref{sec:e2e-pad}) pushes the marker at its own clock, $\ts=\mathit{step}=\intk{0}$, so it would meet the final tuple only with $\tsfinal=\intk{0}$, which lacks the live bit; and no other row pulls a state with the marker $1$, every row pulling $0$ there. Nor can a row whose accesses are out of order end the run: its $\ts'$ has bit $41$ set.
+
+\begin{proposition}[Balance implies the existence of a valid execution]\label{prop:walk}
+Write $\sigma_{\mathrm{initial}}$ and $\sigma_{\mathrm{final}}$ for the two boundary states. Let $\mathcal R$ be a finite multiset of rows, each pulling a state $\bpull(r)$ and pushing a state $\bpush(r)$, and suppose the state channel balances:
+\[
+  \mset{\bpush(r):r\in\mathcal R}\uplus\mset{\sigma_{\mathrm{initial}}}
+  \;=\;\mset{\bpull(r):r\in\mathcal R}\uplus\mset{\sigma_{\mathrm{final}}} .
+\]
+Then $\mathcal R$ splits into rows $r_1,\dots,r_L$ with
+\[
+  \bpull(r_1)=\sigma_{\mathrm{initial}},\qquad \bpush(r_i)=\bpull(r_{i+1}),\qquad \bpush(r_L)=\sigma_{\mathrm{final}},
+\]
+and rows forming closed walks.
+\end{proposition}
+
+\begin{proof}
+Build the directed multigraph $G$ on the states: one edge $\bpull(r)\to \bpush(r)$ per row, plus one edge $e$ from $\sigma_{\mathrm{final}}$ to $\sigma_{\mathrm{initial}}$.
+
+Fix a state $x$. Its in-degree in $G$ counts the rows with $\bpush(r)=x$, plus $e$ if $x=\sigma_{\mathrm{initial}}$. Its out-degree counts the rows with $\bpull(r)=x$, plus $e$ if $x=\sigma_{\mathrm{final}}$. Those two counts are the multiplicities of $x$ on the two sides of the hypothesis, so they are equal: $G$ is balanced at every state.
+
+A finite balanced multigraph is a union of edge-disjoint closed walks: follow unused edges from any vertex, which balance always permits on entering one, until a vertex repeats; remove the closed walk found and repeat. Deleting $e$ from the closed walk that contains it leaves $r_1,\dots,r_L$.
+\end{proof}
+
+\begin{corollary}[The clock tells the run from the rest]\label{cor:clock}
+In Proposition~\ref{prop:walk}, let every row pull a clock below $2^{41}$ and push the clock its clock circuit gives, and let $\sigma_{\mathrm{initial}}$ and $\sigma_{\mathrm{final}}$ be as above. Then every row's accesses are in order, the rows whose clock is live are exactly $r_1,\dots,r_L$, the clock of $r_i$ being $\intk{2^{40}+2^{5}i}$, so that $L<2^{35}$ and these clocks are pairwise distinct, and every row on a closed walk has a clock without the live bit.
+\end{corollary}
+
+\begin{proof}
+A row whose accesses are not in order pushes a clock with bit $41$ set. No row pulls it, and neither does $\sigma_{\mathrm{final}}$, whose clock is below $2^{41}$, so by balance there is no such row. Every other row pushes its own clock if it lacks the live bit, so a walk that meets a clock without the live bit never leaves them. A row with a live clock pushes the clock one cycle on, live again unless the cycle wraps, from $2^{35}-1$ to a clock of $0$ with the live bit clear.
+
+Along $r_1,\dots,r_L$ the clock starts live, on cycle $1$, and ends on the live $\tsfinal$, so it never loses the live bit, which it could not regain. Each $r_i$ is therefore live, the cycle never wraps, and the clock of $r_i$ is $\intk{2^{40}+2^{5}i}$ with $i<2^{35}$. Around a closed walk, either some clock lacks the live bit, and then all of them do, or every clock is live, the cycle never wraps, and the integers the clocks name increase strictly around the walk, which is absurd.
+\end{proof}
+
+No bound on the number of rows enters the corollary: a run of $2^{35}-1$ cycles or more would wrap its clock to $0$ and never reach a live final clock, so it simply has no proof, and an honest prover refuses one. One commitment holds far fewer rows anyway: every row commits at least one word of its own, and the witness has at most $2^{28}$ words (\S\ref{sec:e2e-unrolled}).
+
+\begin{remark}
+  Closed walks of clocks without the live bit are what lets a table be filled to a power of two (\S\ref{sec:e2e-pad}): a padding row's clock is $\intk{0}$, which it pushes back, so such a row can share nothing with the run, neither a state nor, as \S\ref{sec:memchan} shows, a memory tuple.
+\end{remark}
+
+\subsection{The lookup protocol}\label{sec:lookup}
+
+A read pulls the entry it reads and nothing else; the array's table side, its \emph{producer}, pushes every entry as often as it is read, that number being committed as one word whose bits are one-bit columns of the bus. This is the \texttt{LookupProducer} of Binius M3~\cite{m3}, in place of the per-read running counts of~\cite[Protocol~4.27]{DP23}.
+
+\paragraph{Setting.} A \emph{lookup array} $\lut$ is read-only and holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$, possibly none ($\ncomp=0$). Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. Entry $i$ sits at a public address $\addr_i\in\K$, the $2^{\kappa}$ addresses pairwise distinct: the integer $\intk{\tbase+4i}$ for the bytecode (\S\ref{sec:bytecode}). A \emph{read} is a row of a table (\S\ref{sec:m3}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\addr_i$ and $v=\lut[i]$ for some $i<2^{\kappa}$. Write $e_i=\tup{\sep,\addr_i,\lut[i]}$ for entry $i$ as a tuple.
+
+\paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\val}$: a domain separator naming the array, the address, then the entry in coordinates $2,\dots,\ncomp+1$. Every higher coordinate is zero, so $\ncomp\le m-2$ for the bus width $m$ (\S\ref{sec:m3}). The parts of a read are columns of the reading table, or forms of degree at most $d$ in them: its address and the $\ncomp$ components of the value read. Committed on top of $\lut$ is one \emph{multiplicity} column $\mlt$ of height $2^{\kappa}$, word $i$ being the integer $\intk{m_i}$, with $m_i$ the number of reads of entry $i$. Its bits $\mbit{0},\dots,\mbit{\nbit-1}$ are the producer's one-bit columns: $\mbit{k}(i)\in\{0,1\}$ is bit $k$ of $m_i$. The number of bits $\nbit$ is the bit length of $\nrd$, the most reads the announced tables can make of the array: $\nrd=\sum_j2^{\tau_j}$ for the bytecode, which every row reads once. That bound serves completeness alone: an honest $m_i$ is at most $\nrd<2^{\nbit}$, so $\nbit$ bits hold it, and nothing below depends on how many reads there are.
+
+\paragraph{Flush rules.}
+\begin{itemize}
+\item \textbf{Read} of $v$ at $a$: \pull\ $\tup{\sep,a,v}$, a flush of the reading row.
+\item \textbf{Produce:} for each bit $k<\nbit$, a block of $2^{\kappa}$ push leaves owned by no table, leaf $i$ being
+\begin{equation}\label{eq:prodleaf}
+  1+\mbit{k}(i)\,\pubp{k}(i),\qquad \pubp{k}(i)=\bigl(\beta-\pi_\alpha(e_i)\bigr)^{2^{k}}-1 .
+\end{equation}
+These are leaves rather than tuples: by Lemma~\ref{lem:prodbits} they multiply to the factors of entry $i$ pushed $m_i$ times, so for the product check the producer is the push of the multiset $\mset{e_i^{\,m_i}:i<2^{\kappa}}$, entry $i$ with multiplicity $m_i$. \S\ref{sec:leafstack} and \S\ref{sec:air} prove them in the table sumcheck, as an air of height $2^{\kappa}$ whose columns are the bits.
+\end{itemize}
+
+\paragraph{Completeness.} An honest prover commits $\mlt[i]=\intk{m_i}$, the number of reads of entry $i$, which is below $2^{\nbit}$. Each correct read pulls one copy of an entry $e_i$, and the producer pushes $e_i$ exactly $m_i$ times, so both sides carry the same multiset at the separator $\sep$ and the bus balances.
+
+\begin{lemma}[A producer's leaves are its multiplicities]\label{lem:prodbits}
+Let $P$ be an element of a commutative ring and $b\in\{0,1\}$. Then $1+b\,(P^{2^{k}}-1)=P^{\,b\,2^{k}}$. Hence for an integer $m=\sum_{k<\nbit}b_k2^{k}$ with bits $b_k$, $\prod_{k<\nbit}\bigl(1+b_k(P^{2^{k}}-1)\bigr)=P^{m}$, and the $\nbit2^{\kappa}$ leaves \eqref{eq:prodleaf} of a producer multiply to $\prod_{i<2^{\kappa}}(\beta-\pi_\alpha(e_i))^{m_i}$; as polynomials in the formal $A,X$ of Lemma~\ref{lem:gp}, with $X-\pi_A(e_i)$ for $\beta-\pi_\alpha(e_i)$, to $\Pi_{\mset{e_i^{\,m_i}}}(A,X)$.
+\end{lemma}
+
+\begin{proof}
+For $b=0$ both sides are $1$; for $b=1$ both are $P^{2^{k}}$. The product over $k$ is then $\prod_kP^{b_k2^{k}}=P^{\sum_kb_k2^{k}}=P^{m}$. The leaves of entry $i$ are the case $P=\beta-\pi_\alpha(e_i)$, $m=m_i$, and the identity holds in the polynomial ring as well, being one of the ring.
+\end{proof}
+
+\begin{theorem}[Lookup correctness]\label{thm:omc}
+Let the reads and the producer be the only flushes carrying $\lut$'s separator, and write $(a_j,v_j)$ for the address and value that read $j$ evaluates to. If the bus balances, with the producer counted as the multiset $\mset{e_i^{\,m_i}}$ of Lemma~\ref{lem:prodbits}, then every read is correct, $(a_j,v_j)=(\addr_i,\lut[i])$ for some $i<2^{\kappa}$, and entry $i$ is read exactly $m_i$ times.
+\end{theorem}
+
+\begin{proof}
+Balance equates the multiset of pushed tuples with the multiset of pulled ones, and by Lemma~\ref{lem:gp} that is what the product check tests, the producer's factors being those of $\mset{e_i^{\,m_i}}$ by Lemma~\ref{lem:prodbits}. Keep in each multiset only the tuples carrying $\lut$'s separator; the two are still equal. On the push side what survives is $\mset{e_i^{\,m_i}:i<2^{\kappa}}$, on the pull side the reads $\mset{\tup{\sep,a_j,v_j}}$. So every read's tuple is some $e_i$, that is $(a_j,v_j)=(\addr_i,\lut[i])$, and since the addresses $\addr_i$ are pairwise distinct the $e_i$ are too, so exactly $m_i$ reads equal $e_i$.
+\end{proof}
+
+\begin{corollary}[Addresses are in range]\label{cor:addrrange}
+Under the same hypotheses every read address is an entry address $\addr_i$, $i<2^{\kappa}$: no read at any other address, $0$ included, occurs in an accepted proof (except with negligible soundness error).
+\end{corollary}
+
+\paragraph{The bits are bits.} Lemma~\ref{lem:prodbits} needs every $\mbit{k}(i)$ in $\{0,1\}$, and no constraint asks it: the $\mbit{k}$ are the bit slices of the committed words $\mlt$, so they are Boolean by construction. The prover's claims on them at the table sumcheck's point are bound to $\mlt$ by ring switching (\S\ref{sec:ringswitch}), the $64$ slices of the word being the $\nbit$ sent bit values and then zeros, which are not sent. A committed word at or above $2^{\nbit}$ thus fails the opening, and an honest one never is.
+
+\paragraph{What is left to check.} Nothing beyond balance. There is no count, so no nonzero product and no bound on the number of reads: Theorem~\ref{thm:omc} holds for any number of them. What the size of a producer does change is the product check's soundness: Theorem~\ref{th:product_check} counts the linear factors of a side with multiplicity, and the leaves of bit $k$ stand for up to $2^{\kappa}2^{k}$ of them, so a producer adds up to $2^{\kappa}(2^{\nbit}-1)$ factors to the push side, each of total degree at most $4$. The bus's challenges are drawn before the opening, so they must also hold against every polynomial of the commitment's list, which costs up to $12$ bits (\S\ref{sec:e2e-ledger}). Every layout one commitment holds has fewer than $2^{28}$ rows, so $\nbit\le28$, and a program of at most $2^{21}$ entries keeps the degree below $2^{52}$, within that margin. Each further bit of entries doubles the degree, so a larger program, up to the text region's $2^{26}$ entries, grinds one bit of proof of work per bit past $2^{21}$ before the bus's challenges (\S\ref{sec:e2e-ledger}); the native verifier also refuses an announced layout whose degree exceeds the margin at its grinding. No other argument needs the caps: the clock's needs no bound on the rows (Corollary~\ref{cor:clock}).
+
+\paragraph{The verifier's public columns.} The producer's air (\S\ref{sec:air}) ends on a claim on each column at a point $r\in\E^{\kappa}$. The prover sends the bits' values $\widetilde{\mbit{k}}(r)$; the verifier evaluates $\widetilde{\pubp{k}}(r)$ itself. Write the fingerprint of an entry as $\pi_\alpha(e_i)=\sum_sw_sc_s(i)$, with $w_s=\eq(\alpha,s)$ and $c_s$ the column of coordinate $s$. Squaring is additive in characteristic $2$, so
+\[
+  \bigl(\beta-\pi_\alpha(e_i)\bigr)^{2^{k}}=\beta^{2^{k}}+\sum_sw_s^{2^{k}}\,c_s(i)^{2^{k}},
+\]
+and $\widetilde{\pubp{k}}(r)$ is $\beta^{2^{k}}-1$ plus $\sum_sw_s^{2^{k}}$ times the extension at $r$ of the column $i\mapsto c_s(i)^{2^{k}}$. Each kind of coordinate stays of its kind (\S\ref{sec:idxcol}): a constant $c$ becomes $c^{2^{k}}$; the integer index column $\intk{\mathrm{base}}+\sum_tu_tx^{t+\sigma}$, $u$ the bits of $i$, becomes $\intk{\mathrm{base}}^{2^{k}}+\sum_tu_t(x^{t+\sigma})^{2^{k}}$, affine in the bits still. The program's public columns are summed once into $c(i)=\sum_sw_sc_s(i)$ over them, and $c(i)^{2^{k}}$ is raised entry by entry, at a cost of the program's size times $\nbit$. The program's polynomial $P$ of \S\ref{sec:e2e-bc} is thus never evaluated by the bus; it is what the digest binds.
+
+\paragraph{Relaxing the hypotheses.} A bus entry may be any polynomial of degree at most $d = 2$ in the row's columns (\S\ref{sec:m3}), so neither the address nor the value need be committed. Example: the next $\pc$ a branch pushes is $\pc^{+}+\mathit{jump}$, the sum of two columns, the second a word its circuit computes, and no column of its own (\S\ref{sec:tables}).
+
+\subsection{Read-write arrays}\label{sec:memchan}
+
+Three arrays are read-write: the registers $\regs$, $2^{6}$ cells (\S\ref{sec:vm}), under $\dsep{REG}=\gen^{3}$; RAM $\mem$, $\nmem=2^{\kmem}$ cells, and the advice $\adv$, $2^{\kadv}$ cells, both under $\dsep{MEM}=\gen^{1}$, which they can share because a RAM address and an advice address never coincide (\S\ref{sec:vm}). The lookup protocol of \S\ref{sec:lookup} does not apply to them, because what a cell holds depends on when it is read. The memory argument orders the accesses instead, by the timestamps the clock of \S\ref{sec:state} gives them. The tuple is $\tup{\dsep{sep},\addr,\mathit{timestamp},\val}$, and everything below is said of one array at a time; a register's address is its number, $\intk{r}$, a memory cell's its byte address.
+
+\paragraph{Columns.} Per array, two $\K$-valued multilinears of its height are committed: what it holds after the run, $\regfin$, $\memfin$ or $\advfin$, and each cell's last timestamp, $\tsfin$. What it holds before the run is public for the registers (zero) and for RAM ($\meminit$: the image, then zeros, a column the verifier evaluates itself, \S\ref{sec:e2e-pi}), and committed for the advice ($\advinit$), which is the prover's. An access is part of a row of a table. Besides the row's clock $\ts$, it takes $\tsprev$, the timestamp of the cell's previous access; a write takes one more, the value $v_{\mathrm{old}}$ the cell held. Neither $\ts$ nor $\tsprev$ is a committed column: both are ports of the row's clock circuit (\S\ref{sec:clock}). The address $a$ is a column of the row as well, though seldom a committed one (\S\ref{sec:exp}).
+
+\paragraph{Flush rules.}
+\begin{itemize}
+\item \textbf{Seed:} for each cell $i$, \push\ $\tup{\dsep{sep},\addr_i,\intk{2^{40}},\mathrm{init}[i]}$, with $\mathrm{init}$ the array's initial column, zero, $\meminit$ or $\advinit$: the live timestamp of cycle $0$.
+\item \textbf{Access} of the cell at $a$, in slot $k$ of a row with clock $\ts$: \pull\ $\tup{\dsep{sep},a,\tsprev,v_{\mathrm{old}}}$ and \push\ $\tup{\dsep{sep},a,\ts+\intk{k},v_{\mathrm{new}}}$. A read is an access with $v_{\mathrm{new}}=v_{\mathrm{old}}$, one column serving as both.
+\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\dsep{sep},\addr_i,\tsfin[i],\mathrm{fin}[i]}$.
+\end{itemize}
+
+\paragraph{The order check.} The row's clock circuit checks, for each access, with $\ell$ the live bit of $\ts$ and every timestamp read as an integer below $2^{41}$,
+\begin{equation}\label{eq:order}
+  \tsprev_{40}=\ell,\qquad\text{and, if }\ell=1,\qquad \tsprev<\ts+k ,
+\end{equation}
+and it puts the verdict in bit $41$ of the row's next clock (\S\ref{sec:clock}), so by Corollary~\ref{cor:clock} every access of an accepted proof satisfies it. The strictness is essential: were $\tsprev=\ts+k$ allowed, a read could pull the very tuple it pushes, and return any value. The live bits are what keep a padding row away from the run: equal on both sides of an access, they let no padding row pull a seed, and no live row pull a padding row's tuple (\S\ref{sec:e2e-pad}).
+
+\paragraph{Completeness.} An honest prover gives every access the timestamp its cell was last accessed at, $\intk{2^{40}}$ for a first access, and commits $\tsfin$ and the final column accordingly. Slots are numbered in the order a row performs its accesses, reads first, so two accesses of one row to the same cell are in order too: a row reads $\regs[\mathit{rs1}]$ in slot $0$ and $\regs[\mathit{rs2}]$ in slot $1$, makes its memory accesses from slot $2$, and writes $\regs[\mathit{rd}]$ in slot $3$, a row that skips an access leaving its slot unused (\S\ref{sec:tables}). What is required is that the run stay below $2^{35}-1$ cycles (Corollary~\ref{cor:clock}).
+
+\begin{theorem}[Memory consistency]\label{thm:rwmem}
+Fix one array. Let the flush rules above be the only flushes carrying its separator at its addresses, let the clocks be as in Corollary~\ref{cor:clock}, and let every access satisfy \eqref{eq:order}. If the bus balances, then every access of a row with a live clock is at an address $\addr_i$ of the array, and, the accesses of such rows at $\addr_i$ being taken in the order of their timestamps: the first one's $v_{\mathrm{old}}$ is $\mathrm{init}[i]$, every other's $v_{\mathrm{old}}$ is its predecessor's $v_{\mathrm{new}}$, and $\mathrm{fin}[i]$ is the last one's $v_{\mathrm{new}}$, or $\mathrm{init}[i]$ if there is none.
+\end{theorem}
+
+\begin{proof}
+Call an access \emph{live} if its row's clock is. Its pushed timestamp $\ts+\intk{k}$ then has the live bit, and so has its $\tsprev$, by \eqref{eq:order}. For any other access neither does. So split the tuples of the channel by whether their timestamp has the live bit. The bus balances within each class, the seeds and the live accesses lie in the live one, and the rest of the proof takes place there. The other class holds the other accesses, and proves nothing.
+
+By Corollary~\ref{cor:clock} the live rows are the walk $r_1,\dots,r_L$, with clocks $2^{40}+2^{5}i$, and a row's slots are below $2^{5}$, so the live accesses have pairwise distinct timestamps $y$, all above the seeds' $2^{40}$. For one of them, \eqref{eq:order} gives $\tsprev=\intk{x}$ with $x<y$.
+
+Fix an address $a$ and keep the live tuples at $a$, which still balance. If some live access is at $a$, the one of smallest $y$ pulls a timestamp $x<y$, which no live access at $a$ pushed: the matching push is a seed, so $a=\addr_i$ for a cell $i$ of the array. At such an address, let the live accesses have timestamps $y_1<\dots<y_n$. With $y_0:=2^{40}$, the pushes carry the $n+1$ distinct timestamps $\intk{y_0},\intk{y_1},\dots,\intk{y_n}$, so the pulls are $n+1$ as well, which puts the finalization in this class, and carry the same ones: $\intk{x_1},\dots,\intk{x_n}$ and $\tsfin[i]$ are those $n+1$ values in some order. By induction on $j$, the only $y_l$ below $y_j$ not already taken is $y_{j-1}$; so $x_j=y_{j-1}$, which leaves $\tsfin[i]=\intk{y_n}$. A pull and the push it matches agree on the value, which is the claim.
+\end{proof}
+
+RAM and the advice share $\dsep{MEM}$, and the theorem applies to each: a tuple at a RAM address is never one at an advice address, so keeping the tuples at one array's addresses is the split the proof makes. What the theorem also says is that an access outside every array, a misaligned one included (\S\ref{sec:exp}), has no matching seed, so the bus does not balance: no range check on addresses is needed.
+
+\paragraph{Nothing checks the final columns.} As with a lookup array's multiplicities, a wrong $\tsfin$ or final column cannot make a bad access pass: it can only unbalance the bus. The same holds for $\advinit$, which is the prover's to choose (\S\ref{sec:vm}).
+
+\subsection{The clock circuit}\label{sec:clock}
+
+Beside its class's circuit, each table has a second circuit in the sense of Annex~\ref{annex:flock}, its \emph{clock circuit}, one instance per row, packed into a witness $\qclk{j}$ of its own. Its input ports are the row's clock $\ts$ and the previous timestamp $\tsprev_k$ of each of its accesses, and its one output port is $\mathit{step}$; each is a $\K$-element as it stands, like a class circuit's ports, so they are virtual columns of the table (\S\ref{sec:tab-class}). A timestamp's port has free wires at its $41$ low positions only, its high ones being empty, hence zero (\S\ref{flock:classes}): every clock and every previous timestamp a row pulls is below $2^{41}$. The clock's port has empty positions at its five low bits too, the slot bits, so every clock a row pulls is a multiple of $2^{5}$. \texttt{EXT}, whose class has no circuit, gives its clock circuit more ports, which compute the limbs' addresses and split the flags (\S\ref{sec:tab-classes}).
+
+Write $\ell=\ts_{40}$, and $y_k$ for $\ts$ with its five low bits replaced by those of the slot $k$, which is $\ts+k$ since those of $\ts$ are zero: the timestamp an access is ordered at is the one its tuple carries, on every row and with no appeal to the run's other rows. For an access in slot $k$ the circuit computes the carry out of position $39$ of $y_k+\overline{\tsprev}$, over positions $0$ to $39$, with the adder of \S\ref{flock:classes}: one $\wedge$ wire per position, fewer at the low positions, where $y_k$'s bits are constants. It is set exactly when $\tsprev<y_k$ modulo $2^{40}$, so, with the live bits equal, exactly when $\tsprev<\ts+k$ on a live row. The verdict is
+\[
+  \mathit{fail}=\ell\wedge\neg\bigwedge_k \mathit{carry}_k\;\vee\;\bigvee_k\,(\tsprev_{k,40}\oplus\ell).
+\]
+Then $\mathit{step}$ holds $\ell$ at position $5$, at position $j+1$ for $5\le j<40$ the carry $c_{j+1}=\ts_j\,c_j$ into position $j+1$ of $\ts+2^{5}\ell$, with $c_5=\ell$, and $\mathit{fail}$ at position $41$. So $\ts+\mathit{step}$ is $\intk{(\ts+2^{5}\ell)\bmod2^{41}}$ when every access is in order, and that clock with bit $41$ set otherwise, which is the next clock of \S\ref{sec:state}. The carries are products placed straight at $\mathit{step}$'s positions, so the output costs two copies and no position of its own.
+
+\subsection{Bytecode}\label{sec:bytecode}
+
+The bytecode is a lookup array (\S\ref{sec:lookup}) of $\nprog = 2^{\kbc}$ entries, entry $i$ at the address $\intk{\tbase+4i}$, the byte address of the instruction. Bus interaction uses domain separation $\sep=\dsep{BC} = \gen^{2}$. The program is public, and so is its decoding: an entry is not the instruction word but the fields a row needs of it, decoded once by both parties (\S\ref{sec:e2e-bc}). So $\ncomp=10$: the class tag, the flags, the three register numbers, the immediate, the successor $\intk{\tbase+4i+4}$, which every row pushes as its next $\pc$ unless it jumps, the jump offset of a branch, a \texttt{jal} or an \texttt{ecall}, a zero in slot $10$, where the row of a division puts its verdict (\S\ref{sec:tables}), and the exit selector. With the separator and the address ahead of them, this is the widest entry on the bus at $12$ coordinates, which is what forces the four index bits, hence the $m=16$ slots of \S\ref{sec:m3}. Its producer's multiplicity column $\mlt$ has height $2^{\kbc}$, entry $i$'s word counting the rows at $\pc=\intk{\tbase+4i}$. A jump's target needs no check of its own: the row it leads to reads the bytecode there, and Corollary~\ref{cor:addrrange} makes it an instruction. A row's three register numbers are not committed as words: they are bit fields of a committed word, one per row for the tables of one height, read through its bit slices as $\mlt$'s are (\S\ref{sec:regpack}). Coordinate $2$ is the tag, naming the instruction's class and its table:
+\begin{gather*}
+  \opc{ALU}=\gen^{0},\quad \opc{LOAD}=\gen^{1},\quad \opc{STORE}=\gen^{2},\quad \opc{LD}=\gen^{3},\quad \opc{SD}=\gen^{4},\quad \opc{SHIFT}=\gen^{5},\\
+  \opc{MUL}=\gen^{6},\quad \opc{MULH}=\gen^{7},\quad \opc{DIV}=\gen^{8},\quad \opc{HASH}=\gen^{9},\quad \opc{EXT}=\gen^{10}.
+\end{gather*}
+A slot of the text that holds no instruction the machine defines has the tag $0$, which is no table's: a run reaching it has no proof.
+
+\subsection{Addresses}\label{sec:exp}
+
+Integer addition is no low-degree operation of $\K$, and none is needed on the bus. A register's address is its number, a field of the public bytecode entry. A load's or a store's address is $\intk{\regs[\mathit{rs1}]+\mathrm{imm}}$, and computing it is the business of the row's circuit (\S\ref{sec:tables}), which also puts the misalignment bits back into the word it hands the bus: an aligned access names its cell's address, a misaligned one an address no cell has, so Theorem~\ref{thm:rwmem} refuses it with no constraint of its own. A doubleword's misalignment bits are all three low ones, so for \texttt{ld} and \texttt{sd} that word is the sum itself. The words of a \texttt{blake2s} block are at $\regs[\mathit{rs1}]\oplus8k$ by definition (\S\ref{sec:vm}), and the field sum $\intk{\regs[\mathit{rs1}]}+\intk{8k}$ is that XOR: the address is a column plus a constant.
+
+The limbs of an extension-field element are at $p+8$ and $p+16$ (\S\ref{sec:vm}), integer sums with no alignment to make them XORs. \texttt{EXT} has no class circuit, so its clock circuit computes them, by incrementers (\S\ref{flock:classes}), as a load's circuit computes its address. A pointer off its word leaves its low bits in every limb's address, and a pointer near the end of memory leaves a limb outside it: either way the limb names no cell.
+
+\subsection{The index columns}\label{sec:idxcol}
+
+The seed and finalization blocks run over every entry of their array, so the verifier needs the extensions of the address columns at the point $\zeta$ (\S\ref{sec:leafstack}), and a producer needs them, raised to powers $2^{k}$, at its own point (\S\ref{sec:lookup}). Write $w$ for the bits of $i$. Every region's cell $i$ sits at $\mathrm{base}\oplus(i\ll\sigma)$ with $\sigma=3$ for the words of RAM and the advice, $2$ for the instructions and $0$ for the registers (base $0$), and this \emph{integer index column} is affine in the bits, $\intk{\mathrm{base}}+\sum_k w_k\,x^{k+\sigma}$, so its extension is that same sum at $\zeta$:
+\[
+  \intk{\mathrm{base}}+\sum_{k=0}^{\kappa-1}\zeta_k\,x^{k+\sigma}.
+\]

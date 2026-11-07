@@ -1,0 +1,26 @@
+[project]
+crate = "leanvm-mobile-bench"
+library_name = "leanvm_mobile_bench"
+ffi_backend = "native-c-abi"
+output_dir = "."
+
+[android]
+package = "dev.world.leanvmmobilebench"
+min_sdk = 24
+target_sdk = 34
+abis = ["arm64-v8a"]
+
+[ios]
+bundle_id = "dev.world.leanvmmobilebench"
+deployment_target = "16.0"
+runner = "swiftui"
+
+[benchmarks]
+default_function = "leanvm_mobile_bench::shielded_prove"
+default_iterations = 3
+default_warmup = 1
+
+[browserstack]
+android_benchmark_timeout_secs = 900
+android_heartbeat_interval_secs = 10
+ios_completion_timeout_secs = 1200

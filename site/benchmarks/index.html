@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Program benchmarks for leanVM, with measured runtimes, machine details, source code and reproducible provenance.">
+  <title>Benchmarks | leanVM</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#results">Skip to results</a>
+  <header class="site-header wrap">
+    <a class="wordmark" href="https://github.com/leanEthereum/leanVM" aria-label="leanVM repository">lean<span>VM</span></a>
+    <nav aria-label="Project links">
+      <a href="https://github.com/leanEthereum/leanVM">Repository <span aria-hidden="true">↗</span></a>
+      <a href="./latest.json">Results JSON <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+  <main class="wrap">
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <h1 id="page-title">Benchmarks</h1>
+        <p class="lede">Benchmarks for consensus layer, execution layer, data layer and client side proving.</p>
+      </div>
+      <p id="snapshot-provenance" class="snapshot-provenance" aria-label="Benchmark snapshot source" hidden></p>
+    </section>
+
+    <section id="results" class="results-section" aria-labelledby="results-title" aria-busy="true">
+      <div id="category-browser" class="category-browser" hidden>
+        <div class="category-heading">
+          <h2>Browse by use case</h2>
+          <button type="button" class="all-categories" data-category="all" aria-pressed="false" aria-controls="result-rows">All benchmarks <span id="all-count" class="category-count"></span></button>
+        </div>
+        <div id="category-options" class="category-options" role="group" aria-label="Benchmark category">
+          <button type="button" class="category-option" data-category="client" aria-pressed="true" aria-controls="result-rows">
+            <span class="category-option-heading"><span>Client-side proving</span><span id="client-count" class="category-count"></span></span>
+            <span class="category-description">Pixel and iPhone measurements</span>
+          </button>
+          <button type="button" class="category-option" data-category="consensus" aria-pressed="false" aria-controls="result-rows">
+            <span class="category-option-heading"><span>Consensus layer</span><span id="consensus-count" class="category-count"></span></span>
+            <span class="category-description">leanXMSS, leanSPHINCS and aggregation</span>
+          </button>
+          <button type="button" class="category-option" data-category="data" aria-pressed="false" aria-controls="result-rows">
+            <span class="category-option-heading"><span>Data layer</span><span id="data-count" class="category-count"></span></span>
+            <span class="category-description">leanDA workloads</span>
+          </button>
+          <button type="button" class="category-option" data-category="misc" aria-pressed="false" aria-controls="result-rows">
+            <span class="category-option-heading"><span>Misc</span><span id="misc-count" class="category-count"></span></span>
+            <span class="category-description">Other workloads, ready to sort</span>
+          </button>
+        </div>
+      </div>
+      <div class="section-heading">
+        <div><h2 id="results-title">Client-side proving</h2><p id="category-description" class="results-description">On-device proving on Pixel and iPhone.</p></div>
+        <span class="units-note">Median · s / Peak memory · MiB</span>
+      </div>
+      <form id="filters" class="filters" aria-label="Filter benchmark results" hidden>
+        <div class="filter"><label for="program-filter">Program</label><select id="program-filter"><option value="">All programs</option></select></div>
+        <div class="filter"><label for="machine-filter">Machine / device</label><select id="machine-filter"><option value="">All machines &amp; devices</option></select></div>
+        <div class="filter"><label for="thread-filter">Threads</label><select id="thread-filter"><option value="">All thread configurations</option></select></div>
+        <div class="filter"><label for="sort-order">Order by</label><select id="sort-order"><option value="program">Program &amp; workload</option><option value="recent">Most recently measured</option></select></div>
+        <button type="reset" class="text-button">Reset filters</button>
+      </form>
+      <p id="status" class="status" role="status" aria-live="polite">Loading benchmark measurements…</p>
+      <div id="error-state" class="empty-state" hidden>
+        <h3>Measurements could not be loaded.</h3>
+        <p>Please try again, or inspect the <a href="./latest.json">published JSON</a>.</p>
+        <button id="retry" type="button" class="primary-button">Try again</button>
+      </div>
+      <div id="empty-state" class="empty-state" hidden>
+        <h3 id="empty-title">No matching measurements.</h3>
+        <p id="empty-description">Try a different program, machine or thread configuration.</p>
+        <button id="clear-filters" type="button" class="primary-button">Clear filters</button>
+      </div>
+      <div id="result-rows" class="results-list" hidden></div>
+    </section>
+    <section id="hardware-reference" class="hardware-reference" aria-labelledby="hardware-title" hidden>
+      <h2 id="hardware-title">Hardware reference</h2>
+      <p>Machine names in the results link here. These are the recorded specifications; logical CPU count describes the hardware, while thread count belongs to each measurement.</p>
+      <div id="hardware-list" class="hardware-list"></div>
+    </section>
+    <noscript><p class="empty-state">JavaScript is needed to filter and display the measurements. All results and source metadata are available in the <a href="./latest.json">results JSON</a>.</p></noscript>
+  </main>
+  <footer class="wrap site-footer"><span>leanVM <span class="muted">/ minimal hash-based zkVM</span></span><a href="./latest.json">Inspect the source data <span aria-hidden="true">↗</span></a></footer>
+</body>
+</html>

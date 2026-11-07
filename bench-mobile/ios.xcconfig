@@ -1,0 +1,2 @@
+// mobench 0.1.49 emits SWIFT_VERSION=5.9; Xcode expects language mode 5.
+SWIFT_VERSION = 5

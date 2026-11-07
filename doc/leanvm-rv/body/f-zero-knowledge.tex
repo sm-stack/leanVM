@@ -1,0 +1,113 @@
+% !TeX root = ../drafts/f-zero-knowledge.tex
+\section{Zero knowledge}\label{annex:zk}
+
+A plain leanVM proof hides nothing. A verifier who guesses the advice recomputes the run, then the proof, and compares. A \emph{zero-knowledge} proof states the same thing, the program and its output, and reveals nothing else of the run but its shape: each table's height and the rate. A program whose advice is private must therefore prove at a fixed public shape.
+
+Zero knowledge here is for the leaves of an aggregation tree. A client proves a run in zero knowledge, an aggregator combines such proofs, and the tree's own proofs are plain: they hold the leaves' proofs, which reveal nothing (\S\ref{zk:rec}).
+
+The construction is VEIL's compiler~\cite{DHRR26}. The plain protocol runs unchanged, its scalars sent under one-time pads, its commitment made hiding, and a small outer proof shows that the padded transcript passes the verifier's checks.
+
+\subsection{The transcript}\label{zk:transcript}
+
+A zero-knowledge proof has a session of its own, its tag naming another protocol, so no challenge of one kind of proof is one of the other. Its bytes carry another magic, \texttt{LVMZ}. In order:
+\begin{enumerate}[itemsep=1pt,topsep=2pt]
+\item each table's height and the rate, in the clear;
+\item the stack's root, a hiding commitment (\S\ref{sec:pcs-zk}), then the key commitment's root (\S\ref{zk:keys});
+\item under keys: the final clock's free bits, Flock's reductions, the bus, the table sumcheck, and the opening up to its lane fold;
+\item in the clear: the rest of the opening, from its revealed claim on;
+\item in the clear: the public evaluations the deferred claims need (\S\ref{zk:deferred});
+\item under keys: the outer proof's auxiliary values (\S\ref{zk:record});
+\item in the clear: the outer proof and the key commitment's opening (\S\ref{zk:outer}).
+\end{enumerate}
+
+\paragraph{Keys.} The prover draws one-time-pad keys $\zkey_0, \zkey_1, \dots \in \E$ and commits to them before any challenge. While hiding is on, the $i$-th scalar $x$ sent travels as $x + \zkey_i$, and the transcript absorbs that value, the only one the proof carries. Each key is used once, in order. Only scalars of $\E$ are padded: a root, a proof-of-work nonce or any other message is never hidden. The prover's randomness comes from the operating system, never from the transcript, as a proof drawn from the transcript alone would be a function of the witness.
+
+\paragraph{The final clock.} The final clock is not announced. Its free bits $b_i$, $5 \le i < 40$, are hidden scalars, and the verifier closes the run with
+\[
+\mathrm{ts}_{\mathrm{final}} = 2^{40} + \sum_{5 \le i < 40} b_i 2^i,
+\]
+each $b_i$ constrained to be a bit by the outer proof. This is the rule of \S\ref{sec:state} by construction: the live bit is set, the slot bits are zero, and a failed row's bit $41$ has no place in it.
+
+\subsection{The record}\label{zk:record}
+
+The verifier runs its own code over the padded transcript, its hidden values held as a linear graph over the keys:
+\begin{itemize}[itemsep=1pt,topsep=2pt]
+\item a scalar read while hidden is the node $c + \zkey_i$, $c$ the value sent;
+\item a challenge, a root, a query and every public computation stay values;
+\item a linear step on hidden values is one new node, a constant plus at most two weighted terms;
+\item a product or an inverse of hidden values is an \emph{auxiliary value} $v$, constrained by one row, $a \cdot b = v$ or $a \cdot v = 1$;
+\item an equality with a hidden side is one row, $d \cdot 1 = 0$;
+\item a bit $b$ is one row, $b \cdot b = b$.
+\end{itemize}
+The rows form a rank-one system $\zrec$ over $z = (1, \zkey)$. An auxiliary value travels under the keys after the hidden scalars', so it is a sent value plus a key too, and every variable of $\zrec$ is a key.
+
+\begin{lemma}[A shape's record]\label{lem:zk-shape}
+The graph and $\zrec$ depend on the transcript's shape alone, never on a value.
+\end{lemma}
+\begin{proof}
+Whether a value is hidden depends on where in the protocol it is read, which the shape fixes. Nodes, auxiliary values and rows are kept in the order they are made, and nothing is merged, sorted or dropped by value.
+\end{proof}
+
+So a verifier that builds rows of a circuit (Annex~\ref{annex:rec}) records the same system as one that checks values, which recursion needs (\S\ref{zk:rec}). The verifier pulls the outer proof's row weights back onto the keys in one pass over the graph, latest node first, one product per node and per edge.
+
+The native verifier takes the inverse of zero as zero, which no $v$ with $a \cdot v = 1$ satisfies. The verifier inverts challenges alone, so no honest proof inverts a hidden zero.
+
+\subsection{The deferred claims}\label{zk:deferred}
+
+The core leaves claims on the program's polynomials and on each circuit's matrices (\S\ref{rec:verifier}). Their points are challenges, but some of their weights and values are hidden: the program claim's twist weights and value, each circuit claim's bit slices and value. Each such claim is linear in its hidden parts, with public coefficients:
+\[
+\mathrm{value} = w_{\mathrm{image}}\, I + \sum_i \mu_i D_i, \qquad \mathrm{value}_f = \sum_i s_{f,i}\, w_{f,i},
+\]
+where $D_i$ is the bytecode producer's $i$-th term at its point, $I$ is RAM's image at its point, and $w_{f,i}$ is circuit $f$'s matrix form's weight on slice $i$. These are values of public polynomials at public points, so the prover sends them in the clear. The verifier records each claim as a row, draws one challenge $\zrho$, and batches the public values into claims of the plain shape:
+\[
+\mu_i := \zrho^i,\ w_{\mathrm{image}} := \zrho^{L}, \quad \mathrm{value} := \sum_{i < L} \zrho^i D_i + \zrho^L I; \qquad s_{f,i} := \zrho^i, \quad \mathrm{value}_f := \sum_i \zrho^i w_{f,i}.
+\]
+These are settled as a plain proof's. A false public value makes its batched claim false except with probability $L/|\E|$ over $\zrho$, $L \le 64$. So the core of either kind of proof leaves claims of one shape, and a tree carries a zero-knowledge leaf's as a plain leaf's.
+
+\subsection{The outer proof}\label{zk:outer}\label{zk:keys}
+
+\paragraph{The key commitment.} One stack of $2^{20}$ words holds, in its row $0$, slots of $\E$: two dummy operand pairs and their products, the outer proof's mask, then the keys in the order they pad. Its rows $1$ to $3$ are zero and its rows $4$ to $7$ are the random group of a hiding commitment (\S\ref{sec:pcs-zk}). Its opening's weight lives on row $0$.
+
+\paragraph{Spartan.} The outer proof is Spartan~\cite{Set20} over $\E$ for $\zrec$ and two dummy rows $z_0 z_1 = z_2$, $z_3 z_4 = z_5$ on the dummy slots. It proves $\sum_x \eq(\tau, x) F(x) = 0$ for $F = \tilde A \tilde B + \tilde C$ with the eq-weighted MLE-check: each round sends its quadratic with $\eq(\tau_i, X)$ factored out. It is made zero knowledge as Libra~\cite{XZZPS19}:
+\begin{itemize}[itemsep=1pt,topsep=2pt]
+\item the mask $g(X) = g_c + \sum_j (g_{j0} + g_{j1} X_j) X_j$ has degree two in each variable, as $F$ has, and its eq-weighted sum $s_g$ is sent, hidden by $g_c$;
+\item after a challenge $\alpha$, the sumcheck runs on $F + \alpha g$, and each round's two sent coefficients carry $\alpha$ times the round's fresh $(g_{j0}, g_{j1})$;
+\item the final $(\tilde A, \tilde B, \tilde C)(r)$ are sent, hidden by the dummy rows, whose fresh operands sit at rows of their own.
+\end{itemize}
+It ends in two linear claims on the key stack: the rows' batched sides at $r$, pulled back onto the keys (\S\ref{zk:record}), and the mask at $r$. One challenge batches them, and the key commitment's opening discharges them.
+
+\subsection{Soundness}\label{zk:soundness}
+
+A zero-knowledge proof's soundness error is the plain proof's (\S\ref{sec:e2e-ledger}) plus:
+\begin{itemize}[itemsep=1pt,topsep=2pt]
+\item the outer Spartan's sumcheck error, $3 \ell / |\E|$ for its $\ell$ rounds of degree $3$, and its batching challenges';
+\item the key commitment's opening, Theorem~\ref{thm:rbr} at its own size;
+\item the batching of the public values, $64 / |\E|$ per claim;
+\item a second list factor on every challenge before the openings.
+\end{itemize}
+The last one needs care. The key commitment, like the stack, binds only to a list of polynomials (Annex~\ref{app:johnson}), and a hidden value is a sent value minus a key. So every challenge drawn after both roots and before the openings, Flock's first, must hold against a pair of list members, one of each list. That squares the list factor of \S\ref{sec:e2e-ledger}. Flock, the table sumcheck and the ring switching keep their margins past it; the bus does not, so a zero-knowledge proof grinds $12$ more bits before the bus's fingerprint challenges to pay for it.
+
+\paragraph{Why padding keeps the plain argument.} Let $\zkey^\ast$ be the key vector the key commitment binds. Every hidden value read is then a fixed value $c - \zkey_i^\ast$, and the record's rows hold exactly when those values pass the plain verifier's checks, by Lemma~4.3 of~\cite{DHRR26}. If they do not, the outer Spartan and the key opening accept with probability at most their error.
+
+\subsection{Zero knowledge}\label{zk:zk}
+
+\begin{theorem}[Zero knowledge]\label{thm:zk}
+The protocol is statistically honest-verifier zero knowledge, except with probability below $2^{-119}$. Compiled by Fiat-Shamir with BLAKE2s as a random oracle, a proof is simulatable from the statement and the shape.
+\end{theorem}
+\begin{proof}
+The simulator draws the verifier's challenges, then each part of the view.
+\begin{itemize}[itemsep=1pt,topsep=2pt]
+\item \emph{Hidden scalars.} Each is padded by its own uniform key, which nothing else reveals but through the outer proof and the key opening. So the hidden scalars are uniform and independent.
+\item \emph{The opening.} By Theorem~\ref{thm:pcs-zk}, simulatable from a uniform $f^{(1)}$ and $\padfold$, except with probability below $2^{-120}$.
+\item \emph{The public values.} Functions of the program and the public points.
+\item \emph{The outer proof.} $s_g$ is uniform by $g_c$. Each round's two sent coefficients are uniform by $\alpha (g_{j0}, g_{j1})$, $\alpha \ne 0$ except with probability $1/|\E|$, and the claim fixes the third. The final $(\tilde A, \tilde B, \tilde C)(r)$ are uniform given the rest by the dummy rows: the four uniform operands enter them through $\eq(r, \cdot)$ at two rows of their own, whose weights are nonzero except with probability $2\ell/|\E|$, and the product's share is nonzero for the same reason.
+\item \emph{The key opening.} Its weight lives on row $0$ and vanishes on the random group, so Theorem~\ref{thm:pcs-zk} applies, and its rounds before the lane fold reveal only its target and sums of the random group's rows against the weight, which are uniform as the group's weights span $\E$.
+\end{itemize}
+In the random-oracle model, every root is a hash of leaves with at least $256$ bits of min-entropy given the view (Theorem~\ref{thm:pcs-zk}), and the simulator programs the oracle. The errors add to below $2^{-119}$.
+\end{proof}
+
+\subsection{Recursion}\label{zk:rec}
+
+A first-level node verifies zero-knowledge leaves with the very recorder the native verifier uses, its arithmetic the circuit's rows. By Lemma~\ref{lem:zk-shape} the circuit built from a shape is the one built from a proof. The record's pull-back and the outer Spartan run in rows; the key commitment's opening is a WHIR opening in rows, as the stack's. The core leaves claims of the plain shape (\S\ref{zk:deferred}), which the node carries as a plain leaf's.
+
+The tree's own proofs need not be zero knowledge: a node's witness is its children's proofs, and a zero-knowledge leaf's proof reveals nothing of its run, so neither does a proof that holds it. A tree over plain leaves would need zero-knowledge nodes instead, which this protocol does not provide.

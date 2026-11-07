@@ -1,0 +1,271 @@
+% !TeX root = ../drafts/05-arithmetization.tex
+\section{Arithmetization framework}\label{sec:arith}
+
+The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{m3}. Rows are unordered, and an instance is accepted exactly when every table's constraints hold and the bus balances.
+
+\subsection{M3 model}\label{sec:m3}
+
+\paragraph{Tables and columns.} A column of height $2^{\kappa}$ is a function $\cube{\kappa}\to\K$. A table is a group of columns of equal height. The arithmetization fixes the number of tables $\ntab$ and, for each table $T_j$, its number of columns $\ncol{j}$, its $\ncons{j}$ constraints and its $\nfl{j}$ bus flushes. The table heights are not fixed: the prover announces each table's log height $\tau_j$ at the beginning of the proof.
+
+\paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial over $\K$ of degree at most $d$ ($d=2$ throughout) in the $\ncol{j}$ columns, required to vanish on every row in $\cube{\tau_j}$.
+
+\paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=16$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinates in each tuple is a fixed polynomial of degree at most $d$ in the table's columns, so every row $x\in\cube{\tau_j}$ emits one tuple $\btup_{j,f}(x)$ per flush. A few \emph{boundary} tuples are pushed (resp. pulled) by default to the bus (for instance for the VM state $(\dsep{ST}, \pc, \ts,0)$, the initial $(\dsep{ST}, \intk{\pc_{\mathrm{entry}}}, \intk{2^{40}+2^{5}},0)$ is pushed and the final $(\dsep{ST}, \intk{\tbase+4(\nprog-1)}, \tsfinal,1)$ is pulled, \S\ref{sec:state}).
+
+\paragraph{Balance.} The bus balances when its pushed tuples and its pulled tuples form the same multiset (\ref{def:multiset}).
+
+\paragraph{Domain separation.} When several interactions share the bus, the first coordinate of every tuple is a \emph{domain separator}, a fixed constant naming its interaction: $\dsep{ST}=\gen^{0}$ for VM state, $\dsep{MEM}=\gen^{1}$ for memory, $\dsep{BC}=\gen^{2}$ for bytecode, $\dsep{REG}=\gen^{3}$ for the registers. (They are needed since all interactions share a common bus.)
+
+\subsection{Balancing the bus: grand product}\label{sec:gp}
+
+The two sides' multisets (\emph{pulls} and \emph{pushes}) are given as leaves, one linear factor $\beta-\pi_\alpha(\btup)$ per tuple, or, for a lookup array's producer (\S\ref{sec:lookup}), a power of one; padding each side with factors of $1$, which change no product, brings its leaf count to a power of two, and $2^{\mu}$ is the larger of the two.
+
+\emph{Fingerprint.} The verifier samples $\alpha=(\alpha_0,\dots,\alpha_3)\in\E^{4}$ and maps each tuple $\btup \in \K^{16}$ to a single $\E$-element:
+\[
+\pi_\alpha(\btup)\;=\;\sum_{\iota\in\cube{4}}\eq(\alpha,\iota)\,\btup_\iota ,
+\]
+the sixteen slots indexed by their bits, low bit first, and smaller tuples padded with $0$.
+
+\emph{Product check.} The verifier samples $\beta\in\E$, and checks:
+\begin{equation}
+\prod_{\btup\ \text{pushed}}\bigl(\beta-\pi_\alpha(\btup)\bigr)
+\;\qeq\;
+\prod_{\btup\ \text{pulled}}\bigl(\beta-\pi_\alpha(\btup)\bigr).
+\label{eq:gp}
+\end{equation}
+
+\begin{theorem}\label{th:product_check}
+  The protocol above has perfect completeness (equal pulled and pushed multisets always make \eqref{eq:gp} valid) and soundness error $4N/|\E|$, $N$ being the larger side's number of linear factors counted with multiplicity (if the pulled and pushed multisets differ, the probability that \eqref{eq:gp} passes over uniform $\alpha \in \E^{4}$ and $\beta \in \E$). A side of tuple leaves alone has $N\le2^{\mu}$.
+\end{theorem}
+
+\begin{lemma}[A product identity is a multiset identity]\label{lem:gp}
+For a multiset $P$ of tuples write
+\[
+  \Pi_P(A,X)\;=\;\prod_{\btup\in P}\bigl(X-\pi_A(\btup)\bigr),
+\]
+a polynomial in the five formal variables $A=(A_0,\dots,A_3)$ and $X$, with coefficients in $\K$. The two sides of \eqref{eq:gp} are $\Pi_P(\alpha,\beta)$ for $P$ the pushed multiset and the pulled one.
+
+For finite multisets $P,Q$ of width-$m$ tuples over $\K$, $\Pi_P=\Pi_Q$ if and only if $P=Q$.
+\end{lemma}
+
+\begin{proof}[Proof of Lemma~\ref{lem:gp}]
+One direction is immediate. For the other, work in $R=\K[A_0,\dots,A_3]$, an integral domain, so that $\Pi_P$ lies in $R[X]$ and is monic of degree $|P|$ in $X$: an identity $\Pi_P=\Pi_Q$ therefore forces $|P|=|Q|$, and we induct on that common size, the empty case being $1=1$.
+
+A tuple is recoverable from its fingerprint. By Fact~\ref{fact:eq}, $\pi_A(\btup)$ is the multilinear extension of $\iota\mapsto\btup_\iota$, so substituting a Boolean point $A=\iota\in\cube{4}$ returns $\btup_\iota$; two tuples with the same fingerprint polynomial therefore agree slot by slot, and $\btup\mapsto\pi_A(\btup)$ is injective into $R$.
+
+Now take any $\btup\in P$ and substitute $X:=\pi_A(\btup)$, an element of $R$. The factor of $\Pi_P$ at $\btup$ vanishes, so $\Pi_P(A,\pi_A(\btup))=0$, hence
+\[
+  \Pi_Q(A,\pi_A(\btup))=\prod_{\btup'\in Q}\bigl(\pi_A(\btup)-\pi_A(\btup')\bigr)=0 .
+\]
+A product vanishes in a domain only if one of its factors does, so $\pi_A(\btup)=\pi_A(\btup')$ for some $\btup'\in Q$, and $\btup=\btup'$ by injectivity. Both products now carry the same monic factor $X-\pi_A(\btup)$, which cancels in the domain $R[X]$, leaving $\Pi_{P\setminus\btup}=\Pi_{Q\setminus\btup}$ over multisets one smaller. The induction hypothesis gives $P\setminus\btup=Q\setminus\btup$, hence $P=Q$.
+\end{proof}
+
+
+\begin{proof}[Proof of Theorem~\ref{th:product_check}]
+\emph{Completeness.} Equal pulled and pushed multisets make \eqref{eq:gp} hold for every $\alpha$ and $\beta$, so completeness is immediate.
+
+\emph{Soundness.} Different pulled and pushed multisets make $\Pi_P\neq\Pi_Q$, by Lemma~\ref{lem:gp}, and \eqref{eq:gp} tests them at the one point $(\alpha_0, \dots, \alpha_3, \beta)$. Both sides have degree at most $4N$ in $(\alpha_0, \dots, \alpha_3, \beta)$, since $\Pi_P$ has $|P|\le N$ factors counted with multiplicity, of the form $\beta-\pi_\alpha(\btup)$, each of total degree at most $4$; a producer's leaf of bit $k$ is one such factor to a power $0$ or $2^{k}$ (Lemma~\ref{lem:prodbits}). Applying Corollary~\ref{cor:idtest} gives a soundness error of $4N/|\E|$.
+\end{proof}
+
+\subsection{Proving the grand product}\label{sec:gkr}
+
+Take one side of \eqref{eq:gp}. Its tuples give its $2^{\mu}$ leaves $V_0(x)=\beta-\pi_\alpha(\btup_x)$, the ones past the last tuple being $1$. Multiply the leaves two by two, then multiply the results two by two, and so on: after $\mu$ layers one value is left, the root $P=\prod_xV_0(x)$. Layer $0$ is the leaves, layer $i$ has $2^{\mu-i}$ nodes, and layer $\mu$ is the root. The prover announces $P$. GKR proves it by walking back down the tree, turning a claim about one layer into a claim about the layer below, until it reaches the leaves and \S\ref{sec:leafstack} takes over.
+
+\subsubsection{Grand-Product argument via GKR}
+
+Write $\widetilde V_i:\E^{\mu-i}\to\E$ for the multilinear extension of layer $i$. Every node of layer $i$ is the product of its two children,
+\[
+V_i(x)=V_{i-1}(0,x)\,V_{i-1}(1,x),\qquad x\in\cube{\mu-i},
+\]
+so by Fact~\ref{fact:eq} a claim on $\widetilde V_i$ at a point $r$ is a sum over the hypercube,
+\[
+\widetilde V_i(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\,\widetilde V_{i-1}(0,x)\,\widetilde V_{i-1}(1,x),
+\]
+which sumcheck (Fact~\ref{fact:sumcheck}) reduces to the two values $\widetilde V_{i-1}(0,\fc)$ and $\widetilde V_{i-1}(1,\fc)$ at one random $\fc$. The prover sends them and a fresh challenge $u$ combines them multilinearly, leaving the single claim $\widetilde V_{i-1}(u,\fc)$: the same kind of claim, one layer lower. The walk starts at the root, where the claim is the announced $P$ itself, and $\mu$ such steps end on the leaves.
+
+\subsubsection{Two layers at a time}
+
+For efficiency, we contract two binary levels at once, a node being the product of its four grandchildren:
+\[
+V_i(x)=\prod_{a,b\in\{0,1\}}V_{i-2}(a,b,x).
+\]
+The same sumcheck then reduces $\widetilde V_i(r)$ to the four values $\widetilde V_{i-2}(a,b,\fc)$, which the prover sends and two fresh challenges $(u_0,u_1)$ combine into one claim $\widetilde V_{i-2}(u_0,u_1,\fc)$, two layers down.
+
+If $\mu$ is odd, GKR first processes the root-most binary layer, which has no sumcheck rounds, and then proceeds entirely in radix four.
+
+\subsubsection{Batching several grand-products}
+
+The $\nside=2$ grand products, numbered $s=1,\dots,\nside$, the push side and the pull side, are proven in one pass, at one sumcheck per layer instead of $\nside$. They need not pair block for block (the producers' blocks are on the push side alone), so the two trees may differ in depth; they share one announced root, which is the balance check.
+
+Pad every tree with $1$-leaves up to the depth $\mu$ of the deepest. The verifier then samples at every layer a combiner $\lambda \in \E$, and each layer runs a single sumcheck on the random linear combination of the $\nside$ identities,
+\[
+\sum_{s=1}^{\nside}\lambda^{s-1}\widetilde V_i^{s}(r)=\sum_{x\in\cube{\mu-i}}\eq(r,x)\sum_{s=1}^{\nside}\lambda^{s-1}\prod_{a,b\in\{0,1\}}\widetilde V_{i-2}^{s}(a,b,x)
+\]
+Both trees leave the pass on claims at one shared terminal point $\zeta$.
+
+\subsection{Stacking the leaves}\label{sec:leafstack}
+
+GKR (\S\ref{sec:gkr}) leaves one claim per side $s$: the value of $\widetilde V^{s}_0(\zeta)$, the extension of that side's leaves at the terminal point $\zeta\in\E^{\mu}$. This subsection reduces it to one sum per table, over its rows, of a polynomial of degree at most $d=2$ in its columns: exactly what the \emph{table sumcheck} (\S\ref{sec:air}) proves.
+
+\paragraph{Blocks.} The leaves of side $s$ are a stack (\S\ref{sec:stacking}) whose pieces are its \emph{blocks}: one per flush of each table on that side, one per boundary set (\S\ref{sec:m3}, \S\ref{sec:memchan}), and, on the push side alone, one per bit of each lookup array's producer (\S\ref{sec:lookup}). Block $b$ holds $2^{\kappa_b}$ leaves $L_b(x)$ and sits at the public selector $\mathsf{sel}_b$; for the block of a flush $\btup_{j,f}$, $\kappa_b=\tau_j$ and $L_b(x)=\beta-\pi_\alpha(\btup_{j,f}(x))$; for bit $k$ of a producer of $2^{\kappa}$ entries, $\kappa_b=\kappa$ and $L_b(x)=1+\mbit{k}(x)\,\pubp{k}(x)$, \eqref{eq:prodleaf}. One diffence with the stacking at commitment (\S\ref{sec:stacking}) is the padding: $1$s rather than $0$s.
+\begin{equation}\label{eq:gkr_leaves}
+  \widetilde V^{s}_0(\zeta)\;=\;\sum_{b}\eq(\mathsf{sel}_b,\zeta_{\ge\kappa_b})\;\widetilde L_b(\zeta_{<\kappa_b})\;+\;\underbrace{\Bigl(1-\sum_{b}\eq(\mathsf{sel}_b,\zeta_{\ge\kappa_b})\Bigr)}_{\text{padding}},
+\end{equation}
+both sums over the blocks of side $s$.
+
+\paragraph{Who settles what.} Three kinds of terms:
+\begin{itemize}[itemsep=1pt,topsep=3pt]
+\item \emph{Padding.} Public: the verifier evaluates it.
+\item \emph{Boundary blocks.} Every slot of their tuples is public (a constant, a public component, or an index column of \S\ref{sec:idxcol}) or a single committed column, so $\widetilde L_b(\zeta_{<\kappa_b})$ is a linear combination of their evaluations at $\zeta_{<\kappa_b}$. The verifier computes the public ones; the prover sends each committed one, as a claim deferred to the PCS (\S\ref{sec:stacking}).
+\item \emph{Table and producer blocks.} Nothing is sent for them: the table sumcheck proves them, but for a linear table's (below).
+\end{itemize}
+The verifier subtracts the first two kinds from the claimed value; the difference, $\mathsf{rem}_{s}$, is what the tables and the producers owe.
+
+\paragraph{What a table owes.} A block of $T_j$ has $\kappa_b=\tau_j$, so by Fact~\ref{fact:eq} its term in \eqref{eq:gkr_leaves} is a sum over $T_j$'s rows against the weight $\eq(\zeta_{<\tau_j},\cdot)$. The blocks of $T_j$ share that weight and differ only by selector, so together they contribute one such sum, of
+\begin{equation}\label{eq:bus_poly}
+  B^{s}_j(x)\;=\;\sum_{b\,\in\,T_j}\eq(\mathsf{sel}_b,\zeta_{\ge\tau_j})\,L_b(x),
+\end{equation}
+of degree at most $d$ in $T_j$'s columns, with coefficients the verifier builds from $\alpha$, $\beta$ and the selectors. What remains of side $s$ is
+\begin{equation}\label{eq:bus}
+  \sum_{j=1}^{\ntab}\ \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;\mathsf{rem}_{s},
+  \qquad s\in\{1,\dots,\nside\}.
+\end{equation}
+
+\paragraph{What a producer owes.} A producer's bit blocks share $\kappa_b=\kappa$ and its weight $\eq(\zeta_{<\kappa},\cdot)$ in the same way, so the producer is one more term of \eqref{eq:bus} on the push side, an \emph{air} of height $2^{\kappa}$ with no constraints, owing the sum of
+\[
+  B^{\push}(x)\;=\;\sum_{k<\nbit}\eq(\mathsf{sel}_{b_k},\zeta_{\ge\kappa})\bigl(1+\mbit{k}(x)\,\pubp{k}(x)\bigr),
+\]
+$b_k$ being its block of bit $k$, of degree $2$ in its columns: the bits $\mbit{k}$, committed (\S\ref{sec:lookup}), and the $\pubp{k}$, public. It owes nothing on the pull side. Below, the sums over $j$ run over the tables and then the producers.
+
+\paragraph{What a linear table owes.} A table with no constraints whose every flush is linear in its columns has $B^{s}_j=\sum_c b^{s}_{j,c}\,\mathsf{col}_c+b^{s}_{j}$, coefficients the verifier builds. By Fact~\ref{fact:eq} its sum against $\eq(\zeta_{<\tau_j},\cdot)$ is then the form at the columns' extensions,
+\[
+  \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;=\;\sum_c b^{s}_{j,c}\,\widetilde{\mathsf{col}_c}(\zeta_{<\tau_j})+b^{s}_{j},
+\]
+an identity, which needs no sumcheck. The prover sends each column's value at $\zeta_{<\tau_j}$, a claim deferred to the PCS, after $\zeta$ and before $\xi$; the verifier subtracts the table's share from $\mathsf{rem}_{s}$ on both sides, and the table leaves \eqref{eq:bus}. The values bind the table as the boundary blocks' bind their columns, so this adds no soundness error. The table may keep some columns $R_j$ out of this, its register numbers here (\S\ref{sec:regpack}): it sends the others' values, the verifier subtracts the form with the kept columns at zero, and the table stays in \eqref{eq:bus} with $\sum_{c\in R_j}b^{s}_{j,c}\,\mathsf{col}_c$ alone, a linear form the table sumcheck folds like any.
+
+\subsection{Table sumcheck}\label{sec:air}
+
+\paragraph{Proving constraints via zerocheck.} $C_{j,i}$ is a polynomial in $T_j$'s columns, so it is a function $\cube{\tau_j}\to\K$ that must vanish on every row. Following Fact~\ref{fact:eq}, this can be proved by sampling $r\in\E^{\tau_j}$ uniformly at random and running sumcheck on:
+\[
+  \mle{C_{j,i}}(r)\;=\;\sum_{x\in\cube{\tau_j}}\eq(r,x)\,C_{j,i}(x)\;\qeq\;0
+\]
+
+\paragraph{Zerocheck point recycling.} Nothing forces $r$ to be sampled just before the zerocheck: it may come from a previous sub-protocol, as long as it results from uniform sampling occurring after the table columns are committed. We take $r=\zeta_{<\tau_j}$, the first $\tau_j$ coordinates of the GKR terminal point $\zeta$ (\S\ref{sec:gkr}). Validity of the constraints is thus reduced to:
+\begin{equation}\label{eq:cons}
+  \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,C_{j,i}(x)\;\qeq\;0,
+  \qquad \text{for } j\in\{1,\dots,\ntab\},\ i\in\{1,\dots,\ncons{j}\}.
+\end{equation}
+
+\paragraph{The bus claims join in.} \S\ref{sec:leafstack} left one claim per side at that same point, \eqref{eq:bus}. Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdot)$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns: we batch them in a single sumcheck.
+
+\paragraph{Back-loaded batched sumcheck.} The verifier samples $\xi\in\E$ and gives each claim its own power of it: $\xi^{\,s-1}$ for side $s$, and then $\xi^{\,\nside+o_j+i-1}$ for $C_{j,i}$, with $o_j=\ncons{1}+\dots+\ncons{j-1}$ numbering the constraints table by table, and $\nconstot=\sum_j\ncons{j}$ the constraint count. A sumcheck runs over one cube, so write $\taumax=\max_j\tau_j$, let $X_{<\tau_j}=(X_0,\dots,X_{\tau_j-1})$ be the variables $T_j$ uses, and multiply in the ones it does not:
+\[
+  F(X_0,\dots,X_{\taumax-1})\;=\;\sum_{j=1}^{\ntab}\eq(\zeta_{<\tau_j},X_{<\tau_j})\!
+  \Bigl(\sum_{s=1}^{\nside}\xi^{\,s-1}B^{s}_j+\sum_{i=1}^{\ncons{j}}\xi^{\,\nside+o_j+i-1}C_{j,i}\Bigr)(X_{<\tau_j})
+  \prod_{k=\tau_j}^{\taumax-1}X_k .
+\]
+Since $\sum_{x\in\cube{m}}x_0\cdots x_{m-1}=1$, the padded variables contribute a factor $1$, so summing $F$ over $\cube{\taumax}$ gives back what each table owes. We thus run a single sumcheck:
+\[
+  \sum_{x\in\cube{\taumax}}F(x)\;\qeq\;\sum_{s=1}^{\nside}\xi^{\,s-1}\mathsf{rem}_{s},
+\]
+the verifier computing the right side itself. Each summand of $F$ has individual degree $d+1=3$, the constraint contributing $d$ and the $\eq$ factor one, so the soundness error is $(3\taumax+\nside+\nconstot)/|\E|$: $3\taumax$ for the rounds (Fact~\ref{fact:sumcheck}) and $\nside+\nconstot$ for the $\xi$-batching (Corollary~\ref{cor:idtest}). Rounds bind $X_{\taumax-1}$ first, so $T_j$ joins only at round $\taumax-\tau_j$: hence \emph{back-loaded}. The end yields one claim per column, $T_j$'s at $\fc_{<\tau_j}$, settled by the PCS opening (\S\ref{sec:stacking}).
+
+\paragraph{Producer airs.} A producer (\S\ref{sec:leafstack}) joins the batch like a table of height $2^{\kappa}$ with no constraints, its summand $\xi^{0}B^{\push}$ carrying the push side's power, against $\eq(\zeta_{<\kappa},\cdot)$, of individual degree $3$ as well; $\taumax$ is then the largest of the tables' and the producers' log heights. Its columns are its bits $\mbit{0},\dots,\mbit{\nbit-1}$ and its public columns $\pubp{0},\dots,\pubp{\nbit-1}$: the prover folds both, but at the end sends only the bits' values at $\fc_{<\kappa}$, and the verifier evaluates each $\widetilde{\pubp{k}}(\fc_{<\kappa})$ itself (\S\ref{sec:lookup}). The bits' claims are settled by ring switching against the multiplicity column (\S\ref{sec:ringswitch}).
+
+\paragraph{The machine's tables.} The instruction tables of \S\ref{sec:tables} carry no constraint of their own, $\ncons{j}=0$, what a row asserts being what its circuits assert (Annex~\ref{annex:flock}), but for the last, \texttt{EXT}: its three identities, of degree two, say the extension-field product (\S\ref{sec:tab-classes}). Every other table's flushes are linear in its columns, a successor included (\S\ref{sec:tab-class}), so each is a linear table and settles at $\zeta$ (\S\ref{sec:leafstack}). The table sumcheck therefore batches \texttt{EXT}, the linear tables' register numbers and the bytecode's producer: $\nconstot=3$, the batch weights side $s$ by $\xi^{\,s-1}$, and \texttt{EXT}'s identity $i$ by $\xi^{\,\nside+i-1}$. A linear table's register numbers are the exception: the batch folds them, its summand being its forms' part on them alone, so that every table's numbers end at the table sumcheck's point. A register number is a column of its bits: the prover sends its bits' values in place of its own, which the verifier recombines, and the bits' claims are settled by ring switching against the register word that packs them (\S\ref{sec:regpack}).
+
+\subsection{Example: proving elliptic curve multiplication}\label{sec:arith-example}
+
+\subsubsection{Statement}
+
+\paragraph{The claim.} Over $\K$, with $\gen=\mathtt{2}$, fix the elliptic curve $t^{2}+e\,t=e^{3}+\gen$ and the two public points
+\begin{align*}
+  G=(e_G,t_G)&=\bigl(\mathtt{1},\ \mathtt{9d7b84b595b2e2e6}\bigr),\\
+  Q=(e_Q,t_Q)&=\bigl(\mathtt{bbde619e481ba9dd},\ \mathtt{c7dc5bdf1e3477f9}\bigr).
+\end{align*}
+The group law gives:
+\begin{align*}
+  [2](e,t)&=\bigl(e',\,e^{2}+(w+1)\,e'\bigr), &&w=e+t/e, &&e'=w^{2}+w,\\
+  (e,t)+G&=\bigl(e',\,w\,(e+e')+e'+t\bigr), &&w=(t+t_G)/(e+e_G), &&e'=w^{2}+w+e+e_G .
+\end{align*}
+
+The statement is: $Q=[66067]G$. We prove it via a double-and-add walk. Since $66067=2^{16}+2^{9}+2^{4}+2+1$, there are sixteen doublings and four additions of $G$.
+
+\subsubsection{Arithmetization}
+
+\paragraph{The tables.}
+
+\begin{itemize}[itemsep=3pt,topsep=3pt]
+\item $T_1=\texttt{DOUBLE}$, height $2^{4}$.
+  \begin{itemize}[itemsep=1pt,topsep=1pt,label={}]
+  \item \textbf{Columns:} $\mathsf{tag},e,t,w,e'$.
+  \item \textbf{Constraints:} $C_{1,1}: w\,e=e^{2}+t$ and $C_{1,2}: e'=w^{2}+w$.
+  \item \textbf{Flushes:} \pull\ $\tup{\mathsf{tag},e,t}$ and \push\ $\tup{\mathsf{tag}^{2},\ e',\ e^{2}+(w+1)\,e'}$.
+  \end{itemize}
+\item $T_2=\texttt{ADD}$, height $2^{2}$.
+  \begin{itemize}[itemsep=1pt,topsep=1pt,label={}]
+  \item \textbf{Columns:} $\mathsf{tag},e,t,w,e',v$.
+  \item \textbf{Constraints:} $C_{2,1}: v\,(e+e_G)=1$, $C_{2,2}: w\,(e+e_G)=t+t_G$ and $C_{2,3}: e'=w^{2}+w+e+e_G$.
+  \item \textbf{Flushes:} \pull\ $\tup{\mathsf{tag},e,t}$ and \push\ $\tup{\gen\cdot\mathsf{tag},\ e',\ w\,(e+e')+e'+t}$.
+  \end{itemize}
+\end{itemize}
+The column $v$ in $T_2$ is required to prevent a row at the point $G$, where $e+e_G=0$ and $w\,(e+e_G)=t+t_G$ holds for any $w$. So $\ntab=2$ and $\nconstot=5$.
+
+\paragraph{Boundary flushes.} \push\ $\tup{\gen,e_G,t_G}$ and \pull\ $\tup{\gen^{66067},e_Q,t_Q}$.
+
+\vspace{5mm}
+
+The existence of $T_1$ and $T_2$ verifying the constraints, and balancing the bus (including the boundary flushes) proves the statement.
+
+\subsubsection{The interactive protocol, unrolled}
+
+\begin{enumerate}[itemsep=1pt,topsep=3pt]
+\item \textbf{Prover.} Commits the eleven columns. In this example, the two log heights are fixed, $\tau_1=4$ and $\tau_2=2$.
+\item \textbf{Verifier.} Samples and sends $\alpha_0,\alpha_1,\alpha_2,\alpha_3$ and $\beta$.
+\item \textbf{Prover.} Builds the leaves $\beta-\pi_\alpha(\btup)$, $16+4+1=21$ per side ($\push$ / $\pull$), and pads to $\mu=5$ with eleven $1$s. The two sides share the same layout (largest blocks first):
+\begin{center}
+\setlength{\tabcolsep}{0pt}
+\begin{tabular}{@{}r@{\ \ }*{32}{p{0.0255\linewidth}}@{}}
+ &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  &  & \\[-2.6ex]
+{\footnotesize $V^{s}_{5}$} & \multicolumn{32}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}$P$}}\\[0.3ex]
+ & \multicolumn{8}{c}{} & \multicolumn{16}{c}{$\overbrace{\hspace{0.4080\linewidth}}^{\uparrow}$} & \multicolumn{8}{c}{}\\[0.3ex]
+{\footnotesize $V^{s}_{4}$} & \multicolumn{16}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{16}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}}\\[0.3ex]
+ & \multicolumn{2}{c}{} & \multicolumn{12}{c}{$\overbrace{\hspace{0.3060\linewidth}}^{\uparrow}$} & \multicolumn{2}{c}{} & \multicolumn{2}{c}{} & \multicolumn{12}{c}{$\overbrace{\hspace{0.3060\linewidth}}^{\uparrow}$} & \multicolumn{2}{c}{}\\[0.3ex]
+{\footnotesize $V^{s}_{2}$} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}} & \multicolumn{4}{c}{\framebox[0.0255\linewidth]{\rule{0pt}{1.5ex}}}\\[0.3ex]
+ & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$} & \multicolumn{4}{c}{$\overbrace{\hspace{0.1020\linewidth}}^{\uparrow}$}\\[0.3ex]
+\cline{2-33}
+{\footnotesize $V^{s}_{0}$} & \multicolumn{1}{|c|}{\rule{0pt}{2.1ex}} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{} & \multicolumn{1}{c|}{}\\
+\cline{2-33}
+ & \multicolumn{16}{c}{$\underbrace{\hspace{0.4080\linewidth}}_{\texttt{DOUBLE}}$} & \multicolumn{4}{c}{$\underbrace{\hspace{0.1020\linewidth}}_{\texttt{ADD}}$} & \multicolumn{1}{c}{\makebox[0pt]{\raisebox{-4.0ex}[0pt][0pt]{\shortstack{$\Big\uparrow$\\[0.3ex]{\footnotesize boundary}}}}} & \multicolumn{11}{c}{$\underbrace{\hspace{0.2805\linewidth}}_{\text{padding }1\text{s}}$}\\
+\end{tabular}
+\end{center}
+The boundary block is leaf $20$, and the three selectors are $(0)$, $(0,0,1)$ and $(0,0,1,0,1)$.
+\item \textbf{Prover.} Sends one root $P$ shared by both sides.
+\item \textbf{Prover \& Verifier.} For each side, run Grand-Product GKR on the tree above: $\mu$ is odd, so a binary layer first, then two radix-four steps. The sumchecks of each side are batched together, with final point $\zeta\in\E^{5}$.
+\item \textbf{Verifier.} Evaluates leaf $20$, whose entries are public, and the weight of the eleven padding leaves. Subtracting both from $\mle V^{s}_0(\zeta)$ leaves $\mathsf{rem}_{\push}$ and $\mathsf{rem}_{\pull}$.
+\item \textbf{Verifier.} Samples and sends the batching scalar $\xi$.
+\item \textbf{Prover \& Verifier.} Seven claims are now open, and every one of them is a sum over one table's rows against its own weight $\eq(\zeta_{<\tau_j},\cdot)$. The five constraints have to vanish, and the two sides have to return what step~6 left:
+\begin{align*}
+  \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,C_{j,i}(x)&\qeq0 \qquad\text{for the five } C_{j,i},\\
+  \sum_{j=1}^{2}\ \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_{j}(x)&\qeq\mathsf{rem}_{s} \qquad\text{for } s\in\{\push,\pull\},
+\end{align*}
+where $B^{s}_{j}$ is what $T_j$ owes on side $s$. Writing a column's value at row $x$ as $e(x)$ and so on:
+\begin{align*}
+  B^{\push}_{1}(x)&=\eq\bigl((0),\zeta_{\ge4}\bigr)\Bigl(\beta-\pi_\alpha\tup{\mathsf{tag}(x)^{2},\ e'(x),\ e(x)^{2}+(w(x)+1)\,e'(x)}\Bigr),\\
+  B^{\pull}_{1}(x)&=\eq\bigl((0),\zeta_{\ge4}\bigr)\Bigl(\beta-\pi_\alpha\tup{\mathsf{tag}(x),\ e(x),\ t(x)}\Bigr),\\
+  B^{\push}_{2}(x)&=\eq\bigl((0,0,1),\zeta_{\ge2}\bigr)\Bigl(\beta-\pi_\alpha\tup{\gen\cdot\mathsf{tag}(x),\ e'(x),\ w(x)\,\bigl(e(x)+e'(x)\bigr)+e'(x)+t(x)}\Bigr),\\
+  B^{\pull}_{2}(x)&=\eq\bigl((0,0,1),\zeta_{\ge2}\bigr)\Bigl(\beta-\pi_\alpha\tup{\mathsf{tag}(x),\ e(x),\ t(x)}\Bigr).
+\end{align*}
+
+They run over different cubes, $\cube{4}$ for \texttt{DOUBLE} and $\cube{2}$ for \texttt{ADD}, so \texttt{ADD}'s part is multiplied by $X_2X_3$, the two variables it does not use, whose sum over $\cube{2}$ is $1$ and so leaves its own sum untouched:
+\begin{align*}
+  F(X_0,\dots,X_3)&=\eq\bigl(\zeta_{<4},(X_0,\dots,X_3)\bigr)\Bigl(\xi^{0}B^{\push}_{1}+\xi^{1}B^{\pull}_{1}+\xi^{2}C_{1,1}+\xi^{3}C_{1,2}\Bigr)\\
+                  &\quad+\eq\bigl(\zeta_{<2},(X_0,X_1)\bigr)\Bigl(\xi^{0}B^{\push}_{2}+\xi^{1}B^{\pull}_{2}+\xi^{4}C_{2,1}+\xi^{5}C_{2,2}+\xi^{6}C_{2,3}\Bigr)X_2X_3 .
+\end{align*}
+One sumcheck over $\cube{4}$ then proves all seven claims at once:
+\[
+  \sum_{x\in\cube{4}}F(x)\qeq\xi^{0}\mathsf{rem}_{\push}+\xi^{1}\mathsf{rem}_{\pull}.
+\]
+\item \textbf{Prover.} Sends its eleven column values: $\mle{\mathsf{tag}},\mle e,\mle t,\mle w,\mle{e'}$ at $\fc=(\fc_0,\dots,\fc_3)$ for \texttt{DOUBLE}, and $\mle{\mathsf{tag}},\mle e,\mle t,\mle w,\mle{e'},\mle v$ at $\fc_{<2}=(\fc_0,\fc_1)$ for \texttt{ADD}.
+\item \textbf{Verifier.} Rebuilds every $C_{j,i}$ and $B^{s}_{j}$ from those eleven values, forms $F(\fc)$, and checks it against the sumcheck's last round.
+\item \textbf{Prover \& Verifier.} Verify each of the eleven column claims against their initial commitment.
+\end{enumerate}

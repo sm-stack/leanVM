@@ -21,8 +21,8 @@ mod weight;
 
 pub(crate) use weight::{DenseWeight, InitialWeight};
 
-use fiat_shamir::arith::{Arith, Native, RoundWeight, Verifier};
-use fiat_shamir::{ProverState, TranscriptError};
+use fiat_shamir_rv::arith::{Arith, Native, RoundWeight, Verifier};
+use fiat_shamir_rv::{ProverState, TranscriptError};
 use first_pass::InitialRounds;
 use kernels::{
     fold_and_message, fold_block_pair, fold_blocks, fold_lanes_base, fold_witness_and_msg, round_message,
@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     use crate::whir::config::INITIAL_FOLDING_FACTOR;
     use primitives::multilinear::inner_product;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     /// What follows lane round `j` of `initial_k`: the last one hands over to adjacent words.
     fn next_round(j: usize, initial_k: usize) -> NextRound {

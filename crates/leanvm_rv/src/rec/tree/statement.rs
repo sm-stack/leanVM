@@ -8,7 +8,7 @@
 use super::reduce::{DensePoly, Reduced};
 use crate::rec::circuit::{Builder, Dw, Ew, Kw, Limbs, chain};
 use crate::tables::{CircuitId, N_CIRCUITS};
-use fiat_shamir::arith::Arith;
+use fiat_shamir_rv::arith::Arith;
 use primitives::field::F192;
 use std::ops::Range;
 

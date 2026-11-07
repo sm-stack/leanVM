@@ -9,8 +9,8 @@
 //! Every message the rows absorb is whole 64-bit words, so the native byte framing is a word framing here.
 
 use super::circuit::{Builder, Compression, Dw, Ew, Kw, PARAM_IV, zero_prefix};
-use fiat_shamir::{Blake2sDuplex, FromNarg, ProofOfWork, ProofTranscript, Role, SessionId};
-use pcs::merkle::Openings;
+use fiat_shamir_rv::{Blake2sDuplex, FromNarg, ProofOfWork, ProofTranscript, Role, SessionId};
+use pcs_rv::merkle::Openings;
 use primitives::field::F192;
 
 /// What the circuit reads: the proof when it has one, zeros when it is built from the shape alone.
@@ -75,7 +75,7 @@ impl<'a> Transcript<'a> {
         assert!(!instance.is_empty(), "an instance has bytes");
 
         // The seed block is the session identifier, then zeros.
-        let sid = primitives::hash::digest_words(&session.0);
+        let sid = primitives::blake2s::digest_words(&session.0);
         let seed = [sid[0], sid[1], sid[2], sid[3], 0, 0, 0, 0];
         let cv = Compression::new(PARAM_IV, seed, Role::Seed.counter(0, 0), true).output();
 
@@ -202,7 +202,7 @@ impl<'a> Transcript<'a> {
     /// The next prover message, a 32-byte digest such as a Merkle root: four free words, absorbed.
     pub fn prover_root(&mut self, b: &mut Builder) -> Dw {
         let bytes = self.take::<[u8; 32]>(32);
-        let words = primitives::hash::digest_words(&bytes).map(|w| b.free_k(w));
+        let words = primitives::blake2s::digest_words(&bytes).map(|w| b.free_k(w));
         for &word in &words {
             self.absorb_word(b, word);
         }
@@ -296,7 +296,7 @@ impl<'a> Transcript<'a> {
         let sibling = |l: usize| {
             opened
                 .and_then(|o| o.path(i).get(l))
-                .map_or([0; 4], primitives::hash::digest_words)
+                .map_or([0; 4], primitives::blake2s::digest_words)
         };
 
         // The image's whole zero blocks are one constant state, its other words free.
@@ -326,8 +326,8 @@ impl<'a> Transcript<'a> {
 mod tests {
     use super::*;
     use crate::rec::circuit::Unsatisfied;
-    use fiat_shamir::ProverState;
-    use pcs::merkle::{Hash, hash_leaf, hash_pair};
+    use fiat_shamir_rv::ProverState;
+    use pcs_rv::merkle::{Hash, hash_leaf, hash_pair};
     use primitives::field::F64;
 
     const INSTANCE: [u64; 2] = [3, 4];
@@ -428,7 +428,7 @@ mod tests {
             paths: path.to_vec(),
         };
         let mut b = Builder::new();
-        let root = b.d_const(primitives::hash::digest_words(root));
+        let root = b.d_const(primitives::blake2s::digest_words(root));
         let bits = vec![b.k_const(0); depth];
         let instance = [b.k_const(0)];
         let proof = ProofTranscript::default();
@@ -451,7 +451,7 @@ mod tests {
         assert!(open(&words(0), &[leaves[1], nodes[1]], &root, 2).is_empty());
 
         // The first node's preimage, its children's digests, is a one-block leaf of the same hash.
-        let preimage: [u64; 8] = std::array::from_fn(|j| primitives::hash::digest_words(&leaves[j / 4])[j % 4]);
+        let preimage: [u64; 8] = std::array::from_fn(|j| primitives::blake2s::digest_words(&leaves[j / 4])[j % 4]);
         assert!(open(&preimage, &[nodes[1]], &root, 1).is_empty());
         assert!(!open(&preimage, &[nodes[1]], &root, 2).is_empty());
     }

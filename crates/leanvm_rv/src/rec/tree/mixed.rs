@@ -76,7 +76,7 @@ impl ProgramClass {
 impl MixedLeaf<'_> {
     /// The group this leaf publishes: its VK digest labels the committed members.
     pub fn claims(self) -> ClaimSet {
-        let [a, b, c, d] = primitives::hash::digest_words(self.key.digest());
+        let [a, b, c, d] = primitives::blake2s::digest_words(self.key.digest());
         ClaimSet {
             groups: vec![ClaimGroup {
                 label: [a, b, c, d, 0, 0],
@@ -161,7 +161,7 @@ impl Tree<'static> {
     /// The class's placeholder rebuilt from its commitment's root, without encoding the program again.
     pub(super) fn mixed_placeholder_with_root(
         class: ProgramClass,
-        root: pcs::merkle::Hash,
+        root: pcs_rv::merkle::Hash,
     ) -> Result<Program, TreeError> {
         if !class.image_words.is_power_of_two() {
             return Err(TreeError::MixedClass);
@@ -278,7 +278,7 @@ pub(super) fn member_rows(
     max_members: usize,
     members: Option<&[[u64; 4]]>,
 ) -> Dw {
-    use fiat_shamir::arith::Arith;
+    use fiat_shamir_rv::arith::Arith;
     use leanvm_guest::members::{DOMAIN, TAG};
 
     fn choose(b: &mut Builder, bit: Ew, yes: Dw, no: Dw) -> Dw {
@@ -1035,13 +1035,13 @@ mod tests {
                 ProofSource::Proof(&f.runs[0].proof.0, &openings),
                 Some(key),
             );
-            assert_eq!(b.d(digest), primitives::hash::digest_words(key.digest()));
+            assert_eq!(b.d(digest), primitives::blake2s::digest_words(key.digest()));
             let Finished { failures, .. } = b.finish();
             (failures, core)
         };
         assert!(check(key, output).0.is_empty());
         let mut b = Builder::new();
-        let digest = b.free_d(primitives::hash::digest_words(key.digest()));
+        let digest = b.free_d(primitives::blake2s::digest_words(key.digest()));
         let words = output.words().map(|w| b.free_k(w));
         let set = member_rows(&mut b, digest, words, f.class.max_members, Some(&f.members[..1]));
         assert_eq!(b.d(set), f.leaves()[0].claims().digest());

@@ -29,8 +29,8 @@
 //! Every subspace-polynomial value lives in `K`; it is lifted into `E` only where it scales an accumulator in `E`.
 
 use crate::ntt::{AdditiveNtt, NovelBasis, basis_values};
-use fiat_shamir::Challenger;
-use fiat_shamir::arith::{Arith, Native};
+use fiat_shamir_rv::Challenger;
+use fiat_shamir_rv::arith::{Arith, Native};
 use primitives::field::{F64, F192, F192Unreduced, Subfield};
 use primitives::multilinear::eq_table;
 
@@ -335,7 +335,7 @@ impl<'a> QueryBatch<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn the_transposed_encode_is_the_expansion() {

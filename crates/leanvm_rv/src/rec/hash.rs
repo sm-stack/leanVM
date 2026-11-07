@@ -12,7 +12,7 @@ use super::layout::RecLayout;
 use crate::commitment::RingSwitch;
 use crate::rv::circuits::blake2s_witness;
 use crate::tables::{CircuitId, TableId};
-use fiat_shamir::ProverState;
+use fiat_shamir_rv::ProverState;
 use flock::reduction::{self, Instance};
 use flock::{BatchRows, Tables};
 use parallel::SendPtr;

@@ -18,9 +18,9 @@ use crate::stacking;
 use crate::stacking::{Placement, Source, StackShape, Window};
 use crate::tables::{CircuitId, ClassTable, Clock, N_CIRCUITS, N_TABLES, PerTable, Separator, TableId};
 use Coord::{Col, Const, IntIndex, Sparse};
-use fiat_shamir::ProofOfWork;
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::{Arith, Verifier};
+use fiat_shamir_rv::ProofOfWork;
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::{Arith, Verifier};
 use primitives::field::{F64, F192};
 use std::sync::{Arc, OnceLock};
 
@@ -896,7 +896,7 @@ impl Layout {
             ProofKind::Plain => self,
             ProofKind::ZeroKnowledge => Self {
                 shape: StackShape::hiding(stacking::committed_len(&self.placements)),
-                grinding: self.grinding + pcs::whir::L0_LIST_BITS as u32,
+                grinding: self.grinding + pcs_rv::whir::L0_LIST_BITS as u32,
                 ..self
             },
         }

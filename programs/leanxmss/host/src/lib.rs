@@ -120,11 +120,11 @@ const fn words_of_signature(signature: &Signature) -> &[u64] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leanvm::{Machine, Program, Trap};
+    use leanvm_rv::{Machine, Program, Trap};
     use leanxmss::XmssVerifyError::{InvalidEncoding, InvalidMerklePath};
     use leanxmss::signers::Stream;
     use leanxmss::{PublicKey, Signature};
-    use primitives::hash::{digest_words, hash};
+    use primitives::blake2s::{digest_words, hash};
 
     fn hex(bytes: impl IntoIterator<Item = u8>) -> String {
         bytes.into_iter().map(|b| format!("{b:02x}")).collect()

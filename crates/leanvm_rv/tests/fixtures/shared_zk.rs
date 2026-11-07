@@ -1,5 +1,5 @@
-use leanvm::aggregate::{Capacity, ClaimShape, LeafClass, LeafShape, ProgramClass, Tree, TreeShape, ZkPlacement};
-use leanvm::{PerTable, ProofTranscript, Rate, TableId};
+use leanvm_rv::aggregate::{Capacity, ClaimShape, LeafClass, LeafShape, ProgramClass, Tree, TreeShape, ZkPlacement};
+use leanvm_rv::{PerTable, ProofTranscript, Rate, TableId};
 use std::path::Path;
 
 pub fn config() -> ([LeafClass; 3], TreeShape) {
@@ -57,7 +57,7 @@ pub fn config() -> ([LeafClass; 3], TreeShape) {
 }
 
 pub fn verify(dir: &Path) {
-    use leanvm::aggregate::{ClaimSet, TreeProof};
+    use leanvm_rv::aggregate::{ClaimSet, TreeProof};
     let (classes, shape) = config();
     for line in std::fs::read_to_string(dir.join("verdicts.tsv"))
         .unwrap()

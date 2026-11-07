@@ -37,7 +37,7 @@ use crate::rec::table::{PerRecTable, Table};
 use crate::rec::transcript::ProofSource;
 use crate::tables::CircuitId;
 use design::{ChildWitness, Design, LARGE, LeafWitness, Level, NodeInputs, NodeRows, SMALL};
-use pcs::merkle::{Hash, Openings};
+use pcs_rv::merkle::{Hash, Openings};
 use primitives::field::{F64, F192};
 use primitives::multilinear::{eq_table, mle_eval_par};
 use reduce::DenseTables;
@@ -1075,7 +1075,7 @@ mod tests {
     use crate::rv::Region;
     use crate::rv::asm::*;
     use crate::tables::TableId;
-    use fiat_shamir::ProofTranscript;
+    use fiat_shamir_rv::ProofTranscript;
     use std::sync::OnceLock;
     use zk::Randomness;
 

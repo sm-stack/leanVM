@@ -359,7 +359,7 @@ mod tests {
     use crate::rv::semantics::tests::{
         EDGES, Ports, circuit_matches_reference, edge_word, grid, word_witness_is_the_walk,
     };
-    use fiat_shamir::{ProverState, SessionId, VerifierState};
+    use fiat_shamir_rv::{ProverState, SessionId, VerifierState};
     use flock::BatchRows;
     use flock::reduction;
     use flock::test_util::Witness;

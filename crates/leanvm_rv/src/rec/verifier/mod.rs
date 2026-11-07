@@ -8,10 +8,10 @@
 use super::circuit::{Builder, Dw, Ew, Kw};
 use super::transcript::Transcript;
 use crate::bus::{PublicColumn, PublicColumns};
-use fiat_shamir::TranscriptError;
-use fiat_shamir::arith::{Arith, Verifier};
-use pcs::verifier::OpeningVerifier;
-use pcs::whir::Stratum;
+use fiat_shamir_rv::TranscriptError;
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use pcs_rv::verifier::OpeningVerifier;
+use pcs_rv::whir::Stratum;
 use primitives::field::F192;
 use recursion::FixedHints;
 use std::fmt::Debug;
@@ -252,18 +252,18 @@ mod tests {
     use crate::rec::transcript::{ProofSource, Transcript};
 
     use crate::stacking::StackShape;
-    use fiat_shamir::{Encoding, FromNarg, ProofTranscript, ProverState, SessionId, VerifierState};
+    use fiat_shamir_rv::{Encoding, FromNarg, ProofTranscript, ProverState, SessionId, VerifierState};
     use flock::BatchRows;
     use flock::FlockError;
     use flock::reduction::{self, Block, Instance, ReductionReplay, Shape};
     use flock::test_util::Witness;
     use flock::zerocheck::K_SKIP;
-    use pcs::merkle::{Hash, Openings, hash_leaf, hash_pair};
-    use pcs::verifier::Recording;
-    use pcs::whir::{Stratum, WhirError};
+    use pcs_rv::merkle::{Hash, Openings, hash_leaf, hash_pair};
+    use pcs_rv::verifier::Recording;
+    use pcs_rv::whir::{Stratum, WhirError};
     use primitives::field::{F64, F192};
     use primitives::multilinear::inner_product_base;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     // Message `i` of a proof whose first `i + 1` messages are field elements.
     pub(super) fn scalar(proof: &ProofTranscript, i: usize) -> F192 {
@@ -329,7 +329,7 @@ mod tests {
             let bits: Vec<Vec<Kw>> = (queries.iter())
                 .map(|&q| (0..depth).map(|l| b.k_const((q >> l) as u64 & 1)).collect())
                 .collect();
-            let root = b.d_const(primitives::hash::digest_words(&root));
+            let root = b.d_const(primitives::blake2s::digest_words(&root));
             Rows::new(&mut b, &mut t).authenticate(root, &bits, 8, 8);
             b.finish().failures
         };

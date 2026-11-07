@@ -53,10 +53,10 @@ mod tests {
     use crate::whir::config::tests::test_config_for;
     use crate::whir::config::{QUERY_GRINDING_BITS, RANDOM_LANES};
     use crate::whir::query::{Padding, QueryBatch};
-    use fiat_shamir::{Hints, ProofTranscript, ProverState, SessionId, TranscriptError, VerifierState};
+    use fiat_shamir_rv::{Hints, ProofTranscript, ProverState, SessionId, TranscriptError, VerifierState};
     use primitives::field::{F64, F192};
     use primitives::multilinear::{eq_eval, eq_table, inner_product, inner_product_base};
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
     use std::panic::AssertUnwindSafe;
 
     struct Instance {

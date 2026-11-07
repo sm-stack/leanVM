@@ -38,7 +38,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use leanvm::{Program, Proof, Prover, Rate};
+//! use leanvm_rv::{Program, Proof, Prover, Rate};
 //!
 //! // The prover's side.
 //! let program = Program::from_elf(&std::fs::read("guest.elf")?)?;
@@ -83,7 +83,7 @@ mod rv;
 mod stacking;
 mod tables;
 
-pub use fiat_shamir::ProofTranscript;
+pub use fiat_shamir_rv::ProofTranscript;
 
 pub use commitment::{InvalidRate, Rate, SECURITY_BITS};
 pub use cpu::{DecodeError, Output, Program, Proof, ProveError, ProvenRun, Prover, Stats, VerifyError, VerifyingKey};

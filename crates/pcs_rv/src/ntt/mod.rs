@@ -1059,7 +1059,7 @@ fn with_scratch<R>(len: usize, f: impl FnOnce(&mut [F64]) -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
     use std::sync::Mutex;
 
     /// Test oracle: fill every replica with a copy of a message held elsewhere.

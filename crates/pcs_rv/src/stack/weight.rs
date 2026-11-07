@@ -11,7 +11,7 @@
 use crate::ring_switch::{DeferredWeight, RingFamily};
 use crate::stack::{StackClaim, Statement};
 use crate::whir::{INITIAL_BASIS_CHUNK, InitialWeight};
-use primitives::bit_fold::F192Map;
+use primitives::bit_fold_rv::F192Map;
 use primitives::field::F192;
 use primitives::multilinear::{eq_table, eq_table_seeded, fill_eq_table_uninit};
 use std::mem::MaybeUninit;
@@ -444,10 +444,10 @@ impl InitialWeight for StackWeight<'_> {
 mod tests {
     use super::*;
     use crate::ring_switch::{RingSwitch, SliceClaim};
-    use fiat_shamir::{ProverState, SessionId};
-    use primitives::bit_fold::BLOCK;
+    use fiat_shamir_rv::{ProverState, SessionId};
+    use primitives::bit_fold_rv::BLOCK;
     use primitives::field::F64;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     /// A stack of `lanes` lane blocks of `2^lane_vars` words, and claims of every shape on it.
     ///

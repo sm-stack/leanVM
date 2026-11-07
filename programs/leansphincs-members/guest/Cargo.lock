@@ -16,7 +16,6 @@ version = "0.1.0"
 dependencies = [
  "leansphincs",
  "leanvm_guest",
- "thiserror",
 ]
 
 [[package]]

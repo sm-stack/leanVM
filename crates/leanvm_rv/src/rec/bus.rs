@@ -14,8 +14,8 @@ use super::table::Table;
 use crate::bus::{Block, BusError, BusForm, BusProof, BusVerify, Coord, PackedForm, PublicColumn, PublicColumns};
 use crate::constraints::{Residual, Summand};
 use crate::{bus, constraints};
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::{Arith, Verifier};
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::{Arith, Verifier};
 use primitives::field::{F64, F192, Subfield};
 
 /// A slot's key on the bus: its index among all tables' slots in the high 32 bits, its row in the low 32.

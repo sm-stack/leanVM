@@ -266,7 +266,7 @@ mod tests {
     use crate::tables::spec::InstanceWitness;
     use flock::BatchRows;
     use flock::test_util::Witness;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
     use proptest::prelude::*;
     use proptest::sample::select;
     use proptest::strategy::BoxedStrategy;

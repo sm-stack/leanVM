@@ -6,7 +6,7 @@ use crate::rec::circuit::{Builder, Dw, Ew, Kw};
 use crate::rec::transcript::{ProofSource, Transcript};
 use crate::rec::tree::LeafShape;
 use crate::tables::Clock;
-use fiat_shamir::arith::{Arith, Verifier};
+use fiat_shamir_rv::arith::{Arith, Verifier};
 use primitives::field::{F64, F192};
 use std::marker::PhantomData;
 use zk::{Recorder, Value};
@@ -87,7 +87,7 @@ impl<'p> ProofShape<'p> {
         key: Option<&crate::VerifyingKey>,
     ) -> (CoreRows, Dw) {
         let template = self.program.verifying_key();
-        let root = b.free_d(key.map_or([0; 4], |k| primitives::hash::digest_words(k.root())));
+        let root = b.free_d(key.map_or([0; 4], |k| primitives::blake2s::digest_words(k.root())));
         let entry = b.free_k(key.map_or_else(|| template.entry_pc(), crate::VerifyingKey::entry_pc));
         let bc = template.sizes().log_bytecode;
         let entry_e = b.scope("entry", |b| {
@@ -243,10 +243,10 @@ mod tests {
     use crate::rec::transcript::ProofSource;
     use crate::rv::Region;
     use crate::rv::asm::*;
-    use fiat_shamir::{ProofTranscript, TranscriptError, VerifierState};
-    use pcs::verifier::Recording;
+    use fiat_shamir_rv::{ProofTranscript, TranscriptError, VerifierState};
+    use pcs_rv::verifier::Recording;
 
-    use pcs::merkle::Openings;
+    use pcs_rv::merkle::Openings;
 
     use primitives::field::F192;
 

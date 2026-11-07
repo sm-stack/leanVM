@@ -108,7 +108,7 @@ fn eq_mass_from(r: &[F192], from: usize) -> F192 {
 pub(crate) mod tests {
     use super::*;
     use primitives::multilinear::eq_table;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     /// Every bit of a cube of `2^m` bits useful, and no tail.
     pub(crate) const fn dense(m: usize) -> Padding {

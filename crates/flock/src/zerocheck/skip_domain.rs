@@ -1,7 +1,7 @@
 // CREDIT: https://github.com/succinctlabs/flock (the skip domain's Lagrange weights), MIT OR Apache-2.0.
 //! The univariate skip's domain, and the interpolations at the skip challenge its verifiers and its prover share.
 
-use fiat_shamir::arith::Arith;
+use fiat_shamir_rv::arith::Arith;
 use primitives::field::gf2_64::{reduce, software::clmul};
 use primitives::field::{F192, PHI8_TABLE};
 use primitives::multilinear::eq_table;
@@ -226,8 +226,8 @@ const DENOMINATORS: [F192; 9] = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiat_shamir::arith::Native;
-    use primitives::test_util::Rng;
+    use fiat_shamir_rv::arith::Native;
+    use primitives::test_rng::Rng;
 
     /// `1 / prod_{k != i} (s_i + s_k)` over a window's nodes, by its definition.
     fn per_node_denominator(nodes: &[F192], i: usize) -> F192 {

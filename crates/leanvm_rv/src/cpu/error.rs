@@ -7,9 +7,9 @@ use crate::constraints::ConstraintError;
 use crate::rec::RecError;
 use crate::rv::Trap;
 use crate::tables::Part;
-use fiat_shamir::TranscriptError;
+use fiat_shamir_rv::TranscriptError;
 use flock::FlockError;
-use pcs::whir::WhirError;
+use pcs_rv::whir::WhirError;
 use thiserror::Error;
 use zk::OuterError;
 

@@ -3,7 +3,7 @@
 //! prover's to choose, so every path the verifier takes through it has to end in
 //! an error, not in an index out of bounds.
 
-use leanvm::{Clock, CpuError, N_TABLES, Proof, ProvenRun, Prover, Rate};
+use leanvm_rv::{Clock, CpuError, N_TABLES, Proof, ProvenRun, Prover, Rate};
 use std::panic::AssertUnwindSafe;
 
 struct Rng(u64);

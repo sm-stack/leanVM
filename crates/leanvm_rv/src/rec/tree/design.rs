@@ -29,11 +29,11 @@ use crate::rec::table::PerRecTable;
 use crate::rec::transcript::{ProofSource, Transcript};
 use crate::rec::verifier::{FixedHint, ProofShape, RecShape, Rows, infallible};
 use crate::tables::CircuitId;
-use fiat_shamir::arith::Arith;
-use fiat_shamir::{ProofTranscript, SessionId};
-use pcs::merkle::Openings;
+use fiat_shamir_rv::arith::Arith;
+use fiat_shamir_rv::{ProofTranscript, SessionId};
+use pcs_rv::merkle::Openings;
 
-use pcs::ring_switch::inverse_frobenius_ladder;
+use pcs_rv::ring_switch::inverse_frobenius_ladder;
 use primitives::field::F192;
 use primitives::multilinear::mle_eval_par;
 use std::ops::Range;

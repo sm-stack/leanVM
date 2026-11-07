@@ -28,7 +28,7 @@
 //! - Every challenge drawn before the opening pays for that list's size.
 //! - Every later level takes one OOD sample.
 
-use fiat_shamir::ProofOfWork;
+use fiat_shamir_rv::ProofOfWork;
 use thiserror::Error;
 
 /// Round-by-round soundness target, in bits.
@@ -602,7 +602,7 @@ pub(crate) mod tests {
     //!
     //! # Specification
     //!
-    //! The analysis is Theorem `thm:rbr` of the PCS annex (`doc/leanvm/body/b-polynomial-commitment-scheme.tex`).
+    //! The analysis is Theorem `thm:rbr` of the PCS annex (`doc/leanvm-rv/body/b-polynomial-commitment-scheme.tex`).
     //! Each row of its error table becomes one check at every level:
     //!
     //! - batching challenge: `(J - 1) L / |F|`, one challenge per level whose powers batch the level's claims.

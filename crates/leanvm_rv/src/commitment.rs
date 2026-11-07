@@ -10,23 +10,23 @@
 //! - Each deeper commitment takes one out-of-domain sample to bind to one codeword.
 
 use crate::stacking::StackShape;
-use fiat_shamir::{ProverState, TranscriptError};
-use pcs::stack::{CommittedStack, StackCommitment, Statement};
-use pcs::verifier::OpeningVerifier;
-use pcs::whir::{Config, ConfigError, WhirError};
+use fiat_shamir_rv::{ProverState, TranscriptError};
+use pcs_rv::stack::{CommittedStack, StackCommitment, Statement};
+use pcs_rv::verifier::OpeningVerifier;
+use pcs_rv::whir::{Config, ConfigError, WhirError};
 use primitives::field::F64;
 use rand_core::CryptoRng;
 use thiserror::Error;
 
-pub(crate) use pcs::ring_switch::{RingSwitch, SliceClaim};
-pub(crate) use pcs::stack::StackClaim;
-pub(crate) use pcs::whir::INITIAL_FOLDING_FACTOR as LOG_BATCH;
-pub use pcs::whir::{MAX_LOG_N as MAX_MU, MIN_LOG_N as MIN_MU};
+pub(crate) use pcs_rv::ring_switch::{RingSwitch, SliceClaim};
+pub(crate) use pcs_rv::stack::StackClaim;
+pub(crate) use pcs_rv::whir::INITIAL_FOLDING_FACTOR as LOG_BATCH;
+pub use pcs_rv::whir::{MAX_LOG_N as MAX_MU, MIN_LOG_N as MIN_MU};
 
 /// The proof's soundness target, in bits.
 ///
 /// WHIR parameters and the bus soundness check share this target.
-pub const SECURITY_BITS: u32 = pcs::whir::SECURITY_BITS as u32;
+pub const SECURITY_BITS: u32 = pcs_rv::whir::SECURITY_BITS as u32;
 
 /// A supported commitment rate, represented by the base-two logarithm of its inverse.
 ///
@@ -35,14 +35,14 @@ pub const SECURITY_BITS: u32 = pcs::whir::SECURITY_BITS as u32;
 pub struct Rate(u8);
 
 // Every supported inverse-rate logarithm fits in the public representation.
-const _: () = assert!(pcs::whir::MAX_LOG_INV_RATE <= u8::MAX as usize);
+const _: () = assert!(pcs_rv::whir::MAX_LOG_INV_RATE <= u8::MAX as usize);
 
 impl Rate {
     /// The highest supported rate, favoring prover speed.
-    pub const MIN: Self = Self(pcs::whir::MIN_LOG_INV_RATE as u8);
+    pub const MIN: Self = Self(pcs_rv::whir::MIN_LOG_INV_RATE as u8);
 
     /// The lowest supported rate, favoring proof size.
-    pub const MAX: Self = Self(pcs::whir::MAX_LOG_INV_RATE as u8);
+    pub const MAX: Self = Self(pcs_rv::whir::MAX_LOG_INV_RATE as u8);
 
     /// Constructs a supported rate from its inverse's base-two logarithm.
     ///
@@ -274,8 +274,8 @@ impl<R: Copy> Commitment<R> {
 mod tests {
     use super::{Committed, InvalidRate, LOG_BATCH, MAX_MU, MIN_MU, Rate, WitnessError};
     use crate::stacking::StackShape;
-    use fiat_shamir::{ProverState, SessionId};
-    use pcs::whir::ConfigError;
+    use fiat_shamir_rv::{ProverState, SessionId};
+    use pcs_rv::whir::ConfigError;
     use primitives::field::F64;
 
     #[test]

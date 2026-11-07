@@ -616,7 +616,7 @@ impl LincheckCircuit for Circuit {
 
 #[cfg(test)]
 mod tests {
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     use super::*;
     use crate::test_util::Witness;

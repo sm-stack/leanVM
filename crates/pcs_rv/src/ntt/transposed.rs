@@ -241,7 +241,7 @@ fn fold_blocks(data: &mut [F192], log_inv_rate: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn blocked_and_gathered_transposes_match_layer_by_layer() {

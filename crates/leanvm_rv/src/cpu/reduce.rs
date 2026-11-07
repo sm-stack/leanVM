@@ -9,9 +9,9 @@ use crate::commitment::{Commitment, Rate, StackClaim};
 use crate::constraints::Claims;
 use crate::tables::{CircuitId, ClassTable, N_TABLES};
 use crate::{bus, constraints};
-use fiat_shamir::arith::Verifier;
+use fiat_shamir_rv::arith::Verifier;
 use flock::reduction;
-use pcs::verifier::OpeningVerifier;
+use pcs_rv::verifier::OpeningVerifier;
 use primitives::field::{F64, F192};
 
 /// What the bus and the table sumcheck leave to the rest of the verifier.

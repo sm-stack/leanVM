@@ -344,7 +344,7 @@ impl<'a> InstanceRows<'a> {
 
 #[cfg(test)]
 mod tests {
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     use super::*;
 

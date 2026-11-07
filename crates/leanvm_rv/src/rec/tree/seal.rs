@@ -9,10 +9,10 @@
 //! The verifier derives points from the root and authenticates supplied values against the class commitments. Anyone holding the fixed polynomials can produce the seal.
 
 use super::*;
-use fiat_shamir::{LengthPrefixed, ProofTranscript, ProverState, SessionId, VerifierState};
-use pcs::merkle::Hash;
-use pcs::stack::{CommittedStack, StackClaim, StackCommitment, Statement};
-use pcs::whir::Config;
+use fiat_shamir_rv::{LengthPrefixed, ProofTranscript, ProverState, SessionId, VerifierState};
+use pcs_rv::merkle::Hash;
+use pcs_rv::stack::{CommittedStack, StackClaim, StackCommitment, Statement};
+use pcs_rv::whir::Config;
 
 /// The seal transcript's domain.
 const SEAL_DOMAIN: &[u8] = b"leanvm/mixed-tree-seal/v3";
@@ -30,12 +30,12 @@ fn stack_shape(len: usize) -> Result<(usize, Config, usize), TreeError> {
 
 /// The complete root proof is bound before hinted fixed values and PCS challenges. Its bus points depend on its transcript, so binding only the statement is insufficient.
 fn instance(root: &TreeProof) -> Vec<u64> {
-    let digest = primitives::hash::hash(&root.to_bytes());
+    let digest = primitives::blake2s::hash(&root.to_bytes());
     root.limbs()
         .as_flattened()
         .iter()
         .copied()
-        .chain(primitives::hash::digest_words(&digest))
+        .chain(primitives::blake2s::digest_words(&digest))
         .collect()
 }
 

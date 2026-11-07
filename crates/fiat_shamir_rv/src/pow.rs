@@ -12,7 +12,7 @@
 //!
 //! So re-rolling that challenge costs `2^bits` hashes on average.
 
-use primitives::hash::{BATCH, hash, hash_many};
+use primitives::blake2s::{BATCH, hash, hash_many};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A proof-of-work difficulty: the number of leading zero bits a nonce's hash must have.

@@ -2,7 +2,7 @@
 
 use super::DecodeError;
 use crate::envelope::Envelope;
-use fiat_shamir::ProofTranscript;
+use fiat_shamir_rv::ProofTranscript;
 use std::fmt::{self, Debug, Formatter};
 
 /// A proof that a program, run on some advice, exits with an output.

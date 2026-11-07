@@ -11,8 +11,8 @@
 
 use super::DensePoly;
 use super::{DenseTables, Entry, Msg, ReduceError, TILE};
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::{Arith, Verifier};
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::{Arith, Verifier};
 use parallel::ChunkView;
 use primitives::field::{F64, F192, F192Unreduced};
 use primitives::multilinear::{eq_table, eq_table_seeded, mle_eval_par};
@@ -705,7 +705,7 @@ impl Block {
                 let (quads, rest) = low.as_chunks::<4>();
                 let (acc_quads, acc_rest) = acc.as_chunks_mut::<4>();
                 for (s, &q) in acc_quads.iter_mut().zip(quads) {
-                    for (s, p) in s.iter_mut().zip(F192::mul_unreduced4([e; 4], q)) {
+                    for (s, p) in s.iter_mut().zip(primitives::field::mul_unreduced4([e; 4], q)) {
                         *s ^= p;
                     }
                 }
@@ -736,10 +736,10 @@ mod tests {
     use super::*;
     use crate::rec::tree::reduce;
 
-    use fiat_shamir::arith::{Arith, Native};
-    use fiat_shamir::{ProverState, SessionId, VerifierState};
+    use fiat_shamir_rv::arith::{Arith, Native};
+    use fiat_shamir_rv::{ProverState, SessionId, VerifierState};
     use primitives::multilinear::mle_eval;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     // Claims on every table at random points, one of several terms with public bits, a kind bit and a scale, the last.
     fn dense_claims(rng: &mut Rng, tables: &DenseTables, vars: &DenseVars) -> Vec<DenseClaim<F192>> {

@@ -36,8 +36,8 @@ pub fn batch(triples: &[(&PublicKey, &Message, &Signature)]) -> Batch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leanvm::Program;
-    use primitives::hash::{Hasher, digest_words};
+    use leanvm_rv::Program;
+    use primitives::blake2s::{Hasher, digest_words};
 
     #[test]
     fn signature_member_little_endian_vector() {

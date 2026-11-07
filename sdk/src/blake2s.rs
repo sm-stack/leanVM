@@ -601,8 +601,8 @@ mod portable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use primitives::hash::{digest_words, hash};
-    use primitives::test_util::Rng;
+    use primitives::blake2s::{digest_words, hash};
+    use primitives::test_rng::Rng;
 
     /// The reference BLAKE2s-256 of `bytes`, as little-endian words.
     fn reference(bytes: &[u8]) -> [u64; 4] {

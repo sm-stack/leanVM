@@ -10,8 +10,8 @@
 use super::{FoldPair, Msg, ReduceError};
 use crate::cpu::Claim;
 use crate::tables::{CircuitId, N_CIRCUITS};
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::{Arith, Verifier};
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::{Arith, Verifier};
 use flock::lincheck::LincheckCircuit;
 use flock::lincheck::MatrixForm;
 use flock::zerocheck::{K_SKIP, SkipDomain};
@@ -477,8 +477,8 @@ mod tests {
     use crate::rec::hash;
     use crate::rec::tree::reduce;
 
-    use fiat_shamir::{ProverState, SessionId, VerifierState};
-    use primitives::test_util::Rng;
+    use fiat_shamir_rv::{ProverState, SessionId, VerifierState};
+    use primitives::test_rng::Rng;
 
     // Each circuit's matrices at random points: lincheck claims and both carried claims, on three circuits.
     //

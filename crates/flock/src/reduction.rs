@@ -4,9 +4,9 @@
 //! Each circuit's R1CS validity reduces to one claim on its packed witness, ready for ring switching.
 //! A circuit supplies only its block: its shape, and the walks behind its matrices.
 
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::Verifier;
-use pcs::ring_switch::SliceClaim;
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::Verifier;
+use pcs_rv::ring_switch::SliceClaim;
 use primitives::field::F192;
 
 use crate::FlockError;
@@ -274,9 +274,9 @@ mod tests {
     //! The circuits are built from the builder and the multiplier gadget, their witnesses by the generic walk.
     //! Only the commitment's opening is left out: it is generic in the claims.
 
-    use fiat_shamir::{ProofTranscript, ProverState, SessionId, VerifierState};
+    use fiat_shamir_rv::{ProofTranscript, ProverState, SessionId, VerifierState};
     use primitives::field::F192;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     use crate::BatchRows;
     use crate::circuit::{Builder, Circuit, Wire};

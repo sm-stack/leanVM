@@ -12,7 +12,7 @@
 //! An argument keeps the classes whose name contains it, none keeps every class with a circuit.
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo bench -p leanvm --bench class_batch -- hash mul
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo bench -p leanvm_rv --bench class_batch -- hash mul
 //! ```
 //!
 //! `BENCH_TRACING=1` prints the final pass's span tree (`RUST_LOG` adjusts it).
@@ -24,17 +24,17 @@ use std::time::Instant;
 
 use bench::pretty_integer;
 use bench::{Metric, Plan, Timing, bencher_json};
-use fiat_shamir::{ProofTranscript, ProverState, SessionId, VerifierState};
+use fiat_shamir_rv::{ProofTranscript, ProverState, SessionId, VerifierState};
 use flock::BatchRows;
 use flock::circuit::Circuit;
 use flock::reduction;
 use flock::test_util::Witness;
-use leanvm::{Fill, MIN_MU, TableId, Word};
-use pcs::ring_switch::RingSwitch;
-use pcs::stack::{CommittedStack, StackCommitment, Statement};
-use pcs::whir::{Config, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
+use leanvm_rv::{Fill, MIN_MU, TableId, Word};
+use pcs_rv::ring_switch::RingSwitch;
+use pcs_rv::stack::{CommittedStack, StackCommitment, Statement};
+use pcs_rv::whir::{Config, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0};
 use primitives::field::F64;
-use primitives::test_util::Rng;
+use primitives::test_rng::Rng;
 
 #[global_allocator]
 static ALLOCATOR: bench::Counting<bench::Jemalloc> = bench::Counting(bench::Jemalloc);

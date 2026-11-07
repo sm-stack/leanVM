@@ -16,7 +16,7 @@
 //! PCS_LOG_INV_RATE   log2 of the inverse RS rate (rate = 1/2^r)    [default: profile]
 //! BENCH_TRACING      print the final pass's trace tree (`RUST_LOG` adjusts it)
 //!
-//! PCS_LOG_N=24 PCS_LOG_INV_RATE=1 BENCH_REPEAT=5 cargo bench -p pcs --bench throughput
+//! PCS_LOG_N=24 PCS_LOG_INV_RATE=1 BENCH_REPEAT=5 cargo bench -p pcs_rv --bench throughput
 //! ```
 //!
 //! Large `PCS_LOG_N` needs substantial memory: the RS codeword is `2^log_inv_rate`×
@@ -27,19 +27,19 @@
 //! `ntt-forward-<PCS_LOG_N>-16thread` (measure `per-op`, one encode), each with the actual `threads` count.
 //!
 //! ```text
-//! cargo bench -p pcs --bench throughput -- --json
+//! cargo bench -p pcs_rv --bench throughput -- --json
 //! ```
 
 use bench::pretty_integer;
 use bench::{Metric, Plan, Timing, bencher_json, env_usize};
-use fiat_shamir::{ProverState, SessionId};
-use pcs::ntt::AdditiveNtt;
-use pcs::ring_switch::{RingSwitch, SliceClaim};
-use pcs::stack::{CommittedStack, StackClaim, Statement};
-use pcs::whir::{Config, LOG_INV_RATE_0};
+use fiat_shamir_rv::{ProverState, SessionId};
+use pcs_rv::ntt::AdditiveNtt;
+use pcs_rv::ring_switch::{RingSwitch, SliceClaim};
+use pcs_rv::stack::{CommittedStack, StackClaim, Statement};
+use pcs_rv::whir::{Config, LOG_INV_RATE_0};
 use primitives::field::{F64, F192};
 use primitives::multilinear::{eq_table, inner_product_base};
-use primitives::test_util::Rng;
+use primitives::test_rng::Rng;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::time::Instant;

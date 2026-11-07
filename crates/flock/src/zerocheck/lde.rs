@@ -574,7 +574,7 @@ impl Vec128 for Sse2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     fn rand_vec(rng: &mut Rng, n: usize) -> Vec<F8> {
         (0..n).map(|_| F8((rng.next_u64() & 0xff) as u8)).collect()

@@ -5,7 +5,7 @@
 //! the column's offset.
 
 use crate::commitment::{RingSwitch, SliceClaim, StackClaim};
-use pcs::whir::Config;
+use pcs_rv::whir::Config;
 use primitives::field::F64;
 
 /// What a column is, before it is placed.
@@ -139,7 +139,7 @@ impl StackShape {
         let lanes = 1usize << crate::commitment::LOG_BATCH;
         let mut mu = crate::log2_ceil_usize(placed.max(1))
             .max(crate::commitment::MIN_MU)
-            .max(pcs::whir::MIN_LOG_N_HIDING);
+            .max(pcs_rv::whir::MIN_LOG_N_HIDING);
         loop {
             let n_lanes = placed.div_ceil(1 << (mu - crate::commitment::LOG_BATCH)).max(1);
             if Config::hiding_lanes(n_lanes) <= lanes {

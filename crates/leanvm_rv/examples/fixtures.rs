@@ -31,11 +31,11 @@ fn main() {
 }
 
 mod compact {
-    use leanvm::aggregate::{
+    use leanvm_rv::aggregate::{
         Capacity, ClaimShape, LeafClass, LeafShape, MixedLeaf, ProgramClass, Tier, Tree, TreeShape,
     };
-    use leanvm::asm::{Addi, Asm, Bne, Reg};
-    use leanvm::{CircuitId, N_CIRCUITS, PerTable, Program, ProofTranscript, Rate, Region, TableId};
+    use leanvm_rv::asm::{Addi, Asm, Bne, Reg};
+    use leanvm_rv::{CircuitId, N_CIRCUITS, PerTable, Program, ProofTranscript, Rate, Region, TableId};
     use std::path::Path;
     pub(super) fn run(dir: &Path, verify: bool) {
         let capacity = 16385;
@@ -225,7 +225,7 @@ mod compact {
     }
 
     fn verify_fixtures(dir: &Path, classes: &[LeafClass], shape: TreeShape) {
-        use leanvm::aggregate::{ClaimSet, TreeProof};
+        use leanvm_rv::aggregate::{ClaimSet, TreeProof};
         for line in std::fs::read_to_string(dir.join("verdicts.tsv"))
             .unwrap()
             .lines()
@@ -250,9 +250,9 @@ mod compact {
 
 mod shared {
     use super::shared_fixture as fixture;
-    use leanvm::aggregate::{MixedLeaf, Tree, ZkPlacement};
-    use leanvm::asm::{Addi, Asm, Bne, Reg};
-    use leanvm::{CircuitId, N_CIRCUITS, Program, ProofTranscript, Region};
+    use leanvm_rv::aggregate::{MixedLeaf, Tree, ZkPlacement};
+    use leanvm_rv::asm::{Addi, Asm, Bne, Reg};
+    use leanvm_rv::{CircuitId, N_CIRCUITS, Program, ProofTranscript, Region};
     use std::path::Path;
 
     pub(super) fn run(dir: &Path, verify: bool) {
@@ -387,11 +387,11 @@ mod shared {
 }
 
 mod endian {
-    use leanvm::aggregate::{
+    use leanvm_rv::aggregate::{
         Capacity, ClaimSet, ClaimShape, LeafClass, LeafShape, MixedLeaf, ProgramClass, Tree, TreeProof, TreeShape,
     };
-    use leanvm::asm::{Addi, Asm, Bne, Reg};
-    use leanvm::{Output, Program, Proof, ProofTranscript, Rate, Region, TableId, VerifyingKey};
+    use leanvm_rv::asm::{Addi, Asm, Bne, Reg};
+    use leanvm_rv::{Output, Program, Proof, ProofTranscript, Rate, Region, TableId, VerifyingKey};
     use std::path::Path;
 
     pub(super) fn run(path: &Path, verify: bool, zk: bool) {
@@ -504,7 +504,7 @@ mod endian {
         ] {
             assert!(matches!(
                 tree.verify_claims(&proof, &claims),
-                Err(leanvm::aggregate::TreeError::SealRequired)
+                Err(leanvm_rv::aggregate::TreeError::SealRequired)
             ));
             tree.verify_claims_sealed(&proof, &claims, tree.seal_roots().unwrap(), &seal)
                 .unwrap();

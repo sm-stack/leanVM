@@ -24,8 +24,8 @@
 //! - Above the blocks, the last block to finish a unit of nodes climbs it, so no pass waits on a barrier.
 
 use parallel::SendPtr;
+use primitives::blake2s::{BATCH, BLOCK_LEN, ChainingValue, OUT_LEN, hash_many};
 use primitives::field::F64;
-use primitives::hash::{BATCH, BLOCK_LEN, ChainingValue, OUT_LEN, hash_many};
 use std::borrow::Cow;
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
@@ -37,7 +37,7 @@ pub type Hash = [u8; OUT_LEN];
 /// Hash one leaf with standard BLAKE2s-256.
 #[inline]
 pub fn hash_leaf(data: &[u8]) -> Hash {
-    primitives::hash::hash(data)
+    primitives::blake2s::hash(data)
 }
 
 /// Hash two children into their parent.
@@ -46,7 +46,7 @@ pub fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    primitives::hash::hash(&buf)
+    primitives::blake2s::hash(&buf)
 }
 
 /// Bytes of the staging tile for leaves whose zero padding does not end on a hash block boundary.

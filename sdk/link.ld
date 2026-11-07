@@ -1,4 +1,4 @@
-/* The memory map of leanvm_core::rv. Text and RAM share one 2 GiB window (the medany code
+/* The memory map of leanvm_rv::rv. Text and RAM share one 2 GiB window (the medany code
    model) below 0x7FFFF800, and each base is a multiple of its region's largest size. */
 ENTRY(_start)
 

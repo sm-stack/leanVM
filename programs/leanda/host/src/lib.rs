@@ -5,10 +5,10 @@
 //!
 //! The dual codeword `L` then follows from the root, by Fiat-Shamir.
 
-use fiat_shamir::{ProverState, SessionId};
+use fiat_shamir_rv::{ProverState, SessionId};
 use leanda::{CELLS, Dual, Hash, LOG_K, M};
 use leanvm_guest::{PublicValues, Run};
-use pcs::ntt::AdditiveNtt;
+use pcs_rv::ntt::AdditiveNtt;
 use primitives::field::{F64, F192};
 
 /// The guest (`../guest`), built by `programs/build.sh`.
@@ -108,7 +108,7 @@ const fn as_field(words: &mut [u64]) -> &mut [F64] {
 mod tests {
     use super::*;
     use leanda::{DaError, Hash};
-    use leanvm::{Machine, Program, Trap};
+    use leanvm_rv::{Machine, Program, Trap};
 
     fn hex(words: &[u64]) -> String {
         words

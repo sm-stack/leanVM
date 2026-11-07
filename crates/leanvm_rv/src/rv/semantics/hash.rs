@@ -3,7 +3,7 @@
 use super::InstructionClass;
 use crate::rv::circuits::{ClassCircuit, Products, WordGadgets};
 use flock::circuit::{Builder, Circuit, Wire};
-use primitives::hash::{G_LANES, IV, SIGMA};
+use primitives::blake2s::{G_LANES, IV, SIGMA};
 
 /// One BLAKE2s compression instance, `blake2s rs1, rs2`: the finalization word, the counter, the block.
 ///
@@ -63,7 +63,7 @@ impl InstructionClass for Hash {
         let m: [u32; 16] = std::array::from_fn(|i| (block[8 + i / 2] >> (32 * (i % 2))) as u32);
 
         // Compress, then pair the halves back into words.
-        primitives::hash::compress(&mut h, &m, self.t, self.flags == Self::FINAL);
+        primitives::blake2s::compress(&mut h, &m, self.t, self.flags == Self::FINAL);
         std::array::from_fn(|i| h[2 * i] as u64 | (h[2 * i + 1] as u64) << 32)
     }
 }

@@ -1,8 +1,8 @@
 //! A side's leaf claim, decomposed into the tables' forms, the framework blocks' column claims and the producers' weights.
 
 use super::{ColumnClaim, Coord, Fingerprint, Openings, Producer, PublicColumn, PublicColumns, Side, SparseColumn};
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::{Arith, Native};
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::{Arith, Native};
 #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
 use primitives::field::PackedCoeffs;
 use primitives::field::{F64, F192, F192Unreduced, Subfield};

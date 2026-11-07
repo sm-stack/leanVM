@@ -6,7 +6,7 @@ use crate::commitment::Rate;
 use crate::cpu::DecodeError;
 use crate::envelope::Envelope;
 use crate::rec::circuit::{Assignment, Limbs};
-use fiat_shamir::ProofTranscript;
+use fiat_shamir_rv::ProofTranscript;
 use primitives::field::F192;
 
 /// A proof made by one node of a tree, the root's included.

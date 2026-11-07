@@ -16,9 +16,9 @@
 
 use super::table::{PerRecTable, Table};
 use crate::rv::{Hash, InstructionClass};
-use fiat_shamir::arith::Arith;
+use fiat_shamir_rv::arith::Arith;
+use primitives::blake2s::ChainingValue;
 use primitives::field::{F64, F192};
-use primitives::hash::ChainingValue;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use thiserror::Error;
@@ -27,7 +27,7 @@ use thiserror::Error;
 pub type Limbs = [u64; 4];
 
 /// The parameter IV as four words.
-pub const PARAM_IV: Limbs = words(primitives::hash::PARAM_IV);
+pub const PARAM_IV: Limbs = words(primitives::blake2s::PARAM_IV);
 
 /// What a wire holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -937,8 +937,8 @@ impl Builder {
     }
 
     pub(crate) fn session_tagged(&mut self, protocol: &[u8], relation: Dw) -> Dw {
-        use fiat_shamir::Role;
-        let iv = primitives::hash::digest_words(b"irtf-cfrg-fiat-shamir/session-id");
+        use fiat_shamir_rv::Role;
+        let iv = primitives::blake2s::digest_words(b"irtf-cfrg-fiat-shamir/session-id");
         let seed = [iv[0], iv[1], iv[2], iv[3], 0, 0, 0, 0];
         let cv = Compression::new(PARAM_IV, seed, Role::Seed.counter(0, 0), true).output();
         let mut h = self.d_const(cv);
@@ -1145,7 +1145,7 @@ mod tests {
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
             assert_eq!(
                 chain(&words),
-                primitives::hash::digest_words(&primitives::hash::hash(&bytes)),
+                primitives::blake2s::digest_words(&primitives::blake2s::hash(&bytes)),
                 "{n} words"
             );
         }

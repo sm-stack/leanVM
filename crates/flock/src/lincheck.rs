@@ -65,10 +65,10 @@
 //!     q(inf) = sum_i (comb_lo[i] + comb_hi[i]) * (z_lo[i] + z_hi[i])      the leading coefficient
 //! ```
 
-use fiat_shamir::arith::{Arith, Native, RoundWeight, Verifier};
-use fiat_shamir::{ProverState, TranscriptError};
+use fiat_shamir_rv::arith::{Arith, Native, RoundWeight, Verifier};
+use fiat_shamir_rv::{ProverState, TranscriptError};
 use parallel::SendPtr;
-use pcs::ring_switch::SliceClaim;
+use pcs_rv::ring_switch::SliceClaim;
 use primitives::bits::bit_transpose_64bytes;
 use primitives::field::F192;
 use primitives::multilinear::eq_table;
@@ -848,7 +848,7 @@ impl<'a> Stripes<'a> {
             not(all(target_feature = "gfni", target_feature = "avx512bw", target_feature = "avx512vbmi"))
         ))]
         if self.len().is_multiple_of(avx2::TILE) {
-            return avx2::partial_fold::<primitives::bit_fold::avx2::Best>(self, groups, eq_outer);
+            return avx2::partial_fold::<primitives::bit_fold_rv::avx2::Best>(self, groups, eq_outer);
         }
         #[cfg(target_arch = "aarch64")]
         if self.len().is_multiple_of(neon::TILE) {
@@ -914,8 +914,8 @@ fn sum_table(eq8: &[F192; 8], table: &mut [F192; 256]) {
 mod gfni {
     use core::arch::x86_64::*;
 
-    use primitives::bit_fold::gfni::{OUT_BYTES, store_f192, weight_matrices};
-    use primitives::bits::bit_transpose_zmm;
+    use primitives::bit_fold_rv::gfni::{OUT_BYTES, store_f192, weight_matrices};
+    use primitives::bits::bit_transpose_64bytes_m512;
     use primitives::field::F192;
 
     use super::Stripes;
@@ -961,7 +961,7 @@ mod gfni {
     #[target_feature(enable = "avx512f", enable = "avx512vbmi", enable = "gfni")]
     fn stripe(stripes: Stripes<'_>, s: usize, g: usize) -> __m512i {
         let [r0, r1, r2, r3, r4, r5, r6, r7] = stripes.rows(s, g).map(|w| w as i64);
-        bit_transpose_zmm(_mm512_set_epi64(r7, r6, r5, r4, r3, r2, r1, r0))
+        bit_transpose_64bytes_m512(_mm512_set_epi64(r7, r6, r5, r4, r3, r2, r1, r0))
     }
 
     /// Add one tile of stripes, its eight eq weights per stripe in `eq`.
@@ -992,7 +992,7 @@ mod gfni {
 mod avx2 {
     use core::arch::x86_64::*;
 
-    use primitives::bit_fold::avx2::{self, HALF, OUT_BYTES, Product};
+    use primitives::bit_fold_rv::avx2::{self, HALF, OUT_BYTES, Product};
     use primitives::field::F192;
 
     use super::Stripes;
@@ -1128,7 +1128,8 @@ mod neon {
             for i in 0..BLOCK {
                 let e0 = &tables[0][usize::from(pair[0][at + i])];
                 let e1 = &tables[1][usize::from(pair[1][at + i])];
-                acc01[i] = xor3_u64(acc01[i], low(e0), low(e1));
+                // SAFETY: NEON is part of the aarch64 baseline; registers only.
+                acc01[i] = unsafe { xor3_u64(acc01[i], low(e0), low(e1)) };
                 acc2[i] ^= e0.c2 ^ e1.c2;
             }
         }
@@ -1144,8 +1145,8 @@ mod neon {
 mod tests {
     use std::collections::HashSet;
 
-    use fiat_shamir::{ProofTranscript, SessionId, VerifierState};
-    use primitives::test_util::Rng;
+    use fiat_shamir_rv::{ProofTranscript, SessionId, VerifierState};
+    use primitives::test_rng::Rng;
 
     use super::*;
 
@@ -1526,7 +1527,7 @@ mod tests {
             }
             #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
             {
-                use primitives::bit_fold::avx2::Shuffle;
+                use primitives::bit_fold_rv::avx2::Shuffle;
                 assert_eq!(
                     avx2::partial_fold::<Shuffle>(stripes, groups, &eq),
                     want,
@@ -1534,7 +1535,7 @@ mod tests {
                 );
                 #[cfg(target_feature = "gfni")]
                 {
-                    use primitives::bit_fold::avx2::Gfni;
+                    use primitives::bit_fold_rv::avx2::Gfni;
                     assert_eq!(avx2::partial_fold::<Gfni>(stripes, groups, &eq), want, "avx2 gfni");
                 }
             }

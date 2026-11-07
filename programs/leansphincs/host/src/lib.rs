@@ -110,8 +110,8 @@ mod tests {
     use leansphincs::SphincsVerifyError::{InadmissibleDigest, InadmissibleEncoding, RootMismatch};
     use leansphincs::signers::Stream;
     use leansphincs::{Signature, SphincsVerifyError};
-    use leanvm::{Machine, Program, Trap};
-    use primitives::hash::digest_words;
+    use leanvm_rv::{Machine, Program, Trap};
+    use primitives::blake2s::digest_words;
 
     fn hex(bytes: impl IntoIterator<Item = u8>) -> String {
         bytes.into_iter().map(|b| format!("{b:02x}")).collect()
@@ -150,7 +150,7 @@ mod tests {
             "cd0efd73b0e58cec9291994a125dae7c5957ef5b2c556a3f7b0117d93e98e61b"
         );
         assert_eq!(
-            hex(primitives::hash::hash(&signature.to_bytes())),
+            hex(primitives::blake2s::hash(&signature.to_bytes())),
             "76f771d246ae4460e0d2d193c567c8352cfc6e3ccd6e4d68d25955832d5e3431"
         );
         assert_eq!(leansphincs::verify(&public_key, &message, &signature), Ok(()));

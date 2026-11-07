@@ -1,8 +1,8 @@
 //! Authenticated mixed-class keys: bounds, shape, circuit dimensions and seal roots in one canonical encoding. A consumer pins the digest from a trusted setup; a self-reported digest does not authenticate a class.
 
 use super::*;
-use pcs::merkle::Hash;
-use primitives::hash::Hasher;
+use pcs_rv::merkle::Hash;
+use primitives::blake2s::Hasher;
 use std::sync::OnceLock;
 
 /// The encoding's tag and version.

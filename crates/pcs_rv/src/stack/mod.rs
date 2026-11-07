@@ -75,8 +75,8 @@ use crate::merkle::Hash;
 use crate::ring_switch::{RingFamily, RingSwitch};
 use crate::verifier::OpeningVerifier;
 use crate::whir::{BaseCommitment, Config, DenseWeight, RANDOM_LANES, WhirError};
-use fiat_shamir::ProverState;
-use fiat_shamir::arith::{Arith, Native};
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::arith::{Arith, Native};
 use primitives::field::{F64, F192};
 use rand_core::CryptoRng;
 
@@ -485,10 +485,10 @@ mod tests {
     use crate::ring_switch::tests::s_hat_v_reference;
     use crate::whir::MIN_LOG_N_HIDING;
     use crate::whir::config::tests::{default_config, test_config_for};
-    use fiat_shamir::{ProofTranscript, ProverState, SessionId, VerifierState};
+    use fiat_shamir_rv::{ProofTranscript, ProverState, SessionId, VerifierState};
     use primitives::multilinear::eq_table;
     use primitives::multilinear::inner_product_base;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
     use std::ops::Range;

@@ -1,4 +1,4 @@
-//! Proving a run of a RISC-V program, and verifying the proof (`doc/leanvm/main.tex`).
+//! Proving a run of a RISC-V program, and verifying the proof (`doc/leanvm-rv/main.tex`).
 //!
 //! The machine is RISC-V: `pc`, register numbers, addresses and timestamps are integers.
 //!

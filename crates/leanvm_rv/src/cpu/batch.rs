@@ -14,7 +14,7 @@ use crate::bus;
 use crate::bus::{BusForm, BusProof, BusVerify, PackedForm, Producer};
 use crate::constraints::{Air, BitColumns, Residual, Summand};
 use crate::tables::ClassTable;
-use fiat_shamir::arith::{Arith, Native};
+use fiat_shamir_rv::arith::{Arith, Native};
 use primitives::field::{F192, F192Unreduced, Subfield};
 
 /// The two bus sides' weights in the batch, `1` and `xi`, shared by every table.

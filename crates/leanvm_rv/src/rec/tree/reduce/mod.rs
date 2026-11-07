@@ -9,8 +9,8 @@
 //! Each is a sumcheck: if an input claim is false, an output claim is false but with probability about `(claims + 2 rounds) / |E|`.
 
 use crate::rec::circuit::{Builder, Dw, Ew};
-use fiat_shamir::arith::Verifier;
-use fiat_shamir::{LengthPrefixed, ProofTranscript, ProverState, SessionId, TranscriptError};
+use fiat_shamir_rv::arith::Verifier;
+use fiat_shamir_rv::{LengthPrefixed, ProofTranscript, ProverState, SessionId, TranscriptError};
 use parallel::ChunkView;
 use primitives::field::{F64, F192, F192Unreduced};
 use std::iter::Sum;
@@ -260,7 +260,7 @@ impl Entry for F192 {
         let (t8, t_rest) = t.as_chunks::<8>();
         let (out4, out_rest) = out.as_chunks_mut::<4>();
         for (o, x) in out4.iter_mut().zip(t8) {
-            let d = Self::mul4([r; 4], [x[0] + x[1], x[2] + x[3], x[4] + x[5], x[6] + x[7]]);
+            let d = primitives::field::mul4([r; 4], [x[0] + x[1], x[2] + x[3], x[4] + x[5], x[6] + x[7]]);
             *o = [x[0] + d[0], x[2] + d[1], x[4] + d[2], x[6] + d[3]];
         }
         for (o, x) in out_rest.iter_mut().zip(t_rest.as_chunks::<2>().0) {
@@ -273,7 +273,7 @@ impl Entry for F192 {
         let (t4, t_rest) = t.as_chunks::<4>();
         let mut m = Msg::default();
         for (a, b) in w4.iter().zip(t4) {
-            let p = Self::mul_unreduced4(
+            let p = primitives::field::mul_unreduced4(
                 [a[0], a[0] + a[1], a[2], a[2] + a[3]],
                 [b[0], b[0] + b[1], b[2], b[2] + b[3]],
             );
@@ -295,7 +295,7 @@ impl Entry for F64 {
         let (t16, t_rest) = t.as_chunks::<16>();
         let (out8, out_rest) = out.as_chunks_mut::<8>();
         for (o, x) in out8.iter_mut().zip(t16) {
-            let d = F192::mul_base8(r, std::array::from_fn(|k| x[2 * k] + x[2 * k + 1]));
+            let d = primitives::field::mul_base8(r, std::array::from_fn(|k| x[2 * k] + x[2 * k + 1]));
             *o = std::array::from_fn(|k| d[k] + F192::from(x[2 * k]));
         }
         for (o, x) in out_rest.iter_mut().zip(t_rest.as_chunks::<2>().0) {
@@ -388,8 +388,8 @@ impl FoldPair {
 pub(crate) mod tests {
     use super::*;
     use crate::tables::CircuitId;
-    use fiat_shamir::ProverState;
-    use fiat_shamir::arith::{Arith, Native};
+    use fiat_shamir_rv::ProverState;
+    use fiat_shamir_rv::arith::{Arith, Native};
 
     // Which of a reduction's outputs a forging prover moves along its final identity.
     #[derive(Clone, Copy, Debug)]

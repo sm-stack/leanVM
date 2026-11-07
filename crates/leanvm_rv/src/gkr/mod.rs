@@ -17,8 +17,8 @@ mod layer;
 
 use self::layer::{EQ_LOW_VARS, Grid, Layer};
 use crate::PAR_THRESHOLD;
-use fiat_shamir::arith::Verifier;
-use fiat_shamir::{ProverState, TranscriptError};
+use fiat_shamir_rv::arith::Verifier;
+use fiat_shamir_rv::{ProverState, TranscriptError};
 use primitives::field::F192;
 use primitives::field::lanes::{Lane, Lanes};
 use primitives::multilinear::{SplitEq, interp};
@@ -80,7 +80,7 @@ pub(crate) fn next_level(current: &[F192]) -> Vec<F192> {
 /// Entry `row` of the next level: the product of `current[4 * row..]`'s first four, ones past its end.
 pub(crate) fn padded_product(current: &[F192], row: usize) -> F192 {
     let child = |c: usize| current.get(4 * row + c).copied().unwrap_or(F192::ONE);
-    let [left, right] = F192::mul2([child(0), child(2)], [child(1), child(3)]);
+    let [left, right] = primitives::field::mul2([child(0), child(2)], [child(1), child(3)]);
     left * right
 }
 
@@ -303,7 +303,7 @@ pub fn verify_products<V: Verifier>(v: &mut V, mu: usize) -> Result<Products<V::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiat_shamir::{SessionId, VerifierState};
+    use fiat_shamir_rv::{SessionId, VerifierState};
 
     /// The multilinear extension of `table` at `point`, folding the lowest variable first.
     fn mle(table: &[F192], point: &[F192]) -> F192 {

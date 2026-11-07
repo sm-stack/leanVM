@@ -192,7 +192,7 @@ mod tests {
         let bytes: Vec<u8> = block.iter().flat_map(|w| w.to_le_bytes()).collect();
         assert_eq!(
             blake2s_compress(&IV, &block, 64, true),
-            primitives::hash::digest_words(&primitives::hash::hash(&bytes))
+            primitives::blake2s::digest_words(&primitives::blake2s::hash(&bytes))
         );
     }
 

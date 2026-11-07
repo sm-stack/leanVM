@@ -1,9 +1,9 @@
 //! A tuple coordinate as a function of its block's row, and the public columns a coordinate reads.
 
 use crate::rec::FixedColumn;
-use fiat_shamir::VerifierState;
-use fiat_shamir::arith::{Arith, Native};
-use pcs::verifier::Recording;
+use fiat_shamir_rv::VerifierState;
+use fiat_shamir_rv::arith::{Arith, Native};
+use pcs_rv::verifier::Recording;
 use primitives::field::{F64, F192};
 use std::sync::{Arc, OnceLock};
 use zk::Recorder;

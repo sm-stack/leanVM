@@ -18,7 +18,7 @@ use crate::verifier::OpeningVerifier;
 use crate::whir::config::{Config, ConfigError};
 use crate::whir::query::Padding;
 use crate::whir::sumcheck::RoundQuad;
-use fiat_shamir::TranscriptError;
+use fiat_shamir_rv::TranscriptError;
 use primitives::field::F192;
 use thiserror::Error;
 

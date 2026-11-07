@@ -925,7 +925,7 @@ mod avx2 {
     use core::arch::x86_64::*;
     use std::sync::LazyLock;
 
-    use primitives::bit_fold::avx2::{self, Best, HALF, OUT_BYTES, Product};
+    use primitives::bit_fold_rv::avx2::{self, Best, HALF, OUT_BYTES, Product};
     use primitives::field::{F192, PHI8_TABLE};
 
     use super::{ELL, N_MEDIUM_VALUES, gamma_powers};
@@ -980,7 +980,7 @@ mod avx2 {
                 // SAFETY: the module is compiled only with AVX2 enabled.
                 let cf = unsafe { convert::<Best>(rows, &MAPS) };
                 for (acc, cf) in acc.as_chunks_mut::<4>().0.iter_mut().zip(cf.as_chunks::<4>().0) {
-                    for (acc, p) in acc.iter_mut().zip(F192::mul4(*cf, [eq_lo; 4])) {
+                    for (acc, p) in acc.iter_mut().zip(primitives::field::mul4(*cf, [eq_lo; 4])) {
                         *acc += p;
                     }
                 }
@@ -1013,7 +1013,7 @@ mod gfni {
     use core::arch::x86_64::*;
     use std::sync::OnceLock;
 
-    use primitives::bit_fold::gfni::{OUT_BYTES, store_f192, weight_matrices};
+    use primitives::bit_fold_rv::gfni::{OUT_BYTES, store_f192, weight_matrices};
     use primitives::field::{F64, F192, PHI8_TABLE};
 
     use super::{ELL, N_MEDIUM_VALUES, gamma_powers};
@@ -1057,8 +1057,8 @@ mod gfni {
                 .iter()
                 .zip(matrices.as_chunks_mut::<4>().0)
             {
-                for (t, m) in F192::mul4(*quad, [eq_lo; 4]).iter().zip(m) {
-                    *m = weight_matrices(&F192::mul_base8(*t, *units));
+                for (t, m) in primitives::field::mul4(*quad, [eq_lo; 4]).iter().zip(m) {
+                    *m = weight_matrices(&primitives::field::mul_base8(*t, *units));
                 }
             }
 
@@ -1101,11 +1101,11 @@ mod gfni {
 #[cfg(test)]
 pub(crate) mod tests {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "gfni"))]
-    use primitives::bit_fold::avx2::Gfni;
+    use primitives::bit_fold_rv::avx2::Gfni;
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    use primitives::bit_fold::avx2::{Product, Shuffle};
+    use primitives::bit_fold_rv::avx2::{Product, Shuffle};
     use primitives::multilinear::eq_table;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     use super::*;
     use crate::zerocheck::lde::AdditiveNttF8;

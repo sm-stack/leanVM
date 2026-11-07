@@ -19,9 +19,9 @@
 //!
 //! So the inner verifier may build rows of a circuit as well as check values, and both record the same system.
 
-use fiat_shamir::TranscriptError;
-use fiat_shamir::arith::{Arith, Verifier};
-use pcs::verifier::OpeningVerifier;
+use fiat_shamir_rv::TranscriptError;
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use pcs_rv::verifier::OpeningVerifier;
 use primitives::field::{F64, F192};
 
 /// An element as the recorder holds it.
@@ -612,9 +612,9 @@ impl<V: OpeningVerifier> OpeningVerifier for Recorder<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiat_shamir::arith::Native;
-    use fiat_shamir::{ProverState, SessionId, VerifierState};
-    use primitives::test_util::Rng;
+    use fiat_shamir_rv::arith::Native;
+    use fiat_shamir_rv::{ProverState, SessionId, VerifierState};
+    use primitives::test_rng::Rng;
 
     #[test]
     fn the_pulled_back_weights_are_the_weighted_rows() {

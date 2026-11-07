@@ -203,8 +203,8 @@ mod tests {
     use alloy_primitives::{B256, keccak256};
     use alloy_trie::proof::ProofRetainer;
     use alloy_trie::{HashBuilder, Nibbles};
-    use leanvm::{Machine, Program, Trap};
     use leanvm_guest::keccak;
+    use leanvm_rv::{Machine, Program, Trap};
     use proptest::prelude::*;
     use serde_json::Value;
     use stateproof::{Account, EMPTY_CODE_HASH, EMPTY_ROOT, ProofError};

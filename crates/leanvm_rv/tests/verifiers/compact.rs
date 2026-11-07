@@ -1,6 +1,6 @@
 //! Frozen Go-port fixtures, including adversarial opening lists and usage bits.
-use leanvm::aggregate::{Capacity, ClaimShape, LeafClass, LeafShape, ProgramClass, Tier, Tree, TreeShape};
-use leanvm::{PerTable, ProofTranscript, Rate, TableId};
+use leanvm_rv::aggregate::{Capacity, ClaimShape, LeafClass, LeafShape, ProgramClass, Tier, Tree, TreeShape};
+use leanvm_rv::{PerTable, ProofTranscript, Rate, TableId};
 use std::path::Path;
 
 #[test]
@@ -75,7 +75,7 @@ fn compact_class_key_differential_fixtures() {
 }
 
 fn verify_fixtures(dir: &Path, classes: &[LeafClass], shape: TreeShape) {
-    use leanvm::aggregate::{ClaimSet, TreeProof};
+    use leanvm_rv::aggregate::{ClaimSet, TreeProof};
     for line in std::fs::read_to_string(dir.join("verdicts.tsv"))
         .unwrap()
         .lines()

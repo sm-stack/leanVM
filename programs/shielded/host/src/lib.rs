@@ -253,7 +253,7 @@ impl Draw {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leanvm::{Machine, Program, Trap};
+    use leanvm_rv::{Machine, Program, Trap};
     use proptest::prelude::*;
     use shielded::SpendError;
 

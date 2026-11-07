@@ -1,5 +1,5 @@
 //! Prove a guest and verify its serialized proof with a standalone program key.
-use leanvm::{Program, Proof, Prover, Rate, VerifyingKey};
+use leanvm_rv::{Program, Proof, Prover, Rate, VerifyingKey};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elf = include_bytes!("../../../programs/fibonacci/fibonacci.elf");

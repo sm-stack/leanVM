@@ -18,9 +18,9 @@
 //! The prover never reads `c`: an honest witness has `c = a AND b`, which it derives from the bits it reads.
 //! A dishonest `c` changes nothing it sends, and the lincheck catches the claims (doc/leanvm Annex C).
 
-use fiat_shamir::arith::{Native, RoundWeight, Verifier};
-use fiat_shamir::{ProverState, TranscriptError};
-use primitives::bit_fold::BitFold;
+use fiat_shamir_rv::arith::{Native, RoundWeight, Verifier};
+use fiat_shamir_rv::{ProverState, TranscriptError};
+use primitives::bit_fold_rv::BitFold;
 use primitives::field::{F8, F192};
 use primitives::multilinear::fold_low_inplace;
 use thiserror::Error;
@@ -542,9 +542,9 @@ pub(crate) fn verify<V: Verifier>(log_ns: &[usize], v: &mut V) -> Result<Zeroche
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use fiat_shamir::{Encoding, FromNarg, ProofTranscript, SessionId, VerifierState};
+    use fiat_shamir_rv::{Encoding, FromNarg, ProofTranscript, SessionId, VerifierState};
     use primitives::multilinear::{eq_table, inner_product};
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     use super::*;
     use padding::tests::dense;

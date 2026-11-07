@@ -5,15 +5,15 @@ use super::{Claim, CpuError, DeferredClaims, Layout, Output, Program, ProgramPoi
 use crate::bus::{N_TUPLE_BITS, PublicColumns};
 use crate::constraints::ConstraintError;
 use crate::rv::{Region, RiscvProgram};
-use fiat_shamir::arith::{Arith, Verifier};
-use fiat_shamir::{ProverState, SessionId, VerifierState};
-use pcs::merkle::{Hash, Openings};
-use pcs::ring_switch::inverse_frobenius_ladder;
-use pcs::stack::{CommittedStack, StackClaim, StackCommitment, Statement};
-use pcs::verifier::{OpeningVerifier, Recording};
-use pcs::whir::Config;
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use fiat_shamir_rv::{ProverState, SessionId, VerifierState};
+use pcs_rv::merkle::{Hash, Openings};
+use pcs_rv::ring_switch::inverse_frobenius_ladder;
+use pcs_rv::stack::{CommittedStack, StackClaim, StackCommitment, Statement};
+use pcs_rv::verifier::{OpeningVerifier, Recording};
+use pcs_rv::whir::Config;
+use primitives::blake2s::Hasher;
 use primitives::field::{F64, F192};
-use primitives::hash::Hasher;
 use primitives::multilinear::mle_eval_par;
 
 /// The public key of a program, without its decoded bytecode or prover's commitment data.

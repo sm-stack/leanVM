@@ -156,8 +156,8 @@ mod tests {
     use super::*;
     use falcon::FalconVerifyError::{InvalidEncoding, InvalidPublicKey, TooLong};
     use falcon::{BODY_BYTES, N, Q, Shake256, ntt};
-    use leanvm::{Machine, Program, Trap};
-    use primitives::hash::{digest_words, hash};
+    use leanvm_rv::{Machine, Program, Trap};
+    use primitives::blake2s::{digest_words, hash};
     use proptest::prelude::*;
     use std::collections::HashMap;
 

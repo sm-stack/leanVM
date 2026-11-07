@@ -1,7 +1,7 @@
 //! Fixed mobile workloads, timed by mobench without a nested benchmark harness.
 
-use leanvm::aggregate::{Leaf, LeafShape, Tree, TreeShape};
-use leanvm::{Output, Program, ProvenRun, Prover, Rate};
+use leanvm_rv::aggregate::{Leaf, LeafShape, Tree, TreeShape};
+use leanvm_rv::{Output, Program, ProvenRun, Prover, Rate};
 use mobench_sdk::registry::BenchFunction;
 use mobench_sdk::timing::{BenchReport, BenchSpec, TimingError};
 use std::cell::RefCell;

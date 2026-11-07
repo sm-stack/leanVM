@@ -3,9 +3,9 @@
 //! The files are built by `programs/build.sh` and checked in, the target needing a
 //! nightly toolchain.
 
-use leanvm::{ElfError, Guest, Machine, Program, ProvenRun, Prover, Rate, Region};
 use leanvm_guest::PublicValues;
-use primitives::hash::{digest_words, hash};
+use leanvm_rv::{ElfError, Guest, Machine, Program, ProvenRun, Prover, Rate, Region};
+use primitives::blake2s::{digest_words, hash};
 
 /// The output of a guest committing `values` in order.
 fn committed(values: &[&[u64]]) -> [u64; 4] {

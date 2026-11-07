@@ -36,7 +36,7 @@
 
 use crate::SessionId;
 use crate::codec::{Encoding, FromUniform};
-use primitives::hash::{PARAM_IV, compress};
+use primitives::blake2s::{PARAM_IV, compress};
 
 /// The role of a node, in the top byte of its compression counter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -13,7 +13,7 @@
 //!
 //! Every value here lies in `K`.
 
-use fiat_shamir::arith::Arith;
+use fiat_shamir_rv::arith::Arith;
 use primitives::field::{F64, F192};
 
 /// The subspace polynomials of a domain of `2^log_n` points, and their normalizers.
@@ -133,7 +133,7 @@ pub(super) fn subset_sum(entries: &[F64], index: usize) -> F64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiat_shamir::arith::Native;
+    use fiat_shamir_rv::arith::Native;
 
     #[test]
     fn the_table_and_the_recurrence_agree() {

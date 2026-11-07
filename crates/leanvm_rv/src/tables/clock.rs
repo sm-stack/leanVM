@@ -269,7 +269,7 @@ mod tests {
     use flock::lincheck::LincheckCircuit;
     use flock::test_util::Witness;
     use primitives::field::F192;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn the_clock_circuit_is_its_reference() {

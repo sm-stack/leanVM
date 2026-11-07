@@ -4,9 +4,9 @@
 use super::*;
 use crate::bus::PublicColumn;
 use crate::rec::fixed::FixedColumn;
-use fiat_shamir::TranscriptError;
-use fiat_shamir::arith::Arith;
-use pcs::merkle::Hash;
+use fiat_shamir_rv::TranscriptError;
+use fiat_shamir_rv::arith::Arith;
+use pcs_rv::merkle::Hash;
 use primitives::multilinear::mle_eval_par;
 
 pub(crate) struct FixedEvaluation {

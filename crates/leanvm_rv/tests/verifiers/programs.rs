@@ -1,8 +1,8 @@
 //! RISC-V programs, proven and checked by the native verifier.
 
-use fiat_shamir::TranscriptError;
-use leanvm::asm::*;
-use leanvm::{
+use fiat_shamir_rv::TranscriptError;
+use leanvm_rv::asm::*;
+use leanvm_rv::{
     BusError, CpuError, Hash, Machine, N_TABLES, Output, Program, Proof, ProveError, ProvenRun, Prover, Rate, Region,
     Trap, UNGROUND_LOG_BYTECODE,
 };
@@ -236,7 +236,7 @@ fn blake2s_precompile_proves_and_verifies() {
             .map(|w| u64::from_le_bytes(w.try_into().unwrap()))
             .collect()
     };
-    let iv: Vec<u64> = primitives::hash::PARAM_IV
+    let iv: Vec<u64> = primitives::blake2s::PARAM_IV
         .chunks(2)
         .map(|w| w[0] as u64 | (w[1] as u64) << 32)
         .collect();
@@ -266,7 +266,7 @@ fn blake2s_precompile_proves_and_verifies() {
     }
     let program =
         Program::new(&a.exit().finish(), Region::TEXT.base(), image, 7, 0).expect("valid instruction program");
-    let expected: [u64; 4] = words(&primitives::hash::hash(&data))[..4].try_into().unwrap();
+    let expected: [u64; 4] = words(&primitives::blake2s::hash(&data))[..4].try_into().unwrap();
     proves_and_verifies("blake2s", &program, expected);
 
     // A block pointer that is no word address traps, like a misaligned load.

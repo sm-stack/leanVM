@@ -11,7 +11,7 @@
 use crate::merkle::{Hash, MerkleBuilder, MerkleTree, sorted_unique};
 use crate::ntt::{AdditiveNtt, Pad, transpose_lane_major};
 use crate::whir::query::Padding;
-use fiat_shamir::ProverState;
+use fiat_shamir_rv::ProverState;
 use primitives::field::{F64, F192};
 use std::sync::Arc;
 

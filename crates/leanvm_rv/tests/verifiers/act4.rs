@@ -5,10 +5,10 @@
 //! `conformance/act4/elf/`, or `LEANVM_ACT4` names another directory, which is how CI runs
 //! them. Run on the interpreter, proven, and checked by the native verifier. A test exits
 //! with the output zero when every check passes. Both tests are `#[ignore]`d, since
-//! they need the generated files: `cargo test --release -p leanvm --test verifiers
+//! they need the generated files: `cargo test --release -p leanvm_rv --test verifiers
 //! -- --ignored act4`.
 
-use leanvm::{Guest, Machine, Program, ProvenRun, Prover, Rate, Region, Trap};
+use leanvm_rv::{Guest, Machine, Program, ProvenRun, Prover, Rate, Region, Trap};
 use std::path::{Path, PathBuf};
 
 /// Every test of the two suites, as `(extension, instruction)`, the file being

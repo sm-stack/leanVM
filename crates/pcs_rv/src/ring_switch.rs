@@ -36,9 +36,9 @@
 //! - It moves the Frobenius onto the opening's point (`rs:cost`), so one ladder per coordinate serves every claim.
 //! - Claims whose points are prefixes of one another share one pass of products.
 
-use fiat_shamir::Challenger;
-use fiat_shamir::arith::{Arith, Verifier};
-use primitives::bit_fold::{BLOCK, F192Map, Sliced};
+use fiat_shamir_rv::Challenger;
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use primitives::bit_fold_rv::{BLOCK, F192Map, Sliced};
 use primitives::field::{F64, F192};
 use primitives::multilinear::{EQ_PAR_LEN, eq_table, eq_table_seeded};
 use std::cmp::Reverse;
@@ -678,9 +678,9 @@ impl<'a, E: PartialEq> PrefixGroup<'a, E> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use fiat_shamir::arith::Native;
+    use fiat_shamir_rv::arith::Native;
     use primitives::multilinear::{eq_eval, inner_product, inner_product_base};
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
     use std::collections::HashSet;
 
     /// The total degree of `C_63`, the largest of the map's monomials in its six challenges.

@@ -16,13 +16,13 @@ use crate::bus::PublicColumns;
 use crate::commitment::{Commitment, Committed, Rate, StackClaim};
 use crate::constraints::{Columns, ConstraintError};
 use crate::{constraints, stacking};
-use fiat_shamir::arith::Verifier;
-use fiat_shamir::{LengthPrefixed, ProofTranscript, ProverState, SessionId, VerifierState};
+use fiat_shamir_rv::arith::Verifier;
+use fiat_shamir_rv::{LengthPrefixed, ProofTranscript, ProverState, SessionId, VerifierState};
 use flock::FlockError;
 use flock::lincheck::MatrixClaim;
 use flock::reduction;
-use pcs::merkle::Openings;
-use pcs::verifier::{OpeningVerifier, Recording};
+use pcs_rv::merkle::Openings;
+use pcs_rv::verifier::{OpeningVerifier, Recording};
 use primitives::field::{F64, F192};
 use std::mem::MaybeUninit;
 use tracing::info_span;
@@ -290,7 +290,7 @@ mod tests {
     use crate::commitment::{self, Rate};
     use crate::constraints::ConstraintError;
     use crate::rec::circuit::{Builder, Dw, Ew, Finished, Kw, PARAM_IV};
-    use fiat_shamir::arith::Arith;
+    use fiat_shamir_rv::arith::Arith;
     use std::panic::AssertUnwindSafe;
 
     fn session() -> SessionId {

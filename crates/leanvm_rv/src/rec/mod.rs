@@ -15,10 +15,10 @@ pub(crate) use fixed::FixedColumn;
 
 use crate::bus::BusError;
 use crate::constraints::ConstraintError;
-use fiat_shamir::TranscriptError;
+use fiat_shamir_rv::TranscriptError;
 use flock::FlockError;
 use layout::RecLayout;
-use pcs::whir::WhirError;
+use pcs_rv::whir::WhirError;
 use table::Table;
 use thiserror::Error;
 

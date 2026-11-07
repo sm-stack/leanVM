@@ -7,8 +7,8 @@
 
 use crate::merkle::{Hash, Openings, PrunedMerklePaths, sorted_unique};
 use crate::whir::sample_queries;
-use fiat_shamir::arith::{Arith, Verifier};
-use fiat_shamir::{TranscriptError, VerifierState};
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use fiat_shamir_rv::{TranscriptError, VerifierState};
 use primitives::field::{F64, F192};
 
 /// A verifier of the stacked opening: its commitments, its queries, and the rows they open.

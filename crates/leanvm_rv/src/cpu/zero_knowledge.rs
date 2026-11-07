@@ -37,13 +37,13 @@ use crate::bus::{self, N_TUPLE_BITS, PublicColumns, SparseColumn};
 use crate::commitment::{Commitment, Committed, Rate};
 use crate::constraints::ConstraintError;
 use crate::tables::{CircuitId, Clock, N_CIRCUITS};
-use fiat_shamir::arith::Native;
-use fiat_shamir::arith::{Arith, Verifier};
-use fiat_shamir::{ProofTranscript, ProverState, VerifierState};
+use fiat_shamir_rv::arith::Native;
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use fiat_shamir_rv::{ProofTranscript, ProverState, VerifierState};
 use flock::FlockError;
 use flock::lincheck::{LincheckError, MatrixForm};
-use pcs::merkle::Hash;
-use pcs::verifier::OpeningVerifier;
+use pcs_rv::merkle::Hash;
+use pcs_rv::verifier::OpeningVerifier;
 use primitives::field::{F64, F192};
 use std::ops::Range;
 use tracing::info_span;
@@ -407,7 +407,7 @@ mod tests {
     use crate::rv::asm::{Addi, Asm, Reg};
     use crate::rv::{Region, RegisterFile};
     use crate::tables::TableId;
-    use pcs::whir::WhirError;
+    use pcs_rv::whir::WhirError;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use zk::Randomness;
 

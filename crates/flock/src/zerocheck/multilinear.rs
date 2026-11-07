@@ -29,7 +29,7 @@ use std::mem::MaybeUninit;
 use std::ops::{Add, Mul};
 
 use parallel::ChunkView;
-use primitives::bit_fold::{BLOCK, BitFold};
+use primitives::bit_fold_rv::{BLOCK, BitFold};
 use primitives::field::{F192, F192Unreduced};
 use primitives::multilinear::{SplitEq, eq_table};
 use primitives::stream::Stream;
@@ -59,7 +59,7 @@ const MIN_EQ_LO_VARS: usize = (BLOCK / 4).trailing_zeros() as usize;
 fn mul_quad(a: (F192, F192, F192, F192), b: (F192, F192, F192, F192)) -> (F192, F192, F192, F192) {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
     {
-        let r = F192::mul4([a.0, a.1, a.2, a.3], [b.0, b.1, b.2, b.3]);
+        let r = primitives::field::mul4([a.0, a.1, a.2, a.3], [b.0, b.1, b.2, b.3]);
         (r[0], r[1], r[2], r[3])
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2")))]
@@ -74,7 +74,7 @@ fn mul_quad_unreduced(
 ) -> (F192Unreduced, F192Unreduced, F192Unreduced, F192Unreduced) {
     #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
     {
-        let r = F192::mul_unreduced4([a.0, a.1, a.2, a.3], [b.0, b.1, b.2, b.3]);
+        let r = primitives::field::mul_unreduced4([a.0, a.1, a.2, a.3], [b.0, b.1, b.2, b.3]);
         (r[0], r[1], r[2], r[3])
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2")))]
@@ -731,12 +731,12 @@ fn copy_group(tables: [&mut [MaybeUninit<F192>]; 3], head: usize, group_len: usi
 mod planar {
     use core::arch::x86_64::__m512i;
 
-    use primitives::bit_fold::{BLOCK, BitFold};
+    use primitives::bit_fold_rv::{BLOCK, BitFold};
     use primitives::field::{F192, F192Unreduced};
-    use primitives::field::{F192x8, F192x8Sum};
+    use primitives::field::{F192x8Zmm, F192x8ZmmSum};
 
     /// The eq table, eight consecutive weights a packing, one register per coefficient.
-    pub(super) fn planes(values: &[F192]) -> Vec<F192x8> {
+    pub(super) fn planes(values: &[F192]) -> Vec<F192x8Zmm> {
         let (groups, rest) = values.as_chunks::<8>();
         assert!(rest.is_empty(), "whole groups of eight");
         groups
@@ -745,7 +745,7 @@ mod planar {
                 // SAFETY: eight words are one register, and any bit pattern is a valid one.
                 let plane =
                     |k: fn(&F192) -> u64| unsafe { core::mem::transmute::<[u64; 8], __m512i>(g.each_ref().map(k)) };
-                F192x8([plane(|e| e.c0), plane(|e| e.c1), plane(|e| e.c2)])
+                F192x8Zmm([plane(|e| e.c0), plane(|e| e.c1), plane(|e| e.c2)])
             })
             .collect()
     }
@@ -771,10 +771,10 @@ mod planar {
         fold: &BitFold,
         rows: [&[[u8; CHUNKS]]; 2],
         quad_first: usize,
-        eq: &[F192x8],
+        eq: &[F192x8Zmm],
         live: impl Fn(usize) -> bool,
     ) -> [F192Unreduced; 8] {
-        let mut acc = [F192x8Sum::zero(); 8];
+        let mut acc = [F192x8ZmmSum::zero(); 8];
         // Sixteen quads per folded block, two packings of eight.
         for (b, eq) in eq.as_chunks::<2>().0.iter().enumerate() {
             let q0 = quad_first + (BLOCK / 4) * b;
@@ -792,7 +792,7 @@ mod planar {
 
             for (g, &e) in eq.iter().enumerate() {
                 // Position `uv` of the eight quads `8g ..`, as one packing.
-                let at = |p: &[[__m512i; 8]; 3], uv: usize| F192x8(p.each_ref().map(|plane| plane[uv + 4 * g]));
+                let at = |p: &[[__m512i; 8]; 3], uv: usize| F192x8Zmm(p.each_ref().map(|plane| plane[uv + 4 * g]));
                 let [a0, a1, a2, a3] = [0, 1, 2, 3].map(|uv| e.mul(at(&pa, uv)));
                 let [b0, b1, b2, b3] = [0, 1, 2, 3].map(|uv| at(&pb, uv));
                 let [c1, c2, c3] = [1, 2, 3].map(|uv| at(&pc, uv));
@@ -827,7 +827,7 @@ mod tests {
     use crate::zerocheck::tests::{fold_at_z, honest};
     use crate::zerocheck::{K_SKIP, SkipDomain};
     use primitives::multilinear::fold_low_inplace;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     /// The two packed witnesses as the passes read them.
     fn packed(p: &[Vec<u8>; 2]) -> PackedWitness<'_> {

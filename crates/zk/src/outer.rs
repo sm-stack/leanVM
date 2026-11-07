@@ -36,11 +36,11 @@
 use crate::randomness::{Purpose, Seed};
 use crate::record::{Record, Recorder, SparseWeights};
 use crate::spartan::{self, Claims, log_rows, mask_len};
-use fiat_shamir::arith::{Arith, Native};
-use fiat_shamir::{ProverState, TranscriptError};
-use pcs::stack::{CommittedStack, StackCommitment, Weighted};
-use pcs::verifier::OpeningVerifier;
-use pcs::whir::{Config, INITIAL_FOLDING_FACTOR, MIN_LOG_N_HIDING, WhirError};
+use fiat_shamir_rv::arith::{Arith, Native};
+use fiat_shamir_rv::{ProverState, TranscriptError};
+use pcs_rv::stack::{CommittedStack, StackCommitment, Weighted};
+use pcs_rv::verifier::OpeningVerifier;
+use pcs_rv::whir::{Config, INITIAL_FOLDING_FACTOR, MIN_LOG_N_HIDING, WhirError};
 use primitives::field::{F64, F192};
 use rand_core::RngCore;
 use thiserror::Error;
@@ -385,9 +385,9 @@ fn word_weights<W: Copy, E: Copy>(weights: &[W], zero: E, mut spread: impl FnMut
 mod tests {
     use super::*;
     use crate::randomness::Randomness;
-    use fiat_shamir::{ProofTranscript, SessionId, VerifierState};
-    use pcs::merkle::Hash;
-    use primitives::test_util::Rng;
+    use fiat_shamir_rv::{ProofTranscript, SessionId, VerifierState};
+    use pcs_rv::merkle::Hash;
+    use primitives::test_rng::Rng;
 
     const SESSION: &[u8] = b"outer-test";
 

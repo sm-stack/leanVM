@@ -484,7 +484,8 @@ mod lanes {
 
         #[inline(always)]
         fn xor3(self, b: Self, c: Self) -> Self {
-            Self(xor3_u64(self.0, b.0, c.0))
+            // SAFETY: NEON is part of the aarch64 baseline; registers only.
+            Self(unsafe { xor3_u64(self.0, b.0, c.0) })
         }
     }
 
@@ -928,7 +929,7 @@ impl WeightFold {
 mod tests {
     use super::*;
     use crate::whir::DenseWeight;
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn grid_extension_products_match_scalar_definition() {

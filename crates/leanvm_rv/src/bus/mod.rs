@@ -11,8 +11,8 @@
 
 use crate::gkr;
 use crate::gkr::GkrError;
-use fiat_shamir::arith::Verifier;
-use fiat_shamir::{ProverState, TranscriptError};
+use fiat_shamir_rv::arith::Verifier;
+use fiat_shamir_rv::{ProverState, TranscriptError};
 use primitives::field::{F64, F192, F192Unreduced, Weights8, dot_base};
 use primitives::multilinear::eq_table;
 use std::collections::HashMap;
@@ -507,7 +507,7 @@ pub(crate) mod tests {
     use crate::cpu::{Layout, Lookup, Program, UNGROUND_LOG_BYTECODE};
     use crate::rv::Region;
     use crate::tables::PerTable;
-    use fiat_shamir::{ProverState, SessionId, VerifierState};
+    use fiat_shamir_rv::{ProverState, SessionId, VerifierState};
     use std::collections::HashMap;
     use std::sync::Arc;
 

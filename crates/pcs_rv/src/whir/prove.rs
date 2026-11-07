@@ -17,7 +17,7 @@ use crate::whir::commit::{BaseCommitment, LevelCommitment};
 use crate::whir::config::Config;
 use crate::whir::query::{Padding, QueryBatch, sample_queries};
 use crate::whir::sumcheck::{InitialWeight, NextRound, SumcheckProver};
-use fiat_shamir::ProverState;
+use fiat_shamir_rv::ProverState;
 use primitives::field::{F64, F192};
 use primitives::multilinear::eq_table;
 

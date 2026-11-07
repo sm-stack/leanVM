@@ -28,14 +28,14 @@
 //! may be accumulated along the way or deferred to the end.
 //!
 //! The eq point is the caller's, not a fresh one (the bus's GKR point `ζ`), which
-//! is what lets the forms' sums settle the bus. Batching derived in `doc/leanvm/main.tex`
+//! is what lets the forms' sums settle the bus. Batching derived in `doc/leanvm-rv/main.tex`
 //! §sec:air. Both sides take `n = max τ_t` from the announced heights, so there
 //! are no rounds in which no table has joined.
 
 use crate::PAR_THRESHOLD;
-use fiat_shamir::arith::RoundWeight;
-use fiat_shamir::arith::{Arith, Verifier};
-use fiat_shamir::{ProverState, TranscriptError, VerifierState};
+use fiat_shamir_rv::arith::RoundWeight;
+use fiat_shamir_rv::arith::{Arith, Verifier};
+use fiat_shamir_rv::{ProverState, TranscriptError, VerifierState};
 use parallel::ChunkView;
 use primitives::field::{F64, F192, F192Unreduced, Subfield, padded_width};
 use primitives::multilinear::{SplitEq, eq_table, poly_eval, shrink_eq_high};
@@ -904,9 +904,9 @@ mod rows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiat_shamir::{ProofTranscript, SessionId};
+    use fiat_shamir_rv::{ProofTranscript, SessionId};
     use primitives::multilinear::{fold_high_inplace, fold_high_k, mle_eval};
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
     use proptest::prelude::*;
 
     impl Final {

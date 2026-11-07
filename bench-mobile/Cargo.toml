@@ -18,7 +18,7 @@ name = "mobile-bench-smoke"
 path = "src/bin/smoke.rs"
 
 [dependencies]
-leanvm = { path = "../crates/leanvm_core" }
+leanvm_rv = { path = "../crates/leanvm_rv" }
 parallel = { path = "../crates/parallel" }
 shielded-host = { path = "../programs/shielded/host" }
 falcon-host = { path = "../programs/falcon/host" }

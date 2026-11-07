@@ -20,10 +20,10 @@ use crate::rv::{ElfError, Guest, Machine, ProgramError, Region, RiscvProgram};
 use crate::stacking::StackShape;
 use crate::tables::{CircuitId, ClassTable, Clock, PerTable, TableId};
 use crate::{bus, constraints};
-use fiat_shamir::arith::Native;
-use fiat_shamir::{ProverState, SessionId};
+use fiat_shamir_rv::arith::Native;
+use fiat_shamir_rv::{ProverState, SessionId};
 use flock::reduction;
-use pcs::merkle::Openings;
+use pcs_rv::merkle::Openings;
 use primitives::field::{F64, F192};
 use std::cmp::Reverse;
 use std::sync::Arc;
@@ -157,7 +157,7 @@ impl Program {
         log_ram: usize,
         log_advice: usize,
         image_words: usize,
-        root: pcs::merkle::Hash,
+        root: pcs_rv::merkle::Hash,
     ) -> Result<Self, ProgramError> {
         let rv = self.rv.padded(log_bytecode, log_ram, log_advice, image_words)?;
         let key = VerifyingKey::new(root, Sizes::of(&rv), rv.entry_pc(), rv.image().to_vec());

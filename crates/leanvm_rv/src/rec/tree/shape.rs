@@ -5,7 +5,7 @@ use super::{Capacity, Kind, TreeError};
 use crate::commitment::Rate;
 use crate::cpu::{Announcement, DecodeError, Proof, ProofKind, Stats};
 use crate::tables::{N_TABLES, PerTable};
-use fiat_shamir::FromNarg;
+use fiat_shamir_rv::FromNarg;
 use primitives::field::F192;
 
 /// The shape every leaf proof of a tree shares.

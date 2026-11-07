@@ -6,8 +6,19 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[lints]
-workspace = true
+# The RISC-V crates' lints, the same in each of their manifests.
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+semicolon_if_nothing_returned = "warn"
+match_bool = "warn"
+needless_pass_by_value = "warn"
+redundant_pub_crate = "allow"
+too_long_first_doc_paragraph = "allow"
+unused_peekable = "allow"
+tuple_array_conversions = "allow"
+transmute_undefined_repr = "allow"
+cognitive_complexity = "allow"
 
 [dependencies]
 falcon = { path = "../guest" }
@@ -16,6 +27,6 @@ parallel.workspace = true
 tide-fn-dsa = "0.4"
 
 [dev-dependencies]
-leanvm.workspace = true
+leanvm_rv.workspace = true
 primitives.workspace = true
 proptest.workspace = true

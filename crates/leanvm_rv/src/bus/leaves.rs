@@ -145,8 +145,8 @@ fn fill_tuple(
             debug_assert!(tail.is_empty() && products.len() == 2 * groups.len());
             for ((g, out), pair) in groups.iter_mut().enumerate().zip(products.as_chunks_mut::<2>().0) {
                 let l = rows8(base + 8 * g);
-                let [a, b, c, d] = F192::mul4([l[0], l[2], l[4], l[6]], [l[1], l[3], l[5], l[7]]);
-                pair.write_copy_of_slice(&F192::mul2([a, c], [b, d]));
+                let [a, b, c, d] = primitives::field::mul4([l[0], l[2], l[4], l[6]], [l[1], l[3], l[5], l[7]]);
+                pair.write_copy_of_slice(&primitives::field::mul2([a, c], [b, d]));
                 out.write_copy_of_slice(&l);
             }
         } else {

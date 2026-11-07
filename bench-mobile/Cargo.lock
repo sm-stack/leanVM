@@ -81,7 +81,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fiat_shamir"
+name = "fiat_shamir_rv"
 version = "0.1.0"
 dependencies = [
  "parallel",
@@ -99,9 +99,9 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 name = "flock"
 version = "0.1.0"
 dependencies = [
- "fiat_shamir",
+ "fiat_shamir_rv",
  "parallel",
- "pcs",
+ "pcs_rv",
  "primitives",
  "thiserror 2.0.21",
  "tracing",
@@ -145,27 +145,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "leanvm"
-version = "0.1.0"
-dependencies = [
- "fiat_shamir",
- "flock",
- "parallel",
- "pcs",
- "primitives",
- "rand_core 0.9.5",
- "thiserror 2.0.21",
- "tracing",
- "zk",
-]
-
-[[package]]
 name = "leanvm-mobile-bench"
 version = "0.1.0"
 dependencies = [
  "falcon-host",
  "inventory",
- "leanvm",
+ "leanvm_rv",
  "mobench-sdk",
  "parallel",
  "serde_json",
@@ -176,6 +161,22 @@ dependencies = [
 [[package]]
 name = "leanvm_guest"
 version = "0.1.0"
+
+[[package]]
+name = "leanvm_rv"
+version = "0.1.0"
+dependencies = [
+ "fiat_shamir_rv",
+ "flock",
+ "leanvm_guest",
+ "parallel",
+ "pcs_rv",
+ "primitives",
+ "rand_core 0.9.5",
+ "thiserror 2.0.21",
+ "tracing",
+ "zk",
+]
 
 [[package]]
 name = "libc"
@@ -228,10 +229,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "pcs"
+name = "pcs_rv"
 version = "0.1.0"
 dependencies = [
- "fiat_shamir",
+ "fiat_shamir_rv",
  "parallel",
  "primitives",
  "rand_core 0.9.5",
@@ -680,8 +681,8 @@ dependencies = [
 name = "zk"
 version = "0.1.0"
 dependencies = [
- "fiat_shamir",
- "pcs",
+ "fiat_shamir_rv",
+ "pcs_rv",
  "primitives",
  "rand_chacha",
  "rand_core 0.9.5",

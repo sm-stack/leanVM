@@ -2,14 +2,14 @@
 //! Both existing witness paths use exactly 16 pool threads including the dispatcher.
 //!
 //! ```text
-//! BENCH_REPEAT=5 BENCH_COOLDOWN=0 cargo bench -p leanvm --bench class_witness
+//! BENCH_REPEAT=5 BENCH_COOLDOWN=0 cargo bench -p leanvm_rv --bench class_witness
 //! ```
 
 use bench::Plan;
 use flock::BatchRows;
 use flock::test_util::Witness;
-use leanvm::{Fill, TableId};
-use primitives::test_util::Rng;
+use leanvm_rv::{Fill, TableId};
+use primitives::test_rng::Rng;
 use std::num::NonZeroUsize;
 
 #[global_allocator]

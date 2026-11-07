@@ -18,9 +18,9 @@
 //!
 //! This is the eq-weighted MLE-check of the Binius64 construction.
 
-use fiat_shamir::ProverState;
-use fiat_shamir::TranscriptError;
-use fiat_shamir::arith::{Arith, Native, RoundWeight, Verifier};
+use fiat_shamir_rv::ProverState;
+use fiat_shamir_rv::TranscriptError;
+use fiat_shamir_rv::arith::{Arith, Native, RoundWeight, Verifier};
 use primitives::field::F192;
 use primitives::multilinear::{eq_table, fold_low_inplace};
 
@@ -188,8 +188,8 @@ fn mask_weight<A: Arith>(ar: &mut A, r: &[A::E]) -> Vec<A::E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fiat_shamir::{ProofTranscript, SessionId, VerifierState};
-    use primitives::test_util::Rng;
+    use fiat_shamir_rv::{ProofTranscript, SessionId, VerifierState};
+    use primitives::test_rng::Rng;
 
     /// A random satisfied system of `n` rows, as its three sides.
     fn sides(rng: &mut Rng, n: usize) -> [Vec<F192>; 3] {

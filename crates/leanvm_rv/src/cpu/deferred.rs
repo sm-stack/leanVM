@@ -19,7 +19,7 @@ use crate::bus::{BusVerify, N_TUPLE_BITS, SparseColumn};
 use crate::constraints::{ConstraintError, Final};
 use crate::rv::RiscvProgram;
 use crate::tables::{CircuitId, N_CIRCUITS, N_TABLES, Part};
-use fiat_shamir::arith::Arith;
+use fiat_shamir_rv::arith::Arith;
 use flock::FlockError;
 use flock::lincheck::{LincheckError, MatrixClaim, MatrixForm};
 use primitives::field::F192;
@@ -252,7 +252,7 @@ mod tests {
     use crate::rv::Region;
     use crate::rv::asm::*;
     use primitives::multilinear::{eq_table, mle_eval};
-    use primitives::test_util::Rng;
+    use primitives::test_rng::Rng;
 
     #[test]
     fn the_twisted_bytecode_claim_is_the_per_bit_claims() {

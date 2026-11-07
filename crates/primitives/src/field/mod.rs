@@ -8,6 +8,9 @@
 //! - [`F64`]: GF(2^64), polynomial x^64 + x^4 + x^3 + x + 1
 //! - [`F192`]: `K[y]/(y^3 + y + 1)`
 //! - [`F192Unreduced`]: its deferred-reduction accumulator, for full and mixed products alike
+//! - [`F8`]: `GF(2^8)` modulo the AES polynomial `x^8 + x^4 + x^3 + x + 1`, embedded in `E` as a subfield
+//! - [`Subfield`]: `K` and `E` behind one interface
+//! - [`lanes::Lanes`]: elements of `E` in vector registers, so one kernel serves every target
 
 #[cfg(target_arch = "aarch64")]
 pub mod neon;
@@ -15,6 +18,9 @@ pub mod neon;
 pub mod f192x8;
 pub mod gf2_64;
 pub mod gf2_64x3;
+pub mod gf2_8;
+pub mod lanes;
+mod subfield;
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
@@ -29,8 +35,21 @@ pub use f192x8::{
     Acc8, F64x8, F192x8, Prod8, fold_lones8_ext, fold_pairs8_ext, msg_lone8_ext, msg_terms8_ext, mul_base_splat8,
     xor_into8,
 };
+pub use gf2_8::{F8, PHI8_TABLE};
 pub use gf2_64::F64;
-pub use gf2_64x3::{F192, F192Unreduced, Weights8, dot_base, mul_unreduced4, mul2, mul4};
+pub use gf2_64x3::{F192, F192Unreduced, Weights8, dot_base, mul_base8, mul_unreduced4, mul2, mul4};
+#[cfg(any(
+    all(target_arch = "aarch64", target_feature = "aes"),
+    all(target_arch = "x86_64", target_feature = "pclmulqdq")
+))]
+pub use gf2_64x3::{F192x1, F192x1Unreduced};
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
+pub use gf2_64x3::{F192x4, F192x4Unreduced, MixedSums8};
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+pub use gf2_64x3::{F192x8Zmm, F192x8ZmmSum};
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+pub use subfield::PackedCoeffs;
+pub use subfield::{Subfield, padded_width};
 
 // ---------------------------------------------------------------------------
 // leanVM g-power helpers: domain separators / opcodes as x^k, and the g-power

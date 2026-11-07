@@ -6,6 +6,7 @@
 //! (`x86_64::mul`, `aarch64::mul_shift_tail`), which fold it with two more carry-less multiplications by `0x1B`
 //! and so never leave the vector register.
 
+use core::iter::Sum;
 use core::ops::{Add, AddAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
@@ -23,10 +24,39 @@ impl F64 {
     pub const ONE: Self = Self(1);
     /// `x`, with `ord(x) = 2^64 - 1`.
     pub const G: Self = Self(2);
+    /// Degree over GF(2), the number of binary coefficients in one element.
+    pub const DEGREE: usize = 64;
 
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
+    }
+
+    /// The elements as their bit vectors: bit `i` of a word is the coefficient of `x^i`.
+    #[inline]
+    pub const fn as_bits(elements: &[Self]) -> &[u64] {
+        // SAFETY: `F64` is `repr(transparent)` over `u64`.
+        unsafe { core::slice::from_raw_parts(elements.as_ptr().cast::<u64>(), elements.len()) }
+    }
+
+    /// The elements as mutable bit vectors.
+    #[inline]
+    pub const fn as_bits_mut(elements: &mut [Self]) -> &mut [u64] {
+        // SAFETY: `F64` is `repr(transparent)` over `u64`, and every `u64` is a valid `F64`.
+        unsafe { core::slice::from_raw_parts_mut(elements.as_mut_ptr().cast::<u64>(), elements.len()) }
+    }
+
+    /// `self^exp`, by square-and-multiply.
+    pub fn pow(self, mut exp: u64) -> Self {
+        let (mut base, mut acc) = (self, Self::ONE);
+        while exp > 0 {
+            if exp & 1 == 1 {
+                acc *= base;
+            }
+            base = base.square();
+            exp >>= 1;
+        }
+        acc
     }
 
     /// Squaring, as a bit spread followed by one reduction.
@@ -135,6 +165,13 @@ impl Add for F64 {
     }
 }
 
+impl Sum for F64 {
+    #[inline]
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, Add::add)
+    }
+}
+
 #[allow(clippy::suspicious_op_assign_impl)]
 impl AddAssign for F64 {
     #[inline]
@@ -192,7 +229,7 @@ pub fn mul_wide(a: u64, b: u64) -> u128 {
         all(target_arch = "x86_64", target_feature = "pclmulqdq")
     )))]
     {
-        software::clmul(a, b)
+        software::clmul_fast(a, b)
     }
 }
 
@@ -204,9 +241,23 @@ pub fn square_wide(a: u64) -> u128 {
         // SAFETY: bmi2 is enabled at compile time.
         unsafe { x86_64::spread(a) }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    #[cfg(all(
+        not(all(target_arch = "x86_64", target_feature = "bmi2")),
+        any(
+            all(target_arch = "aarch64", target_feature = "aes"),
+            all(target_arch = "x86_64", target_feature = "pclmulqdq")
+        )
+    ))]
     {
         mul_wide(a, a)
+    }
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_feature = "bmi2"),
+        all(target_arch = "aarch64", target_feature = "aes"),
+        all(target_arch = "x86_64", target_feature = "pclmulqdq")
+    )))]
+    {
+        software::spread(a)
     }
 }
 
@@ -344,6 +395,30 @@ pub mod aarch64 {
         }
     }
 
+    /// [`reduce_pair_pmull4`] for products whose high words are below `2^60`, as a factor below `2^61` leaves.
+    ///
+    /// Then `hi * 0x1B` fits lane 0, so the second fold is zero and is skipped: five instructions for the pair.
+    ///
+    /// # Safety
+    /// Requires the `aes` target feature; see [`pmull`].
+    #[inline]
+    #[target_feature(enable = "aes")]
+    pub unsafe fn reduce_pair_pmull2(p0: uint64x2_t, p1: uint64x2_t) -> uint64x2_t {
+        // SAFETY: function carries the aes target feature.
+        unsafe {
+            let r = vdupq_n_u64(R64);
+            let (mut e0, mut e1) = (veorq_u64(p0, pmull_hi(p0, r)), veorq_u64(p1, pmull_hi(p1, r)));
+            // Why: as in `reduce_pair_pmull4`, only lane 0 of each sum survives the zip.
+            core::arch::asm!(
+                "/* {0:v} {1:v} */",
+                inout(vreg) e0,
+                inout(vreg) e1,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+            vzip1q_u64(e0, e1)
+        }
+    }
+
     /// The default `Mul` kernel on aarch64. 3-PMULL multiply: product, then two
     /// PMULL-by-0x1B folds, the second taking the first's ≤4-bit overflow
     /// exactly (`ov·0x1B` fits in 8 bits). The shift-XOR tail this replaced was
@@ -430,6 +505,46 @@ pub mod x86_64 {
 }
 
 pub mod software {
+    /// [BearSSL's bmul](https://www.bearssl.org/constanttime.html#ghash-for-gcm): three holes absorb carries.
+    #[inline]
+    const fn bmul32(a: u32, b: u32) -> u64 {
+        let a = a as u64;
+        let b = b as u64;
+        let (a0, a1, a2, a3) = (a & 0x1111_1111, a & 0x2222_2222, a & 0x4444_4444, a & 0x8888_8888);
+        let (b0, b1, b2, b3) = (b & 0x1111_1111, b & 0x2222_2222, b & 0x4444_4444, b & 0x8888_8888);
+        let c0 = (a0 * b0) ^ (a1 * b3) ^ (a2 * b2) ^ (a3 * b1);
+        let c1 = (a0 * b1) ^ (a1 * b0) ^ (a2 * b3) ^ (a3 * b2);
+        let c2 = (a0 * b2) ^ (a1 * b1) ^ (a2 * b0) ^ (a3 * b3);
+        let c3 = (a0 * b3) ^ (a1 * b2) ^ (a2 * b1) ^ (a3 * b0);
+        (c0 & 0x1111_1111_1111_1111)
+            | (c1 & 0x2222_2222_2222_2222)
+            | (c2 & 0x4444_4444_4444_4444)
+            | (c3 & 0x8888_8888_8888_8888)
+    }
+
+    /// Portable carry-less product using three 32-bit products and Karatsuba.
+    #[inline]
+    pub const fn clmul_fast(a: u64, b: u64) -> u128 {
+        let (a0, a1) = (a as u32, (a >> 32) as u32);
+        let (b0, b1) = (b as u32, (b >> 32) as u32);
+        let lo = bmul32(a0, b0);
+        let hi = bmul32(a1, b1);
+        let mid = bmul32(a0 ^ a1, b0 ^ b1) ^ lo ^ hi;
+        (lo as u128) ^ ((mid as u128) << 32) ^ ((hi as u128) << 64)
+    }
+
+    /// Carry-less square by spreading each bit into an even bit position.
+    #[inline]
+    pub const fn spread(a: u64) -> u128 {
+        let mut x = a as u128;
+        x = (x | (x << 32)) & 0x0000_0000_ffff_ffff_0000_0000_ffff_ffff;
+        x = (x | (x << 16)) & 0x0000_ffff_0000_ffff_0000_ffff_0000_ffff;
+        x = (x | (x << 8)) & 0x00ff_00ff_00ff_00ff_00ff_00ff_00ff_00ff;
+        x = (x | (x << 4)) & 0x0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f_0f0f;
+        x = (x | (x << 2)) & 0x3333_3333_3333_3333_3333_3333_3333_3333;
+        (x | (x << 1)) & 0x5555_5555_5555_5555_5555_5555_5555_5555
+    }
+
     /// Portable 64x64 carry-less product, used by fallback paths and as the reference.
     pub const fn clmul(a: u64, b: u64) -> u128 {
         let mut acc = 0u128;
@@ -520,7 +635,24 @@ mod tests {
                 let pair = aarch64::reduce_pair_pmull4(p0, p1);
                 assert_eq!(vgetq_lane_u64::<0>(pair), reference_mul(a, b));
                 assert_eq!(vgetq_lane_u64::<1>(pair), reference_mul(b, b));
+                // The one-fold reduction, for a factor below 2^61: the all-ones corner gives its largest.
+                let s = b >> 3;
+                let pair = aarch64::reduce_pair_pmull2(aarch64::pmull(a, s), aarch64::pmull(b, s));
+                assert_eq!(vgetq_lane_u64::<0>(pair), reference_mul(a, s));
+                assert_eq!(vgetq_lane_u64::<1>(pair), reference_mul(b, s));
             }
+        }
+    }
+
+    #[test]
+    fn portable_products_and_squares_match_reference() {
+        let mut rng = Rng::new(42);
+        let random = (0..50_000).map(|_| (rng.next_u64(), rng.next_u64()));
+        let corners = CORNERS.iter().flat_map(|&a| CORNERS.iter().map(move |&b| (a, b)));
+        let bits = (0..64).flat_map(|i| (0..64).map(move |j| (1 << i, 1 << j)));
+        for (a, b) in random.chain(corners).chain(bits) {
+            assert_eq!(software::clmul_fast(a, b), software::clmul(a, b));
+            assert_eq!(software::spread(a), software::clmul(a, a));
         }
     }
 

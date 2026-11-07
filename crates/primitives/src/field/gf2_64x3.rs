@@ -15,6 +15,7 @@
 //! Both folds are GF(2)-linear, so they commute with XOR.
 //! A sum of products therefore accumulates after the y-fold and reduces once.
 
+use core::iter::Sum;
 use core::ops::{Add, AddAssign, BitXor, BitXorAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,53 @@ impl F192 {
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.c0 == 0 && self.c1 == 0 && self.c2 == 0
+    }
+
+    /// The element's 24 bytes: `c0, c1, c2`, each in little-endian order.
+    #[inline]
+    pub fn to_le_bytes(self) -> [u8; 24] {
+        let mut bytes = [0; 24];
+        for (chunk, c) in bytes.as_chunks_mut::<8>().0.iter_mut().zip([self.c0, self.c1, self.c2]) {
+            *chunk = c.to_le_bytes();
+        }
+        bytes
+    }
+
+    /// The element whose bytes [`Self::to_le_bytes`] gives.
+    ///
+    /// Every 24-byte string is an element.
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 24]) -> Self {
+        let chunks = bytes.as_chunks::<8>().0;
+        Self::new(
+            u64::from_le_bytes(chunks[0]),
+            u64::from_le_bytes(chunks[1]),
+            u64::from_le_bytes(chunks[2]),
+        )
+    }
+
+    /// `[1, self, self^2, ..., self^(n - 1)]`.
+    ///
+    /// The weights of a random linear combination batched by the powers of one challenge.
+    pub fn powers(self, n: usize) -> Vec<Self> {
+        std::iter::successors(Some(Self::ONE), |&p| Some(p * self))
+            .take(n)
+            .collect()
+    }
+
+    /// The elements' coefficients as base-field words: `c0, c1, c2` of each, in order.
+    #[inline]
+    pub const fn coefficients(elements: &[Self]) -> &[F64] {
+        // SAFETY: `F192` is three `u64`s under `repr(C)`, and `F64` one under `repr(transparent)`.
+        // So the view covers exactly the slice's memory, and every word is a valid `F64`.
+        unsafe { core::slice::from_raw_parts(elements.as_ptr().cast::<F64>(), 3 * elements.len()) }
+    }
+
+    /// The elements' coefficients as mutable base-field words.
+    #[inline]
+    pub const fn coefficients_mut(elements: &mut [Self]) -> &mut [F64] {
+        // SAFETY: as for `coefficients`; the view borrows the slice mutably for its lifetime.
+        unsafe { core::slice::from_raw_parts_mut(elements.as_mut_ptr().cast::<F64>(), 3 * elements.len()) }
     }
 
     /// Product without the base-field reduction, for XOR accumulation.
@@ -167,6 +215,13 @@ impl F192 {
     }
 }
 
+impl Sum for F192 {
+    #[inline]
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, Add::add)
+    }
+}
+
 impl Add for F192 {
     type Output = Self;
     #[inline]
@@ -263,6 +318,18 @@ pub fn mul_unreduced4(a: [F192; 4], b: [F192; 4]) -> [F192Unreduced; 4] {
     };
     #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2")))]
     std::array::from_fn(|i| a[i].mul_unreduced(b[i]))
+}
+
+/// Eight mixed products `t * k[i]` by one shared `E` scalar.
+///
+/// On AVX-512 this is six CLMULs for all eight, against twenty-four one at a time.
+#[inline(always)]
+pub fn mul_base8(t: F192, k: [F64; 8]) -> [F192; 8] {
+    #[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+    // SAFETY: both features are enabled at compile time.
+    return unsafe { rv_x86_64::mul_base8(t, k) };
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f")))]
+    k.map(|k| t.mul_base(k))
 }
 
 /// Eight `E` weights, laid out once for [`dot_base`].
@@ -404,6 +471,13 @@ impl BitXor for F192Unreduced {
     fn bitxor(mut self, rhs: Self) -> Self {
         self ^= rhs;
         self
+    }
+}
+
+impl Sum for F192Unreduced {
+    #[inline]
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, BitXor::bitxor)
     }
 }
 
@@ -1036,18 +1110,17 @@ pub mod x86_64 {
 /// Portable fallback, and the reference every accelerated path is tested against.
 pub mod software {
     use super::{F192, F192Unreduced};
-    use crate::field::gf2_64::software::clmul;
+    use crate::field::gf2_64::software::clmul_fast;
 
-    /// Schoolbook: nine base products into the five coefficients of y^0..y^4, then the y-fold.
+    /// Karatsuba: six base products into the five coefficients of `y^0..y^4`, then the `y`-fold.
     pub fn mul_unreduced(a: F192, b: F192) -> F192Unreduced {
-        let (a, b) = ([a.c0, a.c1, a.c2], [b.c0, b.c1, b.c2]);
-        let mut e = [0u128; 5];
-        // a_i * b_j lands on y^(i + j).
-        for i in 0..3 {
-            for j in 0..3 {
-                e[i + j] ^= clmul(a[i], b[j]);
-            }
-        }
+        let d0 = clmul_fast(a.c0, b.c0);
+        let d1 = clmul_fast(a.c1, b.c1);
+        let d2 = clmul_fast(a.c2, b.c2);
+        let d01 = clmul_fast(a.c0 ^ a.c1, b.c0 ^ b.c1);
+        let d02 = clmul_fast(a.c0 ^ a.c2, b.c0 ^ b.c2);
+        let d12 = clmul_fast(a.c1 ^ a.c2, b.c1 ^ b.c2);
+        let e = [d0, d01 ^ d0 ^ d1, d02 ^ d0 ^ d1 ^ d2, d12 ^ d1 ^ d2, d2];
         // y^3 = y + 1 and y^4 = y^2 + y.
         F192Unreduced::from_wide([e[0] ^ e[3], e[1] ^ e[3] ^ e[4], e[2] ^ e[4]])
     }
@@ -1056,6 +1129,23 @@ pub mod software {
         mul_unreduced(a, b).reduce()
     }
 }
+
+/// The RISC-V prover's register types on x86-64: [`F192x1`] with PCLMULQDQ, [`F192x4`] and [`MixedSums8`] with
+/// VPCLMULQDQ, [`F192x8Zmm`] with AVX-512.
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+mod rv_x86_64;
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+pub use rv_x86_64::{F192x1, F192x1Unreduced};
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx2"))]
+pub use rv_x86_64::{F192x4, F192x4Unreduced, MixedSums8};
+#[cfg(all(target_arch = "x86_64", target_feature = "vpclmulqdq", target_feature = "avx512f"))]
+pub use rv_x86_64::{F192x8Zmm, F192x8ZmmSum};
+
+/// The RISC-V prover's register type on aarch64: [`F192x1`], an element held in NEON registers.
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+mod rv_aarch64;
+#[cfg(all(target_arch = "aarch64", target_feature = "aes"))]
+pub use rv_aarch64::{F192x1, F192x1Unreduced};
 
 // Tests: every backend against the software reference, independent Python vectors, field axioms,
 // and computational irreducibility proofs for both moduli.

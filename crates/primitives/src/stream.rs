@@ -1,6 +1,10 @@
-//! Streaming stores for x86 buffers written once and read in a later pass. Other targets use ordinary copies.
+//! Cache hints for buffers streamed through once.
+//!
+//! - Streaming stores, for x86 buffers written once and read in a later pass. Other targets use ordinary copies.
+//! - Read prefetches, for a loop whose compute outruns the hardware prefetcher's distance.
 
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 
 use crate::Plain;
 
@@ -21,7 +25,7 @@ impl Default for Stream {
 }
 
 impl Stream {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(PhantomData)
     }
 
@@ -32,6 +36,14 @@ impl Stream {
         assert_eq!(dst.len(), src.len(), "a streaming copy is elementwise");
         // SAFETY: distinct slices are valid for `size_of_val(src)` bytes each
         // and cannot overlap.
+        unsafe { copy_raw(dst.as_mut_ptr().cast(), src.as_ptr().cast(), size_of_val(src)) }
+    }
+
+    /// Copy `src` into unwritten slots, streaming whole cache lines as a copy does.
+    #[inline]
+    pub fn write<T: Plain>(&self, dst: &mut [MaybeUninit<T>], src: &[T]) {
+        assert_eq!(dst.len(), src.len(), "a streaming copy is elementwise");
+        // SAFETY: distinct slices are valid for `size_of_val(src)` bytes each and cannot overlap.
         unsafe { copy_raw(dst.as_mut_ptr().cast(), src.as_ptr().cast(), size_of_val(src)) }
     }
 
@@ -63,6 +75,23 @@ impl Stream {
         // SAFETY: `dst` is valid and aligned for `T`, and disjoint from `src`.
         unsafe { dst.write(*src) };
     }
+}
+
+/// Asks the cache for the lines holding `data`, ahead of a read.
+///
+/// It is a hint: it changes no value, never faults, and does nothing off x86.
+#[inline(always)]
+pub fn prefetch<T>(data: &[T]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let start = data.as_ptr().cast::<i8>();
+        for offset in (0..size_of_val(data)).step_by(64) {
+            // SAFETY: a prefetch reads nothing the program sees, and the address is inside `data`.
+            unsafe { core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(start.add(offset)) };
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = data;
 }
 
 /// # Safety

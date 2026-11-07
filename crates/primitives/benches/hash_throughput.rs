@@ -14,7 +14,7 @@ fn run<const LEN: usize>() {
 
     let data: Vec<u8> = (0..TASKS * BYTES).map(|i| (i & 0xff) as u8).collect();
     let mut out = vec![0u8; TASKS * k * 32];
-    let (_, time) = bench::Plan::from_env().warm_then_measure(|_| {
+    let (_, time) = bench::Plan::from_env().warm_then_measure(|| {
         parallel::chunks_mut(&mut out, k * 32, |i, sub| {
             let d = &data[i * BYTES..][..BYTES];
             for _ in 0..ITERS {

@@ -6,7 +6,8 @@
 //! `K`-valued (`F64`) while randomness is `E`-valued (`F192`), so the first
 //! fold of a committed table also lifts it into `E`.
 
-use crate::field::{F64, F192, Weights8, dot_base, mul4};
+use crate::field::{F64, F192, Weights8, dot_base, mul_base8, mul4};
+use std::mem::MaybeUninit;
 
 /// Multilinear interpolation in one variable over `E`: `lo + t·(lo+hi)`, the
 /// char-2 form of `(1−t)·lo + t·hi`.
@@ -35,6 +36,18 @@ pub fn eq_eval(r: &[F192], x: &[F192]) -> F192 {
 pub fn eq_table(r: &[F192]) -> Vec<F192> {
     // SAFETY: the fill writes every element before it reads any.
     unsafe { crate::filled_vec(1usize << r.len(), |eq| fill_eq_table(r, F192::ONE, eq)) }
+}
+
+/// The table of `seed * eq(r, .)` over `n = r.len()` variables, in LSB-first order.
+pub fn eq_table_seeded(r: &[F192], seed: F192) -> Vec<F192> {
+    // SAFETY: the fill writes every element before it reads any.
+    unsafe { crate::filled_vec(1usize << r.len(), |eq| fill_eq_table(r, seed, eq)) }
+}
+
+/// [`fill_eq_table`] into unwritten slots.
+pub fn fill_eq_table_uninit(r: &[F192], seed: F192, out: &mut [MaybeUninit<F192>]) {
+    // SAFETY: the fill writes every slot before it reads it.
+    fill_eq_table(r, seed, unsafe { crate::write_only(out) });
 }
 
 /// The `eq(r, ·)` table, built on the calling thread.
@@ -76,7 +89,7 @@ pub fn fill_eq_table(r: &[F192], seed: F192, out: &mut [F192]) {
 }
 
 /// Tables below this size are built on the calling thread.
-const EQ_PAR_LEN: usize = 1 << 16;
+pub const EQ_PAR_LEN: usize = 1 << 16;
 
 /// The variables of the L1-resident factor of a large `eq` table.
 const EQ_LOW_VARS: usize = 10;
@@ -117,6 +130,74 @@ fn fold_low_k(table: &[F64], chi: F192) -> Vec<F192> {
     (0..table.len() / 2)
         .map(|i| interp_k(table[2 * i], table[2 * i + 1], chi))
         .collect()
+}
+
+/// Bind the highest variable of a `K`-table and lift the result into `E`.
+///
+/// Eight entries share one batched mixed product.
+pub fn fold_high_k(table: &[F64], chi: F192) -> Vec<F192> {
+    debug_assert_eq!(table.len() % 2, 0);
+    let (lo, hi) = table.split_at(table.len() / 2);
+    let mut out = Vec::with_capacity(lo.len());
+    let (out8, out_tail) = out.spare_capacity_mut()[..lo.len()].as_chunks_mut::<8>();
+    let ((lo8, lo_tail), (hi8, hi_tail)) = (lo.as_chunks::<8>(), hi.as_chunks::<8>());
+    for ((o, l), h) in out8.iter_mut().zip(lo8).zip(hi8) {
+        let p = mul_base8(chi, std::array::from_fn(|i| l[i] + h[i]));
+        for i in 0..8 {
+            o[i].write(F192::from(l[i]) + p[i]);
+        }
+    }
+    for ((o, &l), &h) in out_tail.iter_mut().zip(lo_tail).zip(hi_tail) {
+        o.write(interp_k(l, h, chi));
+    }
+    // SAFETY: both loops together write every entry.
+    unsafe { out.set_len(lo.len()) };
+    out
+}
+
+/// Bind the highest free variable of `table` to `chi` in place: `table[i] =
+/// interp(table[i], table[i + half], chi)`. Binding from the top down leaves the
+/// low variables, the ones every table of a batch shares, for last.
+pub fn fold_high_inplace(table: &mut Vec<F192>, chi: F192) {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    {
+        // Split once rather than index twice: indexing reloads the data pointer
+        // and length through the container every iteration, since nothing proves
+        // they do not alias the elements, and pays a bounds check for it.
+        let (lo, hi) = (**table).split_at_mut(half);
+        interp_into(lo, hi, chi);
+    }
+    table.truncate(half);
+}
+
+/// Bind the lowest free variable of `table` to `chi` in place: `table[i] = interp(table[2i], table[2i + 1], chi)`.
+pub fn fold_low_inplace(table: &mut Vec<F192>, chi: F192) {
+    debug_assert_eq!(table.len() % 2, 0);
+    let half = table.len() / 2;
+    {
+        // Sliced, as in `fold_high_inplace`.
+        // Slot `i` is written after slots `2i` and `2i + 1` are read, so the walk is in place.
+        let t: &mut [F192] = table;
+        for i in 0..half {
+            t[i] = interp(t[2 * i], t[2 * i + 1], chi);
+        }
+    }
+    table.truncate(half);
+}
+
+/// `lo[i] = interp(lo[i], hi[i], chi)`, four products per batch.
+fn interp_into(lo: &mut [F192], hi: &[F192], chi: F192) {
+    let ((lo4, lo_tail), (hi4, hi_tail)) = (lo.as_chunks_mut::<4>(), hi.as_chunks::<4>());
+    for (l, h) in lo4.iter_mut().zip(hi4) {
+        let p = mul4([chi; 4], std::array::from_fn(|i| l[i] + h[i]));
+        for i in 0..4 {
+            l[i] += p[i];
+        }
+    }
+    for (l, h) in lo_tail.iter_mut().zip(hi_tail) {
+        *l = interp(*l, *h, chi);
+    }
 }
 
 /// Marginalize the highest variable out of an `eq` table (in place), for a top-down sumcheck.
@@ -200,6 +281,61 @@ fn fold_ladder(mut cur: Vec<F192>, point: &[F192]) -> F192 {
     cur[0]
 }
 
+/// The inner product `sum_i a_i * b_i` over `E`.
+#[inline]
+pub fn inner_product(a: &[F192], b: &[F192]) -> F192 {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b).map(|(&x, &y)| x * y).sum()
+}
+
+/// The mixed inner product `sum_i e_i * k_i`, with `k` in `K` and `e` in `E`.
+#[inline]
+pub fn inner_product_base(k: &[F64], e: &[F192]) -> F192 {
+    assert_eq!(k.len(), e.len());
+    k.iter().zip(e).map(|(&k, &e)| e.mul_base(k)).sum()
+}
+
+/// The table `eq(r, .)` as two smaller tables, `eq(r, x) = low[x mod 2^L] * high[x >> L]`.
+///
+/// - The low table is `eq` over the first `L` variables of `r`, the high table over the rest.
+/// - Together they hold `2^L + 2^(n - L)` entries instead of `2^n`.
+/// - Products are exact, so every entry equals the full table's.
+#[derive(Clone, Debug)]
+pub struct SplitEq {
+    /// The table over the low `L` variables.
+    pub low: Vec<F192>,
+    /// The table over the remaining variables.
+    pub high: Vec<F192>,
+    /// `L`, the number of low variables.
+    pub low_log: usize,
+}
+
+impl SplitEq {
+    /// The split with at most `max_low` low variables.
+    pub fn with_low_vars(r: &[F192], max_low: usize) -> Self {
+        Self::at_split(r, r.len().min(max_low))
+    }
+
+    /// The split with at most `max_high` high variables.
+    pub fn with_high_vars(r: &[F192], max_high: usize) -> Self {
+        Self::at_split(r, r.len() - r.len().min(max_high))
+    }
+
+    fn at_split(r: &[F192], low_log: usize) -> Self {
+        Self {
+            low: eq_table(&r[..low_log]),
+            high: eq_table(&r[low_log..]),
+            low_log,
+        }
+    }
+
+    /// `eq(r, x)`.
+    #[inline]
+    pub fn at(&self, x: usize) -> F192 {
+        self.low[x & (self.low.len() - 1)] * self.high[x >> self.low_log]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +358,42 @@ mod tests {
             assert_eq!(mle_eval(&table, &point), fold(&point));
             assert_eq!(mle_eval_par(&table, &point), fold(&point));
         }
+    }
+
+    #[test]
+    fn high_folds_match_interpolation() {
+        for n in [1, 2, 3, 4, 5, 9, 11] {
+            let table: Vec<_> = (0..1 << n)
+                .map(|i: u64| F64(i.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+                .collect();
+            // An odd length leaves a scalar tail after the batched folds.
+            let chi = F192::new(17 + n, 231, 97) + F192::Y;
+            let half = table.len() / 2;
+            let want: Vec<_> = (0..half).map(|i| interp_k(table[i], table[i + half], chi)).collect();
+            assert_eq!(&*fold_high_k(&table, chi), &want[..]);
+            let lifted: Vec<F192> = table.iter().map(|&k| F192::from(k) * chi).collect();
+            let mut got = lifted.clone();
+            fold_high_inplace(&mut got, chi);
+            let want: Vec<_> = (0..half).map(|i| interp(lifted[i], lifted[i + half], chi)).collect();
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn split_eq_is_the_eq_table() {
+        // Invariant: the two tables weigh every row as the full eq table.
+        //
+        // Fixture state: 14 variables, split 12 low and 2 high, then 7 low and 7 high.
+        let r: Vec<F192> = (0..14u64).map(|i| F192::new(3 * i + 1, i + 7, 5 * i + 2)).collect();
+        let dense = eq_table(&r);
+        for split in [SplitEq::with_low_vars(&r, 12), SplitEq::with_high_vars(&r, 7)] {
+            for x in [0, 1, 127, 128, 4095, 4096, 4097, 12_345, (1 << 14) - 1] {
+                assert_eq!(split.at(x), dense[x], "x={x}");
+            }
+        }
+
+        // A split with fewer variables than its cap puts them all on the capped side.
+        let short = SplitEq::with_high_vars(&r[..3], 7);
+        assert_eq!((short.low_log, short.high.len()), (0, 8));
     }
 }

@@ -31,6 +31,35 @@ pub fn bit_transpose_64bytes(input: &[u8; 64], output: &mut [u8; 64]) {
     bit_transpose_64bytes_portable(input, output);
 }
 
+/// Transpose the 64x64 bit matrix whose word `r` is row `r`, in place.
+///
+/// ```text
+///     after: m[c] bit r  =  before: m[r] bit c
+/// ```
+///
+/// Six rounds of masked swaps (Hacker's Delight, section 7-3), halving the block each round.
+/// Round `j` swaps the upper-right and lower-left `j x j` blocks of every `2j x 2j` block on the diagonal.
+/// The rounds with `j >= 8` pair whole runs of words, which the compiler vectorizes.
+#[inline]
+pub fn transpose_64x64(m: &mut [u64; 64]) {
+    #[inline(always)]
+    fn round<const J: usize>(m: &mut [u64; 64], mask: u64) {
+        for base in (0..64).step_by(2 * J) {
+            for k in base..base + J {
+                let t = ((m[k] >> J) ^ m[k + J]) & mask;
+                m[k] ^= t << J;
+                m[k + J] ^= t;
+            }
+        }
+    }
+    round::<32>(m, 0x0000_0000_FFFF_FFFF);
+    round::<16>(m, 0x0000_FFFF_0000_FFFF);
+    round::<8>(m, 0x00FF_00FF_00FF_00FF);
+    round::<4>(m, 0x0F0F_0F0F_0F0F_0F0F);
+    round::<2>(m, 0x3333_3333_3333_3333);
+    round::<1>(m, 0x5555_5555_5555_5555);
+}
+
 /// Transpose the 8x8 bit matrix whose byte `r` is row `r` (Hacker's Delight, section 7-3).
 ///
 /// Bit `r * 8 + c` moves to bit `c * 8 + r`.

@@ -44,6 +44,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippyall
+      # The CLI's heap-profiling build; it recompiles the CLI alone.
+      - name: Clippy with the system allocator
+        run: cargo clippy --release -p leanvm-cli --all-targets --features system-alloc -- -D warnings
 
   # Clippy type-checks every arm the ISA selects, so it also does `cargo check`'s work.
   # Nothing runs: GitHub's x86-64 runners do not reliably have AVX-512.
@@ -75,6 +78,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             rustflags: -C target-cpu=znver4
+          # The AVX-512 arms as AGENTS.md's x86 check selects them: by feature, on a generic CPU.
+          - name: avx512
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            rustflags: -C target-feature=+avx512f,+avx512bw,+avx512vl,+avx512vbmi,+vpclmulqdq,+pclmulqdq,+gfni,+avx2,+aes
           # The NEON fallbacks, without PMULL or EOR3.
           - name: aarch64
             target: aarch64-unknown-linux-gnu
@@ -104,6 +112,104 @@ jobs:
       - name: Clippy
         run: cargo clippy --release --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
+  # The haswell pin builds the AVX2 arms without VPCLMULQDQ or GFNI. These legs build, lint and test the arms that
+  # Zen 3 (AVX2 with VPCLMULQDQ) and Alder Lake and later (AVX2 with GFNI) dispatch to, and run the kernels' tests
+  # on the NEON arms, which the `isa` job only lints.
+  simd:
+    name: SIMD (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AVX2 + VPCLMULQDQ
+            runner: ubuntu-latest
+            rustflags: -C target-cpu=x86-64-v3 -C target-feature=+vpclmulqdq,+pclmulqdq
+            cpu: avx2 vpclmulqdq pclmulqdq
+          - name: AVX2 + GFNI
+            runner: ubuntu-latest
+            rustflags: -C target-cpu=x86-64-v3 -C target-feature=+gfni,+vpclmulqdq,+pclmulqdq,+aes
+            cpu: avx2 gfni vpclmulqdq pclmulqdq aes
+          - name: NEON
+            runner: ubuntu-24.04-arm
+            rustflags: -C target-cpu=neoverse-n2 -C target-feature=+aes,+sha3
+            cpu: aes pmull sha3
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v4
+      # The tests run what the flags enable, so a runner without it dies of SIGILL. GitHub's EPYC 7763 has no GFNI:
+      # there the GFNI leg builds and lints only, and the tests run when it lands on a CPU that has it.
+      - name: CPU features
+        id: cpu
+        run: |
+          flags=$(grep -m1 -E '^(flags|Features)' /proc/cpuinfo)
+          missing=$(for f in ${{ matrix.cpu }}; do grep -qw "$f" <<<"$flags" || printf '%s ' "$f"; done)
+          if [ -n "$missing" ]; then
+            echo "::notice::this runner has no $missing; the tests are skipped"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippyall
+      - name: Test the kernels
+        if: steps.cpu.outputs.run == 'true'
+        run: cargo test --release -p primitives -p pcs -p pcs_rv -p flock
+      # The bus's leaf and GKR kernels reach these arms through `leanvm_rv`, so their tests run here too.
+      - name: Test the bus kernels
+        if: steps.cpu.outputs.run == 'true'
+        run: cargo test --release -p leanvm_rv --lib -- gkr::tests bus::tests
+
+  big-endian:
+    name: Big-endian builds (MIPS64) and verification (s390x)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -C target-cpu=generic
+      CARGO_BUILD_JOBS: 2
+      RUST_TEST_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+        with:
+          targets: s390x-unknown-linux-gnu
+          components: rust-src
+      - name: Install the cross compiler and emulator
+        run: sudo apt-get update && sudo apt-get install -y gcc-s390x-linux-gnu libc6-dev-s390x-cross qemu-user
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and execute the big-endian verifier
+        run: scripts/check-big-endian.sh
+      - name: Generate MIPS64 verifier machine code
+        # Tier 3 has no distributed std. Bootstrap is scoped to compiling std with the pinned compiler.
+        run: RUSTC_BOOTSTRAP=1 cargo build -Z build-std=std,panic_abort --release -p leanvm_rv --lib --target mips64-unknown-linux-gnuabi64
+
+  clippy-guests:
+    name: Clippy (RISC-V guests)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      # The guests' toolchain file pins a dated nightly with `rust-src` alone; rustup installs it here, with clippy and rustfmt.
+      - name: Install the guests' toolchain
+        working-directory: programs/hash/guest
+        run: rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: programs -> target
+      - name: Clippy
+        run: programs/clippy.sh
+      - name: Check formatting
+        run: |
+          for guest in programs/*/guest; do
+            (cd "$guest" && cargo fmt -- --check)
+          done
+
   doc:
     name: Rustdoc
     runs-on: ubuntu-latest
@@ -125,6 +231,47 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The `rust-version` of the root Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on the declared Rust version
+        run: cargo check --workspace --all-targets
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Three workers, so the pool's dispatch, park and completion paths all run.
+      LEANVM_NUM_THREADS: 3
+      # Miri hides the environment unless told, and the pool would then run one thread.
+      # The pool's workers live for the process, which reads as a leak.
+      # Each seed is another thread interleaving.
+      MIRIFLAGS: >-
+        -Zmiri-env-forward=LEANVM_NUM_THREADS
+        -Zmiri-ignore-leaks
+        -Zmiri-many-seeds=0..8
+    steps:
+      - uses: actions/checkout@v4
+      # The latest nightly that ships Miri.
+      - uses: dtolnay/rust-toolchain@miri
+      - name: Miri
+        run: cargo miri test -p parallel
+
+  deny:
+    name: Cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses
+
   machete:
     name: Unused dependencies
     runs-on: ubuntu-latest
@@ -135,5 +282,6 @@ jobs:
           tool: cargo-machete@0.9.2
       # No build: machete reads the manifests and greps the sources.
       # `--with-metadata` resolves each package through `cargo metadata`, so dev-dependencies are read too.
+      # The guests are scanned too, under their own nightly toolchain, which rustup installs on first use.
       - name: Check for unused dependencies
         run: cargo machete --with-metadata

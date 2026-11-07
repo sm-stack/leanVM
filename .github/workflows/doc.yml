@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'doc/leanvm/**'
+      - 'doc/leanvm-rv/**'
       - 'doc/lean_xmss/**'
       - 'doc/lean_sphincs/**'
       - 'doc/images/**'
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - 'doc/leanvm/**'
+      - 'doc/leanvm-rv/**'
       - 'doc/lean_xmss/**'
       - 'doc/lean_sphincs/**'
       - 'doc/images/**'
@@ -38,6 +40,14 @@ jobs:
       - name: Fail on an undefined reference or citation
         run: |
           ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/leanvm/.build/main.log
+      - name: Compile RISC-V layer specification
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc/leanvm-rv
+          root_file: main.tex
+      - name: Fail on an undefined RISC-V layer reference or citation
+        run: |
+          ! grep -qE 'Reference .* undefined|Citation .* undefined|multiply defined' doc/leanvm-rv/.build/main.log
       - name: Compile leanXMSS specification
         uses: xu-cheng/latex-action@v3
         with:
@@ -67,6 +77,11 @@ jobs:
         with:
           working_directory: doc/leanvm
           root_file: main.tex
+      - name: Compile RISC-V layer specification
+        uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: doc/leanvm-rv
+          root_file: main.tex
       - name: Compile leanXMSS specification
         uses: xu-cheng/latex-action@v3
         with:
@@ -80,6 +95,7 @@ jobs:
       - name: Name the artifacts
         run: |
           cp doc/leanvm/.build/main.pdf leanVM.pdf
+          cp doc/leanvm-rv/.build/main.pdf leanVM-rv.pdf
           cp doc/lean_xmss/.build/main.pdf leanXMSS.pdf
           cp doc/lean_sphincs/.build/main.pdf leanSPHINCS.pdf
       - name: Publish PDFs as release assets
@@ -91,10 +107,12 @@ jobs:
             Auto-built on every push to `main`.
 
             `leanVM.pdf` contains the leanVM specification.
+            `leanVM-rv.pdf` contains the specification of leanVM's RISC-V layer.
             `leanXMSS.pdf` contains the leanXMSS specification.
             `leanSPHINCS.pdf` contains the leanSPHINCS specification.
           make_latest: false
           files: |
             leanVM.pdf
+            leanVM-rv.pdf
             leanXMSS.pdf
             leanSPHINCS.pdf

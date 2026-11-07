@@ -1,25 +1,45 @@
 name: Bench
 
-# Proves keccak_gkr's hash batch at a PR's merge commit and at its base (the merge commit's first
-# parent) in turns on one runner, so the comparison is free of which machine the job landed
-# on: each job builds both sides and runs them `ROUNDS` times in the order base, PR, PR,
-# base, ... It saves its runs as the artifact `ab-<testbed>-<benchmark>`, and
-# bench-comment.yml posts what changed on the PR. It gates nothing.
+# Proves a PR's merge commit and its base (the merge commit's first parent) in turns on one
+# runner, so the comparison is free of which machine the job landed on: one job per testbed
+# and benchmark, each building both sides and running them `ROUNDS` times in the order base,
+# PR, PR, base, ... Each job saves its runs as the artifact `ab-<testbed>-<benchmark>`, and
+# bench-comment.yml, on the default branch, posts what changed on the PR, both layers in one
+# comment. It gates nothing.
 #
-# The testbeds are GitHub-hosted runners, forks' PRs included. Each pins its ISA:
-# `target-cpu=native` would build for whichever CPU the job lands on, and a cached build then
-# dies of SIGILL on an older one (see rust.yml).
+# `ab` is the leanISA layer's Keccak GKR batch, on GitHub-hosted runners, forks' PRs included.
+# Each pins its ISA: `target-cpu=native` would build for whichever CPU the job lands on, and a
+# cached build then dies of SIGILL on an older one (see rust.yml).
+#
+# `ab-rv` is the RISC-V layer's CLI cases and `benches/` targets, one per job; scripts/ab.sh
+# does all of it, and runs the same comparison on a developer's machine. In
+# leanEthereum/leanVM its testbeds are the self-hosted runners `size-attester7870-x64` and
+# `size-attester7870-arm64` (with `self-hosted-ghr`, an ephemeral VM per job), where base and PR
+# build and run on one machine, so each is built for `target-cpu=native` and its cache is keyed
+# on the CPU model. Elsewhere they fall back to GitHub-hosted runners with the pinned ISAs above.
+#
+# Run from the Actions tab (`workflow_dispatch`), `ab-rv` compares any two refs the same way:
+# `head` (default: the branch it is run on) against `base` (default: the head's first parent).
+# Such a run leaves its artifacts only; bench-comment.yml posts for PRs alone.
 
 on:
   pull_request:
     # Not `edited`: a description edit would restart, and so cancel, the PR's run.
     types: [ opened, reopened, synchronize ]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base: a branch, tag or commit (default: the head's first parent)"
+        required: false
+      head:
+        description: "Head: a branch, tag or commit (default: the branch this runs on)"
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: bench-${{ github.ref }}
+  group: bench-${{ github.ref }}-${{ inputs.base }}-${{ inputs.head }}
   cancel-in-progress: true
 
 env:
@@ -30,6 +50,7 @@ env:
 jobs:
   ab:
     name: ${{ matrix.benchmark }} (${{ matrix.testbed.name }})
+    if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.testbed.runner }}
     timeout-minutes: 60
     strategy:
@@ -112,3 +133,125 @@ jobs:
         with:
           name: ab-${{ matrix.testbed.name }}-${{ matrix.benchmark }}
           path: ab.json
+
+  ab-rv:
+    name: ${{ matrix.benchmark.name }} (${{ matrix.testbed.name }})
+    runs-on: ${{ matrix.testbed.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        testbed:
+          - name: x86-64
+            runner: ${{ github.repository == 'leanEthereum/leanVM' && fromJSON('["size-attester7870-x64", "self-hosted-ghr"]') || 'ubuntu-latest' }}
+            rustflags: ${{ github.repository == 'leanEthereum/leanVM' && '-C target-cpu=native' || '-C target-cpu=haswell' }}
+          # The NEON kernels are chosen at compile time on `aes` (PMULL) and `sha3` (EOR3), which
+          # a generic aarch64 target does not enable: the native build enables them where the CPU
+          # has them, the fallback's neoverse-n2 pin names them, and the job fails early without them.
+          - name: arm64
+            runner: ${{ github.repository == 'leanEthereum/leanVM' && fromJSON('["size-attester7870-arm64", "self-hosted-ghr"]') || 'ubuntu-24.04-arm' }}
+            rustflags: ${{ github.repository == 'leanEthereum/leanVM' && '-C target-cpu=native' || '-C target-cpu=neoverse-n2 -C target-feature=+aes,+sha3' }}
+            # What the CPU must have to run that build.
+            cpu: ${{ github.repository == 'leanEthereum/leanVM' && 'aes pmull sha3' || 'aes pmull sha3 sve2' }}
+        # The cases of `proven()` and `proven_trees()` in bins/leanvm/src/rv/tracked.rs, run by
+        # `leanvm rv bench --only` (`-16thread`, exactly 16 total workers; `-1thread`, `-4thread`
+        # and `-8thread` select performance workers through LEANVM_NUM_THREADS). The job has its
+        # runner's VM to itself and base and PR alternate within it; a tree's case, `Nto1` for N
+        # proofs combined into 1, prints two benchmarks: `-first`, a first-level node, the RISC-V
+        # verifier in rows over N leaf proofs, and `-node`, a higher node, the recursion verifier
+        # in rows over N child proofs. Then the `benches/` targets scripts/ab.sh names, each run
+        # with `--json`.
+        benchmark:
+          - name: fibonacci-asm-2000000-16thread
+          - name: hash-50000-16thread
+          - name: leanxmss-100-16thread
+          - name: leanxmss-100-1thread
+          - name: leanxmss-100-4thread
+          - name: leanxmss-100-8thread
+          - name: leansphincs-26-16thread
+          - name: aggregate-leanxmss-100-2to1-16thread
+          - name: aggregate-leanxmss-100-4to1-16thread
+          - name: aggregate-leanxmss-100-2to1-1thread
+          - name: aggregate-leanxmss-100-2to1-4thread
+          - name: aggregate-leanxmss-100-2to1-8thread
+          - name: aggregate-leanxmss-100-4to1-1thread
+          - name: aggregate-leanxmss-100-4to1-4thread
+          - name: aggregate-leanxmss-100-4to1-8thread
+          - name: aggregate-signers-leanxmss-100-2to1-16thread
+          - name: aggregate-signers-leanxmss-100-4to1-16thread
+          - name: flock-class-batch-16thread
+          - name: pcs-throughput-16thread
+          - name: blake2s-batch-16thread
+          - name: kernels
+    env:
+      RUSTFLAGS: ${{ matrix.testbed.rustflags }}
+      BENCHMARK: ${{ matrix.benchmark.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head }}
+          # The head (a PR's merge commit) and its first parent, the default base.
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+      # What the build can use, so the PR comment's numbers can be read against the hardware.
+      # The model goes into the cache key: a native build is only reused on the CPU it was built for.
+      - name: CPU
+        id: cpu
+        run: |
+          lscpu | grep -E '^(Vendor ID|Model name|CPU\(s\)|Thread\(s\) per core|Core\(s\) per (socket|cluster)|L1d cache|L2 cache|L3 cache):'
+          free -g | grep -E '^Mem:'
+          uname -srvm
+          echo "Page size (bytes): $(getconf PAGESIZE)"
+          for path in \
+            /sys/kernel/mm/transparent_hugepage/{enabled,defrag,hpage_pmd_size} \
+            /sys/devices/system/cpu/cpufreq/policy*/{scaling_driver,scaling_governor,scaling_cur_freq,cpuinfo_cur_freq,cpuinfo_min_freq,cpuinfo_max_freq}; do
+            if value=$(cat "$path" 2>/dev/null); then
+              printf '%s: %s\n' "$path" "$value"
+            fi
+          done
+          if [ "$RUNNER_ARCH" = ARM64 ]; then
+            flags=$(grep -m1 -E '^Features' /proc/cpuinfo)
+            wanted="asimd aes pmull sha3 sve sve2 svepmull svebitperm i8mm bf16"
+          else
+            flags=$(grep -m1 -E '^flags' /proc/cpuinfo)
+            wanted="avx2 avx512f avx512bw avx512vl avx512vbmi avx512ifma vpclmulqdq gfni"
+          fi
+          for f in $wanted; do
+            if grep -qw "$f" <<<"$flags"; then echo "$f: yes"; else echo "$f: no"; fi
+          done
+          echo "model=-$(lscpu | sed -n 's/^Model name: *//p' | head -n1 | tr -c 'A-Za-z0-9\n' '-')" >> "$GITHUB_OUTPUT"
+      # The build must enable the NEON kernels' features, and the CPU must have what the build
+      # enables, or the comparison measures the fallback or dies of SIGILL.
+      - name: NEON kernels
+        if: runner.arch == 'ARM64'
+        env:
+          CPU_FEATURES: ${{ matrix.testbed.cpu }}
+        run: |
+          read -ra flags <<<"$RUSTFLAGS"
+          cfg=$(rustc --print cfg "${flags[@]}")
+          for f in aes sha3; do grep -qx "target_feature=\"$f\"" <<<"$cfg" || { echo "::error::$RUSTFLAGS does not enable $f"; exit 1; }; done
+          features=$(grep -m1 -E '^Features' /proc/cpuinfo)
+          for f in $CPU_FEATURES; do grep -qw "$f" <<<"$features" || { echo "::error::no $f on this runner"; exit 1; }; done
+      # One cache per testbed and CPU model; RUSTFLAGS is part of its key.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rv-${{ matrix.testbed.name }}${{ steps.cpu.outputs.model }}
+      - name: Prove the PR and its base in turns
+        env:
+          PR: ${{ github.event.number }}
+          TESTBED: ${{ matrix.testbed.name }}
+          BASE: ${{ inputs.base }}
+        run: |
+          args=(--ci --testbed "$TESTBED" --out ab)
+          if [ -n "$PR" ]; then args+=(--pr "$PR"); fi
+          if [ -n "$BASE" ]; then
+            git fetch --quiet --no-tags --depth=1 origin "$BASE"
+            args+=(--base "$(git rev-parse FETCH_HEAD)")
+          fi
+          scripts/ab.sh "${args[@]}" "$BENCHMARK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ab-${{ matrix.testbed.name }}-${{ matrix.benchmark.name }}
+          path: |
+            ab/ab-${{ matrix.testbed.name }}-${{ matrix.benchmark.name }}/ab.json
+            ab/ab-${{ matrix.testbed.name }}-${{ matrix.benchmark.name }}/trace-*.log

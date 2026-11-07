@@ -22,7 +22,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 TESTBEDS = ("x86-64", "arm64")
 PROGRAMS = {
-    "fibonacci-asm-2000000": ("Fibonacci", "2,000,000 steps modulo 2^64", "bins/leanvm/src/workload.rs"),
+    "fibonacci-asm-2000000": ("Fibonacci", "2,000,000 steps modulo 2^64", "bins/leanvm/src/rv/workload.rs"),
     "hash-50000": ("BLAKE2s guest", "Hash 50,000 bytes through the precompile", "programs/hash/guest/src/main.rs"),
     "leanxmss-100": ("leanXMSS", "Verify 100 signatures", "programs/leanxmss/guest/src/main.rs"),
     "leansphincs-26": ("leanSPHINCS", "Verify 26 signatures", "programs/leansphincs/guest/src/main.rs"),
@@ -128,12 +128,12 @@ def workload(name):
         description = (f"{arity} to 1, first-level node over {arity} copies of a 100-signature leaf proof"
                        if level == "first" else
                        f"{arity} to 1, higher node over {arity} tree proofs; 100-signature leaves")
-        return "leanXMSS aggregation", description, "crates/leanvm_core/src/rec/tree/mod.rs", "aggregation", count
+        return "leanXMSS aggregation", description, "crates/leanvm_rv/src/rec/tree/mod.rs", "aggregation", count
     return None
 
 
 def provenance(repository, commit, run_id):
-    return {"repository": repository, "branch": "riscv-exploration", "commit": commit,
+    return {"repository": repository, "branch": "main", "commit": commit,
             "run_id": run_id, "run_url": f"https://github.com/{repository}/actions/runs/{run_id}"}
 
 
@@ -240,7 +240,7 @@ def run_desktop(plan, testbed, benchmark, executable):
     document = {"schema_version": 2, "snapshot": source, "plan_id": digest(plan), "testbed": testbed,
                 "benchmark": benchmark, "machine": machine, "threads": count, "samples": []}
     for number in range(1, plan["rounds"] + 1):
-        completed = subprocess.run([str(Path(executable).resolve()), "bench", "--only", benchmark,
+        completed = subprocess.run([str(Path(executable).resolve()), "rv", "bench", "--only", benchmark,
                                     "--repeat", "1", "--cooldown", "0"],
                                    cwd=ROOT, env=environment, stdout=subprocess.PIPE, text=True, check=True)
         results = decode(completed.stdout)
@@ -299,7 +299,7 @@ def desktop_rows(document, plan, testbed, benchmark):
         if category == "aggregation":
             memory_method += " Aggregation includes leaf preparation; higher-node peaks can include preceding first-level work."
         verification = {"verified_proofs": len(samples), "total_proofs": len(samples),
-                        "method": "Successful leanvm bench process and proof verification timing for every independent round",
+                        "method": "Successful leanvm rv bench process and proof verification timing for every independent round",
                         "verify_seconds": [sample["results"][name]["verify"]["value"] / 1e9 for sample in samples]}
         rows.append(row(title, description, path, category, count, timings, machine, plan["snapshot"],
                         samples[-1]["measured_at"], verification, peak_memory, memory_method))

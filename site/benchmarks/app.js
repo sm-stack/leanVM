@@ -386,7 +386,7 @@
     if (rows.length === 0 && dataset.snapshot === null && dataset.generated_at === null) return rows;
     const source = dataset.snapshot;
     if (!rows.length || !source || !/^[\w.-]+\/[\w.-]+$/.test(source.repository)
-      || source.branch !== "riscv-exploration" || !/^[a-f0-9]{40}$/.test(source.commit)
+      || source.branch !== "main" || !/^[a-f0-9]{40}$/.test(source.commit)
       || !Number.isSafeInteger(source.run_id) || source.run_id <= 0
       || source.run_url !== `https://github.com/${source.repository}/actions/runs/${source.run_id}`
       || timestamp(dataset.generated_at) === null) {

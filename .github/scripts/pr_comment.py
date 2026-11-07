@@ -129,7 +129,7 @@ def counts(doc, head):
             "### Exact counts",
             "",
             (
-                f"`cargo leanvm bench --cycles-only`, the counts that changed: {head} merged into its base, against the base {base}. "
+                f"`cargo leanvm rv bench --cycles-only`, the counts that changed: {head} merged into its base, against the base {base}. "
                 "Any increase fails the Counts check."
             ),
             "",

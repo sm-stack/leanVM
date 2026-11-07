@@ -1,0 +1,80 @@
+name: Counts
+
+# The RISC-V layer's tracked programs' exact counts (`cargo leanvm rv bench --cycles-only`:
+# RISC-V cycles, proven rows, committed words, and two aggregation trees' circuits' rows, proven
+# rows and committed words), the same on every machine, so one runner. Every run puts the tables
+# in its summary. A PR's run also counts its base, the merge commit's first parent, and saves
+# both as the artifact `counts`; counts-comment.yml, on the default branch, posts the counts that
+# changed on the PR. Any increase fails the run, once saved. A base that cannot count (one older
+# than the RISC-V layer) leaves nothing to compare.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    # Not `edited`: a description edit would restart, and so cancel, the PR's run.
+    types: [ opened, reopened, synchronize ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: counts-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The build the Test job caches (rust.yml): counts do not depend on the ISA.
+  RUSTFLAGS: -C target-cpu=haswell
+
+jobs:
+  counts:
+    name: Counts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On a PR, the merge commit and its first parent, the base.
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Count
+        # One pass: the JSON for the comparison, the table for the summary.
+        run: cargo leanvm rv bench --cycles-only --markdown-file "$GITHUB_STEP_SUMMARY" > head.json && cat head.json
+      - name: Count the base
+        id: base
+        if: github.event_name == 'pull_request'
+        run: |
+          git checkout --quiet --detach HEAD^1
+          if cargo leanvm rv bench --cycles-only > base.json; then
+            cat base.json
+            echo "compare=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The base cannot count, so there is nothing to compare."
+          fi
+          git checkout --quiet --detach "$GITHUB_SHA"
+      - name: Save the counts
+        if: steps.base.outputs.compare == 'true'
+        env:
+          PR: ${{ github.event.number }}
+        run: |
+          jq -n --argjson pr "$PR" --arg commit "$(git rev-parse HEAD^1)" \
+            --slurpfile base base.json --slurpfile head head.json \
+            '{pr: $pr, base: $commit, counts: {base: $base[0], head: $head[0]}}' > counts.json
+      - uses: actions/upload-artifact@v4
+        if: steps.base.outputs.compare == 'true'
+        with:
+          name: counts
+          path: counts.json
+      - name: Fail on any increase
+        if: steps.base.outputs.compare == 'true'
+        run: |
+          jq -r --slurpfile base base.json '
+            to_entries[] | .key as $program | .value | to_entries[] | .key as $measure
+            | $base[0][$program][$measure].value as $old | .value.value as $new
+            | select($old != null and $new > $old)
+            | "::error::\($program) \($measure): \($old) -> \($new)"' head.json > increases.txt
+          cat increases.txt
+          [ ! -s increases.txt ]

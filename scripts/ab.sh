@@ -4,18 +4,18 @@
 #
 #   scripts/ab.sh [--base REF] [--rounds N] [--out DIR] [--testbed NAME] [--pr N] [--ci] BENCHMARK...
 #
-# A benchmark is a case of `proven()` in bins/leanvm/src/tracked.rs (`hash-50000-16thread`), proven by the
+# A benchmark is a case of `proven()` in bins/leanvm/src/rv/tracked.rs (`hash-50000-16thread`), proven by the
 # CLI; a `benches/` target named in `target_of` below (`kernels`), run with `--json`; or `counts`,
-# the exact counts counts.yml compares (`bench --cycles-only`, once a side). Each is built on both
+# the exact counts counts.yml compares (`rv bench --cycles-only`, once a side). Each is built on both
 # sides and run N times a side (`--rounds`, default `ROUNDS` or 5) in the order base, head, head,
 # base, ... A base that cannot build or run one leaves the head's runs compared with nothing. The
 # runs are saved as DIR/ab-<testbed>-<benchmark>/ab.json (bench.yml's artifact), the counts as
 # DIR/counts/counts.json; DIR defaults to target/ab, the testbed to `local`, the PR to 1.
 #
 # Locally the head is the working tree, uncommitted changes included, and the base the merge-base
-# with upstream/riscv-exploration (or origin/riscv-exploration, else HEAD^1), built in a temporary
-# worktree into DIR/base-target, so neither the tree nor its build is touched. The comparison is
-# then printed by main's .github/scripts/pr_comment.py, read from upstream/main or origin/main.
+# with origin/main (or upstream/main, else HEAD^1), built in a temporary worktree into
+# DIR/base-target, so neither the tree nor its build is touched. The comparison is then printed by
+# main's .github/scripts/pr_comment.py, read from upstream/main or origin/main.
 # With --ci (or GITHUB_ACTIONS=true), as bench.yml runs it: the head is the commit checked out,
 # the base `--base` or else HEAD^1, checked out in place, and nothing is printed.
 # The CI runs are capped at 16 GiB with no swap via a systemd user scope. After its timed
@@ -27,15 +27,16 @@ set -euo pipefail
 # The `benches/` targets, by benchmark name: package, target, then any build flags. Any other name is a CLI case.
 target_of() {
   case $1 in
-    flock-class-batch-16thread) echo leanvm class_batch ;;
-    pcs-throughput-16thread) echo pcs throughput ;;
-    blake2s-batch-16thread) echo primitives hash_throughput ;;
+    flock-class-batch-16thread) echo leanvm_rv class_batch ;;
+    pcs-throughput-16thread) echo pcs_rv throughput ;;
+    blake2s-batch-16thread) echo primitives blake2s_throughput ;;
     kernels) echo primitives kernels ;;
+    keccak-hash-batch-262144) echo keccak_gkr hash_batch ;;
   esac
 }
 
 # One measured pass a run, as the CLI's `--repeat 1 --cooldown 0`: the rounds are the repeats.
-export BENCH_REPEAT=1 BENCH_COOLDOWN=0 FLOCK_N_LOG=18
+export BENCH_REPEAT=1 BENCH_COOLDOWN=0 FLOCK_N_LOG=18 KECCAK_N_LOG=18
 
 cargo=${CARGO:-cargo}
 
@@ -77,11 +78,11 @@ run() {
   local -a scope=()
   if [ "$ci" = true ]; then scope=(systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0); fi
   if [ "$1" = counts ]; then
-    ${scope[@]+"${scope[@]}"} "$exe" bench --cycles-only
+    ${scope[@]+"${scope[@]}"} "$exe" rv bench --cycles-only
   elif [ -n "$(target_of "$1")" ]; then
     ${scope[@]+"${scope[@]}"} "$exe" --json
   else
-    ${scope[@]+"${scope[@]}"} "$exe" bench --only "$1" --repeat 1 --cooldown 0
+    ${scope[@]+"${scope[@]}"} "$exe" rv bench --only "$1" --repeat 1 --cooldown 0
   fi
 }
 
@@ -155,7 +156,7 @@ json.dump({"pr": int(pr), "base": base, "testbed": testbed, "cpu": cpu, "runs": 
       if [ "$side" = base ] && [ "$has_base" = false ]; then continue; fi
       say "$1: tracing $side after the timed rounds"
       systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0 \
-        env LEANVM_NUM_THREADS=1 "$work/$side/$1" leanxmss --n 100 --repeat 1 --tracing \
+        env LEANVM_NUM_THREADS=1 "$work/$side/$1" rv leanxmss --n 100 --repeat 1 --tracing \
         2>&1 | tee "$dir/trace-$side.log"
     done
   fi
@@ -248,7 +249,7 @@ main() {
   if [ -z "$base" ]; then
     base=HEAD^1
     if [ "$ci" = false ]; then
-      for ref in upstream/riscv-exploration origin/riscv-exploration; do
+      for ref in origin/main upstream/main; do
         if git rev-parse --verify --quiet "$ref^{commit}" > /dev/null; then base=$(git merge-base HEAD "$ref") && break; fi
       done
     fi

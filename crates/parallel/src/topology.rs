@@ -1,13 +1,18 @@
 //! Which cores exist, and how to ask the OS for one.
 
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+use core::ffi::CStr;
+use std::num::NonZeroUsize;
 use std::sync::OnceLock;
+
+static TOPOLOGY: OnceLock<Topology> = OnceLock::new();
 
 /// Worker counts for the pool: performance cores first, then the efficiency
 /// cores that join the same work queue at a lower scheduling class.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Topology {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Topology {
     /// Workers scheduled on performance cores, including the dispatcher.
-    pub(crate) perf: usize,
+    pub perf: usize,
     /// Extra workers scheduled on efficiency cores; `0` on a homogeneous host.
     pub efficiency: usize,
 }
@@ -28,8 +33,7 @@ impl Topology {
 /// `1` is the exception and means strictly sequential (no workers at all), so a
 /// single-threaded debugging run really is one thread.
 #[must_use]
-pub(crate) fn topology() -> Topology {
-    static TOPOLOGY: OnceLock<Topology> = OnceLock::new();
+pub fn topology() -> Topology {
     *TOPOLOGY.get_or_init(|| {
         let requested = std::env::var("LEANVM_NUM_THREADS")
             .ok()
@@ -44,6 +48,15 @@ pub(crate) fn topology() -> Topology {
             None => default_topology(),
         }
     })
+}
+
+pub(crate) fn configure_threads(threads: NonZeroUsize) -> Result<(), Topology> {
+    let requested = Topology {
+        perf: threads.get(),
+        efficiency: 0,
+    };
+    let actual = *TOPOLOGY.get_or_init(|| requested);
+    if actual == requested { Ok(()) } else { Err(actual) }
 }
 
 /// Worker count including the dispatcher.
@@ -117,6 +130,13 @@ fn cpu_list(list: &str) -> Option<Vec<usize>> {
 }
 
 /// Efficiency-core count on Apple silicon, else `0`.
+#[cfg_attr(
+    not(all(target_arch = "aarch64", target_os = "macos")),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "Apple silicon discovers its efficiency cores at runtime."
+    )
+)]
 fn efficiency_cores() -> usize {
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     if let Some(n) = sysctl_usize(c"hw.perflevel1.logicalcpu") {
@@ -128,7 +148,7 @@ fn efficiency_cores() -> usize {
 /// Read an integer `sysctl` by name through the syscall, never a spawned
 /// `sysctl` process. Any failure reads as "unknown".
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-fn sysctl_usize(name: &core::ffi::CStr) -> Option<usize> {
+fn sysctl_usize(name: &CStr) -> Option<usize> {
     let mut value: i32 = 0;
     let mut len = core::mem::size_of::<i32>();
     // SAFETY: a read-only sysctl; `value`/`len` are correctly sized and the
@@ -158,6 +178,13 @@ pub(crate) enum Qos {
 
 /// Tag the calling thread with `qos`. Best-effort, since QoS is a scheduling hint
 /// and a failure must not affect correctness, only placement. No-op off macOS.
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "macOS thread scheduling is a runtime system call."
+    )
+)]
 pub(crate) fn set_qos(qos: Qos) {
     #[cfg(target_os = "macos")]
     {

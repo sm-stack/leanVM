@@ -2,9 +2,51 @@
 //! caller partitioned them, reductions are order-independent, and a task panic
 //! surfaces on the dispatcher without wedging the pool.
 
+#[cfg(not(miri))]
+use parallel::{AlreadyConfigured, Topology};
+#[cfg(not(miri))]
+use std::num::NonZeroUsize;
+#[cfg(not(miri))]
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-const SIZES: [usize; 7] = [0, 1, 2, 17, 1_000, 4_096, 100_000];
+const SIZES: [usize; 7] = [0, 1, 2, 17, scaled(1_000), scaled(4_096), scaled(100_000)];
+
+/// A test length, cut down under Miri, which interprets every item.
+const fn scaled(n: usize) -> usize {
+    if cfg!(miri) { n / 32 } else { n }
+}
+
+#[test]
+#[cfg(not(miri))]
+fn explicit_thread_count_is_idempotent_and_cannot_change_a_live_pool() {
+    const CHILD: &str = "LEANVM_TEST_EXPLICIT_THREADS";
+    if std::env::var_os(CHILD).is_none() {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "explicit_thread_count_is_idempotent_and_cannot_change_a_live_pool",
+            ])
+            .env(CHILD, "1")
+            .env("LEANVM_NUM_THREADS", "4")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let one = NonZeroUsize::new(1).unwrap();
+    parallel::init_with_threads(one).unwrap();
+    parallel::init_with_threads(one).unwrap();
+    assert_eq!(parallel::num_threads(), 1);
+    let caller = std::thread::current().id();
+    parallel::for_each(64, |_| assert_eq!(std::thread::current().id(), caller));
+    assert_eq!(
+        parallel::init_with_threads(NonZeroUsize::new(2).unwrap()),
+        Err(AlreadyConfigured(Topology { perf: 1, efficiency: 0 }))
+    );
+    assert_eq!(parallel::map_reduce(16, || 0, |i| i, |a, b| a + b), 120);
+}
 
 #[test]
 fn every_item_runs_exactly_once() {
@@ -20,13 +62,40 @@ fn every_item_runs_exactly_once() {
 }
 
 #[test]
+fn tiny_dispatches_run_every_item_while_workers_wake_late() {
+    // Invariant: a dispatch finishes once its items are done, whatever the idle workers do.
+    //
+    // Fixture state: jobs of 2 items leave most workers idle, and a worker that wakes late
+    // must find the job closed rather than run it, or run the next one it finds open.
+    //
+    //     batch 0:  back-to-back, workers spinning
+    //     batch 1:  after 5 ms idle, workers parked
+    for batch in 0..2 {
+        if batch == 1 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for round in 0..scaled(1000) {
+            let hits: Vec<AtomicUsize> = (0..2).map(|_| AtomicUsize::new(0)).collect();
+            parallel::for_each(2, |i| {
+                hits[i].fetch_add(1, Ordering::Relaxed);
+            });
+            // The borrow of `hits` ends here, so a late worker touching it would be a use after return.
+            assert!(
+                hits.iter().all(|h| h.load(Ordering::Relaxed) == 1),
+                "batch {batch} round {round}"
+            );
+        }
+    }
+}
+
+#[test]
 fn chunk_ranges_tile_the_domain() {
     for n in SIZES {
         let seen: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
         parallel::for_each_chunk(n, |start, end| {
             assert!(start < end && end <= n, "range {start}..{end} outside 0..{n}");
-            for i in start..end {
-                seen[i].fetch_add(1, Ordering::Relaxed);
+            for count in &seen[start..end] {
+                count.fetch_add(1, Ordering::Relaxed);
             }
         });
         assert!(seen.iter().all(|c| c.load(Ordering::Relaxed) == 1), "n = {n}");
@@ -54,7 +123,7 @@ fn fill_writes_every_slot() {
 #[test]
 fn chunks_mut_hands_out_disjoint_slices() {
     for chunk in [1usize, 3, 64, 1024] {
-        let mut data = vec![0usize; 5_000];
+        let mut data = vec![0usize; scaled(5_000)];
         parallel::chunks_mut(&mut data, chunk, |ci, sub| {
             for (k, slot) in sub.iter_mut().enumerate() {
                 *slot = ci * chunk + k;
@@ -66,7 +135,7 @@ fn chunks_mut_hands_out_disjoint_slices() {
 
 #[test]
 fn for_each_mut_reports_global_indices() {
-    let mut data = vec![0usize; 7_777];
+    let mut data = vec![0usize; scaled(7_777)];
     parallel::for_each_mut(&mut data, |i, slot| *slot = i * 3);
     assert!(data.iter().enumerate().all(|(i, &v)| v == i * 3));
 }
@@ -101,18 +170,33 @@ fn map_reduce_with_state_reuses_worker_scratch() {
 #[test]
 fn task_panic_reaches_the_dispatcher_and_the_pool_survives() {
     let result = std::panic::catch_unwind(|| {
-        parallel::for_each(1_000, |i| {
-            assert_ne!(i, 500, "boom");
+        parallel::for_each(scaled(1_000), |i| {
+            assert_ne!(i, scaled(500), "boom");
         });
     });
     assert!(result.is_err(), "a task panic must be re-raised on the dispatcher");
     // The dispatch lock must not be poisoned and the workers must still be alive.
-    let out = parallel::map_collect(1_000, |i| i);
+    let out = parallel::map_collect(scaled(1_000), |i| i);
     assert!(out.iter().enumerate().all(|(i, &v)| v == i));
 }
 
 /// Nesting is a bug, not a slow path: it must be reported, not silently
 /// serialized, so that a lost fan-out cannot hide as a slow one.
+#[test]
+fn chunks_mut2_stays_in_lockstep() {
+    let mut a = vec![0usize; scaled(3_000)];
+    let mut b = vec![0usize; scaled(3_000)];
+    parallel::chunks_mut2(&mut a, &mut b, 128, |ci, sa, sb| {
+        assert_eq!(sa.len(), sb.len());
+        for (k, (x, y)) in sa.iter_mut().zip(sb.iter_mut()).enumerate() {
+            *x = ci * 128 + k;
+            *y = 2 * (ci * 128 + k);
+        }
+    });
+    assert!(a.iter().enumerate().all(|(i, &v)| v == i));
+    assert!(b.iter().enumerate().all(|(i, &v)| v == 2 * i));
+}
+
 #[test]
 #[should_panic = "nested parallel dispatch"]
 fn nested_dispatch_panics_rather_than_deadlocking() {

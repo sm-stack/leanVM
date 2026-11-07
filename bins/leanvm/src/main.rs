@@ -1,13 +1,20 @@
-//! Benchmark CLI for signature and blob proofs, recursion, batched Keccak, and the Fibonacci demo.
+//! Benchmark CLI for signature and blob proofs, recursion, batched Keccak, and the Fibonacci demo, and, under `rv`,
+//! the RISC-V machine's.
 
+/// jemalloc, or under `system-alloc` the system allocator for a heap profiler that hooks `malloc`; counted either way.
+#[cfg(not(feature = "system-alloc"))]
 #[global_allocator]
-static ALLOCATOR: bench::Jemalloc = bench::Jemalloc;
+static ALLOCATOR: bench::Counting<bench::Jemalloc> = bench::Counting(bench::Jemalloc);
+#[cfg(feature = "system-alloc")]
+#[global_allocator]
+static ALLOCATOR: bench::Counting<std::alloc::System> = bench::Counting(std::alloc::System);
 
 use clap::{Parser, Subcommand};
 
 mod benchmark;
 mod fibonacci;
 mod report;
+mod rv;
 
 #[derive(Parser)]
 struct Cli {
@@ -105,12 +112,23 @@ enum Command {
         #[arg(long, default_value = "2000000")]
         n: usize,
     },
+    /// The RISC-V machine: its workloads, aggregation trees and tracked benchmarks.
+    Rv(rv::Cli),
 }
 
 fn main() {
     let cli = Cli::parse();
+    if let Command::Rv(command) = cli.command {
+        let shared = rv::Shared {
+            log_inv_rate: cli.log_inv_rate,
+            tracing: cli.tracing,
+            repeat: cli.repeat,
+            cooldown: cli.cooldown,
+        };
+        return rv::run(command, shared);
+    }
     leanvm_core::init_prover();
-    let plan = bench::Plan::new(cli.repeat, cli.cooldown);
+    let plan = bench::Plan::new(cli.repeat, std::time::Duration::from_secs(cli.cooldown));
     if cli.tracing && !matches!(&cli.command, Command::Recursion { .. }) {
         bench::init_tracing();
     }
@@ -142,5 +160,6 @@ fn main() {
         Command::Fibonacci { n } => {
             fibonacci::run_fibonacci(n, cli.log_inv_rate, plan);
         }
+        Command::Rv(_) => unreachable!("dispatched above"),
     }
 }

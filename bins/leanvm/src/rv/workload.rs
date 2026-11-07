@@ -1,13 +1,13 @@
 //! A program run on its advice, proven and verified the way the benchmarks report it.
 
-use crate::{chain, refuse};
+use crate::rv::{chain, refuse};
 use bench::Plan;
 use bench::{pretty_f64, pretty_integer};
-use leanvm::aggregate::{ClaimGroup, ClaimSet};
-use leanvm::asm::{Add, Addi, Asm, Bne, Reg};
-use leanvm::{Output, Program, ProvenRun, Prover, Region, Stats};
 use leanvm_guest::{PublicValues, Run};
-use primitives::hash::{digest_words, hash};
+use leanvm_rv::aggregate::{ClaimGroup, ClaimSet};
+use leanvm_rv::asm::{Add, Addi, Asm, Bne, Reg};
+use leanvm_rv::{Output, Program, ProvenRun, Prover, Region, Stats};
+use primitives::blake2s::{digest_words, hash};
 use std::path::Path;
 
 /// One run of a program: what it is given and what it must output.
@@ -100,7 +100,7 @@ impl Workload {
         let title = format!("BLAKE2s of {} bytes", pretty_integer(&length));
         Self::hosted(
             title,
-            include_bytes!("../../../programs/hash/hash.elf"),
+            include_bytes!("../../../../programs/hash/hash.elf"),
             run,
             length,
             "byte",
@@ -266,7 +266,7 @@ impl Workload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leanvm::Rate;
+    use leanvm_rv::Rate;
 
     #[test]
     fn the_workloads_prove() {

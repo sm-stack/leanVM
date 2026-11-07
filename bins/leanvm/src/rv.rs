@@ -1,11 +1,11 @@
-//! Benchmark CLI.
+//! The RISC-V machine's subcommands, `cargo leanvm rv ...`: its workloads, aggregation trees and tracked benchmarks.
 
 use aggregate::{Declare, LeafProgram, Signers};
 use bench::Plan;
 use clap::builder::RangedU64ValueParser;
-use clap::{Parser, Subcommand};
-use leanvm::aggregate::Capacity;
-use leanvm::{Prover, Randomness, Rate};
+use clap::{Args, Subcommand};
+use leanvm_rv::aggregate::Capacity;
+use leanvm_rv::{Prover, Randomness, Rate};
 use std::error::Error;
 use std::fmt::Arguments;
 use std::num::{NonZeroUsize, ParseIntError};
@@ -13,51 +13,35 @@ use std::path::PathBuf;
 use std::time::Duration;
 use workload::Workload;
 
-/// jemalloc, or under `system-alloc` the system allocator for a heap profiler that hooks `malloc` (AGENTS.md, Profiling); counted either way.
-#[cfg(not(feature = "system-alloc"))]
-#[global_allocator]
-static ALLOCATOR: bench::Counting<bench::Jemalloc> = bench::Counting(bench::Jemalloc);
-#[cfg(feature = "system-alloc")]
-#[global_allocator]
-static ALLOCATOR: bench::Counting<std::alloc::System> = bench::Counting(std::alloc::System);
-
 mod aggregate;
 mod tracked;
 mod workload;
 
-#[derive(Parser)]
-struct Cli {
-    /// WHIR inverse-rate logarithm (1 through 4).
-    #[arg(long = "log-inv-rate", value_name = "LOG_INV_RATE", global = true, default_value = "1", value_parser = parse_rate)]
-    rate: Rate,
-
+/// The RISC-V subcommands and their own options. `--log-inv-rate`, `--tracing`, `--repeat` and `--cooldown` are the CLI's.
+#[derive(Args)]
+pub struct Cli {
     /// WHIR inverse-rate logarithm of an aggregation tree's leaf proofs (1 through 4); the tree's own proofs take `--log-inv-rate`.
     #[arg(long = "leaf-log-inv-rate", value_name = "LOG_INV_RATE", global = true, default_value = "2", value_parser = parse_rate)]
     leaf_rate: Rate,
-
-    /// Enable hierarchical timing traces. Use RUST_LOG to adjust verbosity.
-    #[arg(long, global = true)]
-    tracing: bool,
 
     /// Make zero-knowledge proofs, each from fresh randomness of the operating system: a single run's, or an aggregation tree's leaves.
     #[arg(long, global = true)]
     zk: bool,
 
-    /// Measured proving passes after warmup.
-    #[arg(
-        long,
-        global = true,
-        default_value_t = 1,
-        value_parser = RangedU64ValueParser::<usize>::new().range(1..)
-    )]
-    repeat: usize,
-
-    /// Idle seconds before each measured pass.
-    #[arg(long, global = true, default_value_t = 2)]
-    cooldown: u64,
-
     #[command(subcommand)]
     command: Command,
+}
+
+/// The options the RISC-V subcommands share with the rest of the CLI.
+pub struct Shared {
+    /// WHIR inverse-rate logarithm.
+    pub log_inv_rate: usize,
+    /// Hierarchical timing traces.
+    pub tracing: bool,
+    /// Measured proving passes after warmup.
+    pub repeat: usize,
+    /// Idle seconds before each measured pass.
+    pub cooldown: u64,
 }
 
 #[derive(Subcommand)]
@@ -207,8 +191,10 @@ fn refuse(what: Arguments) -> ! {
     std::process::exit(1)
 }
 
-fn main() {
-    let cli = Cli::parse();
+/// Runs a RISC-V subcommand, before anything else has used the thread pool.
+pub fn run(cli: Cli, shared: Shared) {
+    let log_inv_rate = u8::try_from(shared.log_inv_rate).expect("clap bounds --log-inv-rate");
+    let rate = Rate::new(log_inv_rate).unwrap_or_else(|error| refuse(format_args!("--log-inv-rate: {error}")));
     let fixed_threads = match &cli.command {
         Command::Bench { cycles_only: true, .. } => false,
         Command::Bench { only, .. } => only.as_deref().is_some_and(|name| name.ends_with("-16thread")),
@@ -232,7 +218,7 @@ fn main() {
             "--zk is not for the tracked benchmarks, which are plain proofs"
         ));
     }
-    let prover = Prover::new(cli.rate);
+    let prover = Prover::new(rate);
     let prover = if cli.zk {
         prover.zero_knowledge(Randomness::Os)
     } else {
@@ -245,8 +231,8 @@ fn main() {
     } else {
         leaf_prover
     };
-    let plan = Plan::new(cli.repeat, Duration::from_secs(cli.cooldown));
-    if cli.tracing {
+    let plan = Plan::new(shared.repeat, Duration::from_secs(shared.cooldown));
+    if shared.tracing {
         bench::init_tracing();
     }
     match cli.command {

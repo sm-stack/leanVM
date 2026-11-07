@@ -2,6 +2,7 @@
 name = "leanvm-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [[bin]]
@@ -12,6 +13,10 @@ doc = false
 
 [lints]
 workspace = true
+
+[features]
+# The system allocator in place of `bench::Jemalloc`, still under `bench::Counting`, for heap profilers that hook `malloc` (heaptrack). Slower: for memory questions only.
+system-alloc = []
 
 [dependencies]
 rec_aggregation = { workspace = true, features = ["signers-cache"] }
@@ -25,3 +30,17 @@ bench.workspace = true
 rand.workspace = true
 tracing.workspace = true
 clap = { version = "4", features = ["derive"] }
+# The RISC-V machine (`rv`).
+leanvm_rv.workspace = true
+# The pool's size: a case pinned to a thread count is proven in a process of its own.
+parallel.workspace = true
+leanvm_guest.workspace = true
+# The programs' host sides: their guests' inputs and expected outputs.
+leanxmss-host.workspace = true
+leansphincs-host.workspace = true
+falcon-host.workspace = true
+stateproof-host.workspace = true
+shielded-host.workspace = true
+leanda-host.workspace = true
+# The pinned cases' benchmarks, merged with this process's.
+serde_json = "1"

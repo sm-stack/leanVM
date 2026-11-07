@@ -1,16 +1,16 @@
 //! Aggregation: prove a leaf program once, then a tree over copies of its proof, and report each kind of node and the whole tree; or, with `--signers`, a signer-set tree over distinct leaves, each publishing its signer set, proven bottom-up and verified by its root's set alone.
 
-use crate::refuse;
-use crate::workload::Workload;
+use crate::rv::refuse;
+use crate::rv::workload::Workload;
 use bench::{Plan, Timing};
 use bench::{pretty_f64, pretty_integer};
 use clap::ValueEnum;
 use core::ops::Range;
-use leanvm::aggregate::{
+use leanvm_rv::aggregate::{
     Aggregate, Capacity, CircuitStats, ClaimLeaf, ClaimSet, ClaimShape, Kind, Leaf, LeafShape, Tree, TreeProof,
     TreeShape,
 };
-use leanvm::{ProvenRun, Prover};
+use leanvm_rv::{ProvenRun, Prover};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -461,8 +461,8 @@ pub fn run_signers(
 mod tests {
     use super::{Declare, LeafProgram, Signers, leaf_groups, run_signers};
     use bench::Plan;
-    use leanvm::aggregate::Capacity;
-    use leanvm::{Prover, Rate};
+    use leanvm_rv::aggregate::Capacity;
+    use leanvm_rv::{Prover, Rate};
 
     #[test]
     fn consecutive_leaves_share_their_overlap() {

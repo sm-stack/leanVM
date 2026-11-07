@@ -59,9 +59,7 @@ fn main() {
     };
 
     let (mut commit_t, mut open_t) = (Timing::default(), Timing::default());
-    plan.warm_then_measure(|last| {
-        let _quiet = (!last).then(bench::suppress_tracing);
-
+    plan.warm_then_measure(|| {
         let t = Instant::now();
         let (cm, pd) = tracing::info_span!("Commit").in_scope(|| commit(&witness, log_n, pc.initial_k, log_inv_rate));
         commit_t.push(t.elapsed().as_secs_f64());
@@ -97,7 +95,7 @@ fn main() {
 
     println!(
         "\nPCS throughput: 2^{log_n} variables, rate 1/2^{log_inv_rate}, mean of {}",
-        pretty_integer(plan.repeat)
+        pretty_integer(plan.repeat())
     );
     println!(
         "  committed data                  : {:>8.1} MiB  ({:>13} F64)",

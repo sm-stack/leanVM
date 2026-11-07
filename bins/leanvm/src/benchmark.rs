@@ -73,7 +73,7 @@ fn describe(n_lean_xmss: usize, n_lean_sphincs: usize) -> String {
 
 /// Prove signatures and `n_blobs` blobs in one leaf, then verify it.
 ///
-/// Proving runs one discarded warmup pass followed by `plan.repeat` measured
+/// Proving runs one discarded warmup pass followed by `plan.repeat()` measured
 /// passes; see [`bench`] for why the first pass is not
 /// representative and why the cooldown matters.
 pub fn run_aggregation(n_lean_xmss: usize, n_lean_sphincs: usize, n_blobs: usize, log_inv_rate: usize, plan: Plan) {
@@ -91,8 +91,7 @@ pub fn run_aggregation(n_lean_xmss: usize, n_lean_sphincs: usize, n_blobs: usize
     let blobs = blobs(n_blobs, 0);
     // Only the final measured pass of each stage is traced: the tree describes the
     // proof the reported timings are about, instead of repeating itself per pass.
-    let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
-        let _quiet = (!last).then(bench::suppress_tracing);
+    let ((sig, stats), prove_time) = plan.warm_then_measure(|| {
         aggregate_with_stats(
             &[],
             raw_lean_xmss.clone(),
@@ -103,8 +102,7 @@ pub fn run_aggregation(n_lean_xmss: usize, n_lean_sphincs: usize, n_blobs: usize
         )
         .expect("leaf aggregates")
     });
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
-        let _quiet = (!last).then(bench::suppress_tracing);
+    let (_, verify_time) = plan.without_cooldown().measure_quiet(|| {
         sig.verify().expect("the leaf aggregate verifies");
     });
     drop(trace_span);
@@ -187,12 +185,10 @@ pub fn run_recursion(
     if enable_tracing {
         bench::init_tracing();
     }
-    let ((sig, stats), prove_time) = plan.warm_then_measure(|last| {
-        let _quiet = (!last).then(bench::suppress_tracing);
+    let ((sig, stats), prove_time) = plan.warm_then_measure(|| {
         aggregate_with_stats(&children, vec![], vec![], &[], None, log_inv_rate).expect("node aggregates")
     });
-    let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
-        let _quiet = (!last).then(bench::suppress_tracing);
+    let (_, verify_time) = plan.without_cooldown().measure_quiet(|| {
         sig.verify().expect("the recursive aggregate verifies");
     });
 

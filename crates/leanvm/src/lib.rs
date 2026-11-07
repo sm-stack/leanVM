@@ -1,5 +1,7 @@
 //! leanVM proves leanXMSS and leanSPHINCS signature claims and LeanDA blob well-formedness.
 //!
+//! [`rv`] is the RISC-V machine, which proves any rv64im guest program.
+//!
 //! Release only: the zkDSL compiler [`setup`] runs overflows the debug stack.
 //!
 //! End to end in [`crates/leanvm/tests/api.rs`](https://github.com/leanEthereum/leanVM/blob/main/crates/leanvm/tests/api.rs).
@@ -10,6 +12,10 @@ pub use rec_aggregation::{
 };
 
 pub use leanvm_core::pcs::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE};
+
+/// The RISC-V (rv64im) machine: any guest program proven, aggregation trees over its proofs, and zero-knowledge
+/// leaves. It shares no proof format with the items above.
+pub use leanvm_rv as rv;
 
 /// LeanDA commitments. Blob symbols are `u64` words read in little-endian byte order.
 pub mod lean_da {

@@ -23,7 +23,7 @@ pub struct Report {
 }
 
 /// Prove `n` random permutations, a state committed every `depth` rounds, with one warmup pass
-/// then `plan.repeat` measured ones, and verify the proof. The output is not committed: a claim
+/// then `plan.repeat()` measured ones, and verify the proof. The output is not committed: a claim
 /// on it is bound in the transcript, as the VM's memory bus does.
 pub fn run(n: usize, depth: usize, log_inv_rate: usize, plan: Plan) -> Report {
     let shape = Shape::new(n, depth);
@@ -76,8 +76,7 @@ pub fn run(n: usize, depth: usize, log_inv_rate: usize, plan: Plan) -> Report {
 
     let mut stages: [Timing; 6] = std::array::from_fn(|_| Timing::default());
     let mut warm = true;
-    let (transcript, _) = plan.warm_then_measure(|final_pass| {
-        let _quiet = (!final_pass).then(bench::suppress_tracing);
+    let (transcript, _) = plan.warm_then_measure(|| {
         let (proof, secs) = prove_pass();
         if !std::mem::take(&mut warm) {
             for (timing, s) in stages.iter_mut().zip(secs) {
@@ -89,7 +88,7 @@ pub fn run(n: usize, depth: usize, log_inv_rate: usize, plan: Plan) -> Report {
 
     let proof = scalar_proof(&transcript);
     let iv = primitives::hash::hash(LABEL);
-    let (_, verify) = Plan::new(plan.repeat, 0).measure_quiet(|_| {
+    let (_, verify) = plan.without_cooldown().measure_quiet(|| {
         verifier::verify_keccak_batch(&iv, shape.n_log(), shape.depth(), log_inv_rate, &proof)
             .expect("the batch proof verifies");
     });

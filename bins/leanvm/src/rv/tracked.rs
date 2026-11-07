@@ -18,15 +18,15 @@
 //! counted the same way, its node circuit of every arity, and proven the same way, each node
 //! declaring the union of its children's sets and verified by it.
 
-use crate::refuse;
-use crate::workload::{Items, Workload};
+use crate::rv::refuse;
+use crate::rv::workload::{Items, Workload};
 use bench::pretty_integer;
 use bench::{Heap, Metric, Plan, Stage, Timing, bencher_json};
-use leanvm::aggregate::{
+use leanvm_rv::aggregate::{
     Aggregate, Capacity, CircuitStats, ClaimLeaf, ClaimShape, Kind, Leaf, LeafShape, Tree, TreeError, TreeProof,
     TreeShape,
 };
-use leanvm::{ProvenRun, Prover, Rate, Stats};
+use leanvm_rv::{ProvenRun, Prover, Rate, Stats};
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
 use std::fs::OpenOptions;

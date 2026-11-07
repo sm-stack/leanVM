@@ -1,10 +1,10 @@
 //! A claim-set tree is its leaf program's: a leanXMSS tree and a leanSPHINCS tree never take each other's leaves,
 //! aggregates or roots, so the two schemes' claims never mix.
 
-use leanvm::aggregate::{
+use leanvm_rv::aggregate::{
     Aggregate, Capacity, ClaimGroup, ClaimLeaf, ClaimSet, ClaimShape, Leaf, LeafShape, Tree, TreeError, TreeShape,
 };
-use leanvm::{Program, ProvenRun, Prover, Rate};
+use leanvm_rv::{Program, ProvenRun, Prover, Rate};
 
 const CAPACITY: Capacity = Capacity { claims: 8, groups: 2 };
 

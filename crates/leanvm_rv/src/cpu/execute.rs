@@ -6,8 +6,9 @@
 
 use crate::rv::machine::{MemoryAccess, Step};
 use crate::rv::{BlockAccess, Class, Ext, Hash, Limb, Machine, RegisterFile, RiscvProgram, WordAccess};
-use crate::tables::{Access, ClassSpec, Clock, PerTable, Register, TableId};
+use crate::tables::{Access, ClassSpec, Clock, N_TABLES, PerTable, Register, TableId};
 use primitives::field::F64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A finished run: its output, its rows, and what it left behind.
 pub struct Execution {
@@ -44,6 +45,28 @@ impl LastAccess {
     /// Every cell's last timestamp, as field words.
     fn timestamps(&self) -> Vec<F64> {
         self.0.iter().map(|&t| F64(t)).collect()
+    }
+}
+
+/// How long each of a trace's arrays ended, padding rows included, on the last run of a program.
+///
+/// The next run of that program reserves as much, so its arrays never regrow: a regrowth copies every row so far
+/// into fresh pages. A run that outgrows them grows as before.
+#[derive(Debug, Default)]
+pub(super) struct Capacities {
+    rows: [AtomicUsize; N_TABLES],
+    hash: AtomicUsize,
+    ext: AtomicUsize,
+}
+
+impl Capacities {
+    /// Remember the lengths `trace` ended at.
+    pub(super) fn keep(&self, trace: &Trace) {
+        for t in TableId::ALL {
+            self.rows[t.index()].store(trace.rows[t].len(), Ordering::Relaxed);
+        }
+        self.hash.store(trace.hash.len(), Ordering::Relaxed);
+        self.ext.store(trace.ext.len(), Ordering::Relaxed);
     }
 }
 
@@ -145,14 +168,15 @@ impl Recorder for TraceBuilder {
 }
 
 impl TraceBuilder {
-    /// The trace of a run of `p` about to start on this advice region.
-    pub(super) fn new(p: &RiscvProgram, advice: &[u64]) -> Self {
+    /// The trace of a run of `p` about to start on this advice region, its arrays as long as `capacities` says.
+    pub(super) fn new(p: &RiscvProgram, advice: &[u64], capacities: &Capacities) -> Self {
+        let reserve = |n: &AtomicUsize| n.load(Ordering::Relaxed);
         Self {
             regs: LastAccess::new(RegisterFile::CELLS),
             ram: LastAccess::new((1 << p.log_ram()) + (1 << p.log_advice())),
-            rows: PerTable::default(),
-            hash: Vec::new(),
-            ext: Vec::new(),
+            rows: PerTable::from_fn(|t: TableId| Vec::with_capacity(reserve(&capacities.rows[t.index()]))),
+            hash: Vec::with_capacity(reserve(&capacities.hash)),
+            ext: Vec::with_capacity(reserve(&capacities.ext)),
             padding_prev: PerTable::from_fn(|t: TableId| t.spec().slots().into_iter().map(u64::from).collect()),
             slots: PerTable::from_fn(|t: TableId| Slots::of(t.spec())),
             adv_init: advice.iter().map(|&w| F64(w)).collect(),

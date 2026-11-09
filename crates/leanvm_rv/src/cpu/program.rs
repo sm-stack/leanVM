@@ -5,7 +5,7 @@
 use super::batch::{Batch, FormPowers};
 use super::deferred::DeferredClaims;
 use super::error::{CpuError, ProveError, VerifyError};
-use super::execute::{Execution, Recorder, RowCounter, TraceBuilder};
+use super::execute::{Capacities, Execution, Recorder, RowCounter, TraceBuilder};
 use super::filler::{FillBlocks, Plan};
 use super::key::{ProgramCommitment, VerifyingKey};
 use super::layout::{Announcement, Schema, Sizes};
@@ -43,6 +43,8 @@ pub struct Program {
     pub(super) key: VerifyingKey,
     /// Absent for a program rebuilt from a known root, which only a verifier uses.
     pub(super) committed: Option<Arc<ProgramCommitment>>,
+    /// The trace's array lengths on this program's last run, which its clones share.
+    pub(super) capacities: Arc<Capacities>,
 }
 
 impl Program {
@@ -124,6 +126,7 @@ impl Program {
             digest: *key.digest(),
             key,
             committed: Some(committed),
+            capacities: Arc::default(),
             rv,
             filler,
         })
@@ -145,6 +148,7 @@ impl Program {
             filler: self.filler.clone(),
             key,
             committed: Some(committed),
+            capacities: Arc::default(),
         })
     }
 
@@ -167,6 +171,7 @@ impl Program {
             filler: self.filler.clone(),
             key,
             committed: None,
+            capacities: Arc::default(),
         })
     }
 
@@ -191,6 +196,7 @@ impl Program {
             digest: *key.digest(),
             key,
             committed: None,
+            capacities: Arc::default(),
             rv,
             filler,
         })
@@ -211,7 +217,7 @@ impl Program {
     pub(super) fn execute_at(&self, advice: &[u64], floor: PerTable<usize>) -> Result<Execution, ProveError> {
         let p = &self.rv;
         let mut m = self.machine(advice)?;
-        let mut trace = TraceBuilder::new(p, m.memory().advice());
+        let mut trace = TraceBuilder::new(p, m.memory().advice(), &self.capacities);
         let ts = self.run(&mut m, &mut trace)?;
         let output = m.output()?;
 
@@ -228,6 +234,7 @@ impl Program {
         }
 
         let trace = trace.finish(p, &m, ts);
+        self.capacities.keep(&trace);
         let proven_rows = trace.rows.values().map(Vec::len).sum();
         Ok(Execution {
             output,

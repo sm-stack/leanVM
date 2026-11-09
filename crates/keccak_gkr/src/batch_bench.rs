@@ -175,8 +175,20 @@ pub(crate) fn open_commitment(
     config: &ProverConfig,
     openings: Openings,
 ) {
-    let (ring, outputs) = openings.into_pcs_claims(0);
-    let points: Vec<_> = outputs.into_iter().collect();
+    let ring = pcs::stack_open::RingSwitchOpen {
+        offset: 0,
+        claims: vec![pcs::stack_open::RingSwitchClaim {
+            suffix_point: openings.inputs.point,
+            s_hat_v: Some(openings.inputs.slices),
+        }],
+    };
+    let points: Vec<_> = (openings.outputs.into_iter())
+        .map(|outputs| pcs::stack_open::StackClaim::Point {
+            offset: 0,
+            low_point: outputs.point,
+            value: outputs.value,
+        })
+        .collect();
     pcs::stack_open::open_batch_mixed_whir_stacked(ps, shape.stack_log(), stack, prover_data, config, &points, &ring);
 }
 

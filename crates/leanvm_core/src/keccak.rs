@@ -16,6 +16,7 @@
 //! cells, each side in one of two layouts ([`cell_lanes`]). The committed input is the lanes
 //! the VM reads, and the output is the permutation's, written as it is.
 
+use crate::pcs::{RingSwitchClaim, RingSwitchOpen, SlotClaim};
 use crate::transcript::ProverState;
 use keccak_gkr::witness::{BLOCK, block_lanes};
 use keccak_gkr::{Openings, OutputClaim, Shape, Witness};
@@ -217,6 +218,24 @@ impl Blocks {
         Witness::write_committed(shape, &self.lanes, q_keccak);
         Reduction { shape, steps }
     }
+}
+
+/// The reduction's openings as claims on the committed states, placed at `offset` of the stack: the inputs'
+/// ring-switched, the outputs' a point claim to add to the batch.
+pub(crate) fn pcs_claims(openings: Openings, offset: usize) -> (RingSwitchOpen, Option<SlotClaim>) {
+    let ring = RingSwitchOpen {
+        offset,
+        claims: vec![RingSwitchClaim {
+            suffix_point: openings.inputs.point,
+            s_hat_v: Some(openings.inputs.slices),
+        }],
+    };
+    let outputs = openings.outputs.map(|outputs| SlotClaim::Point {
+        offset,
+        low_point: outputs.point,
+        value: outputs.value,
+    });
+    (ring, outputs)
 }
 
 #[cfg(test)]

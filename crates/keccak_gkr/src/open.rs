@@ -7,8 +7,7 @@
 //! The first claim weighs the bits of a word as the word itself does, so its 64 evaluations
 //! are only ever needed as the one they add up to: the committed polynomial at that point.
 
-use fiat_shamir::transcript::ProverState;
-use pcs::stack_open::{RingSwitchClaim, RingSwitchOpen, StackClaim};
+use crate::Transcript;
 use primitives::field::{F64, F192, F192Unreduced};
 use primitives::multilinear::{eq_table, interp, mle_eval, poly_eval};
 
@@ -37,26 +36,6 @@ pub struct WordOpening {
 pub struct Openings {
     pub outputs: Option<WordOpening>,
     pub inputs: Opening,
-}
-
-impl Openings {
-    /// The openings as claims on the committed states, placed at `offset` of the stack: the
-    /// inputs' ring-switched, the outputs' a point claim to add to the batch.
-    pub fn into_pcs_claims(self, offset: usize) -> (RingSwitchOpen, Option<StackClaim>) {
-        let ring = RingSwitchOpen {
-            offset,
-            claims: vec![RingSwitchClaim {
-                suffix_point: self.inputs.point,
-                s_hat_v: Some(self.inputs.slices),
-            }],
-        };
-        let outputs = self.outputs.map(|outputs| StackClaim::Point {
-            offset,
-            low_point: outputs.point,
-            value: outputs.value,
-        });
-        (ring, outputs)
-    }
 }
 
 /// The weight a claim puts on each `(slot, z)`: its position weights, on the slots of the states
@@ -177,7 +156,7 @@ pub(crate) fn fold(table: &[F192], width: usize, challenge: F192) -> Vec<F192> {
 
 /// Bind the leading variable of `scale * sum of a * b` in every round, down to one row of `a`.
 fn prove_rounds(
-    ps: &mut ProverState,
+    ps: &mut impl Transcript,
     mut a: Vec<F192>,
     mut b: Vec<F192>,
     width: usize,
@@ -224,7 +203,7 @@ pub fn output_claim(shape: Shape, committed: &[F64], instance: &[F192], claim: &
 /// Open `value`, the part of the first claim on the committed segment outputs, whose instance
 /// weights are `eq(instance, .)` and whose position weights are those of a word.
 pub fn open_outputs(
-    ps: &mut ProverState,
+    ps: &mut impl Transcript,
     shape: Shape,
     instance: &[F192],
     claim: &Claim,
@@ -279,7 +258,7 @@ fn spare_slices(shape: Shape, committed: &[F64], instance: &[F192]) -> Vec<[F192
 }
 
 /// Open the claim on the inputs: the instances of a pack first, then the slot.
-pub fn open_inputs(ps: &mut ProverState, witness: &Witness, committed: &[F64], claim: &Claim) -> Opening {
+pub fn open_inputs(ps: &mut impl Transcript, witness: &Witness, committed: &[F64], claim: &Claim) -> Opening {
     let shape = witness.shape;
     let pack = &claim.point[..shape.pack_vars()];
     let folded = fold_packs(witness, pack);

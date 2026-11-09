@@ -522,7 +522,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let openings = crate::stage!("Keccak reduction", || {
         keccak_reduction.prove(&mut ps, q_keccak, &output)
     });
-    let (ring, outputs) = openings.into_pcs_claims(offset);
+    let (ring, outputs) = crate::keccak::pcs_claims(openings, offset);
     slots.extend(outputs);
     crate::stage!("PCS open", || { pcs::open(&mut ps, committed, w.q, &slots, &ring) });
     Ok((

@@ -13,7 +13,7 @@ use crate::stack::{StackClaim, Statement};
 use crate::whir::{INITIAL_BASIS_CHUNK, InitialWeight};
 use primitives::bit_fold_rv::F192Map;
 use primitives::field::F192;
-use primitives::multilinear::{eq_table, eq_table_seeded, fill_eq_table_uninit};
+use primitives::multilinear::{EQ_PAR_LEN, eq_table, eq_table_seeded, fill_eq_table_uninit};
 use std::mem::MaybeUninit;
 use std::ops::Range;
 
@@ -40,6 +40,31 @@ struct PointWeight<'a> {
 }
 
 impl<'a> PointWeight<'a> {
+    /// Every claim's weight: the small high tables built in one dispatch, a claim each, the large ones one at a time,
+    /// each in parallel on its own.
+    fn batch(claims: &'a [StackClaim], lambdas: &[F192], chunk_log: usize) -> Vec<Self> {
+        let large = |i: usize| 1usize << Self::high_vars(&claims[i], chunk_log) >= EQ_PAR_LEN;
+        let mut small = parallel::map_collect(claims.len(), |i| {
+            (!large(i)).then(|| Self::new(&claims[i], lambdas[i], chunk_log))
+        });
+        (0..claims.len())
+            .map(|i| {
+                small[i]
+                    .take()
+                    .unwrap_or_else(|| Self::new(&claims[i], lambdas[i], chunk_log))
+            })
+            .collect()
+    }
+
+    /// The variables of the claim's high table.
+    fn high_vars(claim: &StackClaim, chunk_log: usize) -> usize {
+        let (stride_log, n) = match claim {
+            StackClaim::Point { low_point, .. } => (0, low_point.len()),
+            StackClaim::Strided { stride_log, point, .. } => (*stride_log, point.len()),
+        };
+        n - n.min(chunk_log.saturating_sub(stride_log))
+    }
+
     fn new(claim: &'a StackClaim, lambda: F192, chunk_log: usize) -> Self {
         let (offset, slot, stride_log, point) = match claim {
             StackClaim::Point { offset, low_point, .. } => (*offset, 0, 0, low_point.as_slice()),
@@ -156,10 +181,18 @@ const KEEP_MAX_LANES: usize = 2;
 const DENSE_CHUNK: usize = 1 << 12;
 
 /// Every word of `len` built in parallel, each chunk written by `fill(start, chunk)` into zeros.
+///
+/// Each task zeroes its own chunk first, so no single thread writes the whole buffer.
 fn dense(len: usize, fill: impl Fn(usize, &mut [F192]) + Sync) -> Vec<F192> {
-    let mut words = vec![F192::ZERO; len];
-    parallel::chunks_mut(&mut words, DENSE_CHUNK, |i, chunk| fill(i * DENSE_CHUNK, chunk));
-    words
+    let mut words = Box::new_uninit_slice(len);
+    parallel::chunks_mut(&mut words, DENSE_CHUNK, |i, chunk| {
+        // SAFETY: the chunk is zeroed before the fill reads it.
+        let chunk = unsafe { primitives::write_only(chunk) };
+        chunk.fill(F192::ZERO);
+        fill(i * DENSE_CHUNK, chunk);
+    });
+    // SAFETY: every chunk was zeroed, then filled.
+    unsafe { words.assume_init() }.into_vec()
 }
 
 /// One ring-switched claim: its region, its point, and its scale `gamma_rs^j`.
@@ -202,9 +235,7 @@ impl<'a> StackWeight<'a> {
 
         // A fill writes one chunk, or one whole lane block when blocks are smaller.
         let chunk_log = lane_block.min(INITIAL_BASIS_CHUNK).ilog2() as usize;
-        let points: Vec<_> = (claims.iter().zip(lambdas))
-            .map(|(claim, &lambda)| PointWeight::new(claim, lambda, chunk_log))
-            .collect();
+        let points = PointWeight::batch(claims, lambdas, chunk_log);
 
         // Index the point claims by the lane blocks they meet, so a fill visits only those.
         let mut by_lane = vec![Vec::new(); stack_len / lane_block];

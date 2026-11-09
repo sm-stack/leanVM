@@ -16,7 +16,9 @@ name: Bench
 # leanEthereum/leanVM its testbeds are the self-hosted runners `size-attester7870-x64` and
 # `size-attester7870-arm64` (with `self-hosted-ghr`, an ephemeral VM per job), where base and PR
 # build and run on one machine, so each is built for `target-cpu=native` and its cache is keyed
-# on the CPU model. Elsewhere they fall back to GitHub-hosted runners with the pinned ISAs above.
+# on the CPU model. Elsewhere they fall back to GitHub-hosted runners with the pinned ISAs above,
+# and so does a PR from a fork: only the repository's own branches and manual runs build on the
+# self-hosted runners, so no fork's code runs there.
 #
 # Run from the Actions tab (`workflow_dispatch`), `ab-rv` compares any two refs the same way:
 # `head` (default: the branch it is run on) against `base` (default: the head's first parent).
@@ -143,16 +145,16 @@ jobs:
       matrix:
         testbed:
           - name: x86-64
-            runner: ${{ github.repository == 'leanEthereum/leanVM' && fromJSON('["size-attester7870-x64", "self-hosted-ghr"]') || 'ubuntu-latest' }}
-            rustflags: ${{ github.repository == 'leanEthereum/leanVM' && '-C target-cpu=native' || '-C target-cpu=haswell' }}
+            runner: ${{ (github.repository == 'leanEthereum/leanVM' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["size-attester7870-x64", "self-hosted-ghr"]') || 'ubuntu-latest' }}
+            rustflags: ${{ (github.repository == 'leanEthereum/leanVM' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && '-C target-cpu=native' || '-C target-cpu=haswell' }}
           # The NEON kernels are chosen at compile time on `aes` (PMULL) and `sha3` (EOR3), which
           # a generic aarch64 target does not enable: the native build enables them where the CPU
           # has them, the fallback's neoverse-n2 pin names them, and the job fails early without them.
           - name: arm64
-            runner: ${{ github.repository == 'leanEthereum/leanVM' && fromJSON('["size-attester7870-arm64", "self-hosted-ghr"]') || 'ubuntu-24.04-arm' }}
-            rustflags: ${{ github.repository == 'leanEthereum/leanVM' && '-C target-cpu=native' || '-C target-cpu=neoverse-n2 -C target-feature=+aes,+sha3' }}
+            runner: ${{ (github.repository == 'leanEthereum/leanVM' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["size-attester7870-arm64", "self-hosted-ghr"]') || 'ubuntu-24.04-arm' }}
+            rustflags: ${{ (github.repository == 'leanEthereum/leanVM' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && '-C target-cpu=native' || '-C target-cpu=neoverse-n2 -C target-feature=+aes,+sha3' }}
             # What the CPU must have to run that build.
-            cpu: ${{ github.repository == 'leanEthereum/leanVM' && 'aes pmull sha3' || 'aes pmull sha3 sve2' }}
+            cpu: ${{ (github.repository == 'leanEthereum/leanVM' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'aes pmull sha3' || 'aes pmull sha3 sve2' }}
         # The cases of `proven()` and `proven_trees()` in bins/leanvm/src/rv/tracked.rs, run by
         # `leanvm rv bench --only` (`-16thread`, exactly 16 total workers; `-1thread`, `-4thread`
         # and `-8thread` select performance workers through LEANVM_NUM_THREADS). The job has its

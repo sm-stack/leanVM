@@ -172,10 +172,13 @@ pub struct Builder {
 /// runs the same code but takes each fold from here: whether a constant, an `EMUL` or an `EXK` row is new, or the
 /// wire of an earlier one. It skips the folding tables, the rows, the public sources and the equality classes, and
 /// computes only values, compressions, the statement and the failed checks.
+///
+/// What it skips it still checks against the recording: each row's slots, each constant's value and each merge of two
+/// wires, so a build that leaves the template in any of them is caught.
 #[derive(Debug)]
 pub(crate) struct Template {
-    /// The wire each foldable call returned, in call order: the next new wire's number when it made one.
-    folds: Vec<u32>,
+    /// The recorded calls.
+    tape: Recorded,
     /// The rows as they were made, before the statement's public rows were moved first.
     rows: TableSlots,
     /// The finished circuit.
@@ -193,16 +196,29 @@ pub(crate) struct Template {
 enum Tape {
     #[default]
     Off,
-    Record(Vec<u32>),
+    Record(Recorded),
     Replay(Replay),
+}
+
+/// The calls a recording keeps, each in call order.
+#[derive(Debug, Default)]
+struct Recorded {
+    /// The wire each foldable call returned: the next new wire's number when it made one.
+    folds: Vec<u32>,
+    /// Each constant's value.
+    consts: Vec<Limbs>,
+    /// Each pair of wires merged.
+    unions: Vec<[u32; 2]>,
 }
 
 /// A replay in progress.
 #[derive(Debug)]
 struct Replay {
     template: Arc<Template>,
-    /// The next fold to take.
+    /// The next fold, constant and merge to take.
     next_fold: usize,
+    next_const: usize,
+    next_union: usize,
     /// Each table's rows made so far, which the template's must match.
     rows: PerRecTable<usize>,
     /// Whether the build left the template.
@@ -532,7 +548,11 @@ impl Builder {
     /// An empty circuit that records a template of its build.
     pub(crate) fn recording(sizes: Option<&BuildSizes>) -> Self {
         let mut b = sizes.map_or_else(Self::new, Self::with_sizes);
-        b.tape = Tape::Record(Vec::with_capacity(sizes.map_or(0, |s| s.consts + s.arith)));
+        b.tape = Tape::Record(Recorded {
+            folds: Vec::with_capacity(sizes.map_or(0, |s| s.consts + s.arith)),
+            consts: Vec::with_capacity(sizes.map_or(0, |s| s.consts)),
+            unions: Vec::new(),
+        });
         b
     }
 
@@ -545,6 +565,8 @@ impl Builder {
         b.tape = Tape::Replay(Replay {
             template,
             next_fold: 0,
+            next_const: 0,
+            next_union: 0,
             rows: PerRecTable::default(),
             diverged: false,
         });
@@ -569,7 +591,7 @@ impl Builder {
         let Tape::Replay(r) = &mut self.tape else {
             unreachable!("only a replay takes folds")
         };
-        let fold = r.template.folds.get(r.next_fold).copied();
+        let fold = r.template.tape.folds.get(r.next_fold).copied();
         r.next_fold += 1;
         match fold {
             Some(w) if (w as usize) < n => Some(w),
@@ -583,8 +605,36 @@ impl Builder {
 
     /// Record a foldable call's wire, when recording.
     fn record_fold(&mut self, w: u32) {
-        if let Tape::Record(folds) = &mut self.tape {
-            folds.push(w);
+        if let Tape::Record(r) = &mut self.tape {
+            r.folds.push(w);
+        }
+    }
+
+    /// Record a constant's value, or check it against the template's when replaying.
+    fn tape_const(&mut self, value: Limbs) {
+        match &mut self.tape {
+            Tape::Off => {}
+            Tape::Record(r) => r.consts.push(value),
+            Tape::Replay(r) => {
+                if r.template.tape.consts.get(r.next_const) != Some(&value) {
+                    r.diverged = true;
+                }
+                r.next_const += 1;
+            }
+        }
+    }
+
+    /// Record a merge of two wires, or check it against the template's when replaying.
+    fn tape_union(&mut self, pair: [u32; 2]) {
+        match &mut self.tape {
+            Tape::Off => {}
+            Tape::Record(r) => r.unions.push(pair),
+            Tape::Replay(r) => {
+                if r.template.tape.unions.get(r.next_union) != Some(&pair) {
+                    r.diverged = true;
+                }
+                r.next_union += 1;
+            }
         }
     }
 
@@ -640,7 +690,9 @@ impl Builder {
             let whole = Table::ALL.iter().all(|&table| r.rows[table] == t.rows.len(table));
             let diverged = r.diverged
                 || !whole
-                || r.next_fold != t.folds.len()
+                || r.next_fold != t.tape.folds.len()
+                || r.next_const != t.tape.consts.len()
+                || r.next_union != t.tape.unions.len()
                 || self.values.len() != t.n_wires
                 || self.hash.len() != t.n_hash
                 || self.statement.len() != t.n_statement;
@@ -657,16 +709,16 @@ impl Builder {
                 template: None,
             };
         }
-        let folds = match tape {
-            Tape::Record(folds) => Some(folds),
+        let recorded = match tape {
+            Tape::Record(recorded) => Some(recorded),
             _ => None,
         };
-        let rows = folds.as_ref().map(|_| self.rows.clone());
+        let rows = recorded.as_ref().map(|_| self.rows.clone());
         let (n_wires, n_hash, n_statement) = (self.values.len(), self.hash.len(), self.statement.len());
         let mut finished = self.finish_full();
-        finished.template = folds.zip(rows).map(|(folds, rows)| {
+        finished.template = recorded.zip(rows).map(|(tape, rows)| {
             Arc::new(Template {
-                folds,
+                tape,
                 rows,
                 circuit: finished.circuit.clone(),
                 wires: finished.assignment.wires.clone(),
@@ -752,6 +804,7 @@ impl Builder {
         if self.values[a as usize] != self.values[b as usize] {
             self.fail("unequal wires");
         }
+        self.tape_union([a, b]);
         if self.replaying_now() {
             return;
         }
@@ -833,6 +886,7 @@ impl Builder {
 
     /// The constant wire of a kind and value, a public row the first time it is asked for.
     fn constant(&mut self, kind: WireKind, value: Limbs) -> u32 {
+        self.tape_const(value);
         if self.replaying_now() {
             if let Some(w) = self.replayed_fold() {
                 return w;
@@ -1375,6 +1429,24 @@ mod tests {
                 assert_eq!(replayed.assignment.wires, full.assignment.wires);
                 assert_eq!(replayed.circuit, full.circuit);
             }
+        }
+    }
+
+    #[test]
+    fn a_replay_checks_its_constants_and_merges() {
+        // A replay that makes the template's rows but asks another constant, or merges other wires, has left it.
+        let build = |b: &mut Builder, constant: u64, merged: usize| {
+            let wires = [b.free_k(7), b.free_k(7)];
+            let c = b.k_const(constant);
+            b.eq(wires[merged], c);
+        };
+        let mut recording = Builder::recording(None);
+        build(&mut recording, 7, 0);
+        let template = recording.finish().template.expect("a recording leaves its template");
+        for (constant, merged, diverged) in [(7, 0, false), (8, 0, true), (7, 1, true)] {
+            let mut replay = Builder::replaying(Arc::clone(&template));
+            build(&mut replay, constant, merged);
+            assert_eq!(replay.finish().diverged, diverged, "constant {constant}, wire {merged}");
         }
     }
 

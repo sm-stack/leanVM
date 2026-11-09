@@ -418,4 +418,31 @@ mod tests {
         let broken: Vec<usize> = (0..w.len()).filter(|&s| a[s] * b[s] != w[s]).collect();
         assert_eq!(broken, [0]);
     }
+
+    #[test]
+    fn a_step_cannot_hide_its_failure() {
+        // Invariant: the step's failure bit is the circuit's verdict, so a forger cannot clear it and keep stepping.
+        //
+        // Fixture state: a live row at cycle 1000 whose slot-1 access pulls its own push, at `ts ^ 1`, out of order.
+        // Mutation: the step's failure bit cleared in the committed instance, as a sound access would leave it.
+        let slots = [0, 1, 3];
+        let circuit = Clock::circuit(&slots);
+        let ts = Clock::SEED_CLOCK | (1000 * Clock::CYCLE);
+        let prev = [ts - Clock::CYCLE, ts ^ 1, ts - Clock::CYCLE];
+        assert_eq!(Clock { timestamp: ts }.step(&prev, &slots) >> Clock::FAIL_BIT & 1, 1);
+
+        // The step is output port 0, right after the inputs.
+        let mut z = Witness::of_instance(&circuit, &[ts, prev[0], prev[1], prev[2]]).z;
+        let fail = 64 * circuit.n_input_words() + Clock::FAIL_BIT as usize;
+        assert_eq!(z[fail / 64] >> (fail % 64) & 1, 1, "the walk flags the failure");
+        z[fail / 64] ^= 1 << (fail % 64);
+        let w: Vec<F192> = (0..circuit.n_cols())
+            .map(|s| [F192::ZERO, F192::ONE][(z[s / 64] >> (s % 64) & 1) as usize])
+            .collect();
+
+        // Only the failure bit's row breaks: its gate computes the verdict the forger cleared.
+        let (a, b) = circuit.row_values(&w);
+        let broken: Vec<usize> = (0..w.len()).filter(|&s| a[s] * b[s] != w[s]).collect();
+        assert_eq!(broken, [fail]);
+    }
 }

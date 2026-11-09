@@ -135,12 +135,7 @@ mod tests {
                 old: 17,
                 new: 18,
             },
-            prev: [
-                Clock::SEED_CLOCK,
-                Clock::SEED_CLOCK | 1,
-                Clock::SEED_CLOCK | 2,
-                Clock::SEED_CLOCK | 3,
-            ],
+            prev: [Clock::SEED_CLOCK, Clock::SEED_CLOCK | 1, Clock::SEED_CLOCK | 2],
         }
     }
 
@@ -310,15 +305,15 @@ mod tests {
     fn word_clock_step_uses_only_the_class_accesses() {
         let mut row = row();
         let entry = entry();
-        let slots = [0, 1, 3];
-        // The unused fourth timestamp must not reject an otherwise ordered row.
-        row.prev[3] = u64::MAX;
+        // A class with two accesses: the unused third timestamp must not reject an otherwise ordered row.
+        let slots = [0, 1];
+        row.prev[2] = u64::MAX;
         // Cycle 1 -> 2 flips both low cycle bits, so the XOR step is 3 * 32.
         assert_eq!(
             Word::Step.value(RowRef::plain(&row), at(&entry, 0), &slots),
             3 * Clock::CYCLE
         );
-        for i in 0..3 {
+        for i in 0..2 {
             assert_eq!(
                 Word::Prev(i).value(RowRef::plain(&row), at(&entry, 0), &slots),
                 row.prev[i as usize]
@@ -332,7 +327,7 @@ mod tests {
         );
         // Padding accesses cancel themselves without advancing the clock.
         row.ts = 0;
-        row.prev[..3].copy_from_slice(&[0, 1, 3]);
+        row.prev[..2].copy_from_slice(&[0, 1]);
         assert_eq!(Word::Step.value(RowRef::plain(&row), at(&entry, 0), &slots), 0);
         // A padding row cannot pull a seeded, live tuple.
         row.prev[0] = Clock::SEED_CLOCK;

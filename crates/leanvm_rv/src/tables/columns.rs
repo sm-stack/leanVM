@@ -1,8 +1,8 @@
 //! Local column allocation and the aliases used by memory moves.
 
-use super::{ClassSpec, Ram, Word};
+use super::{ClassSpec, Word};
 use crate::bus::Coord::{self, Col};
-use crate::rv::{Ext, Hash};
+use crate::rv::Ext;
 
 /// The `rs2` read's columns: the register's number and what it held.
 #[derive(Clone, Copy)]
@@ -70,21 +70,30 @@ pub(super) struct MemoryColumns {
     pub(super) new: usize,
 }
 
-/// Columns for a hash block and its four output words.
+/// Columns for a block of words and the words the row rewrites.
 #[derive(Clone, Copy)]
 pub(super) struct BlockColumns {
-    /// First hash block word column.
+    /// First block word column.
     pub(super) words: usize,
 
-    /// Result value, or a shared memory-cell column.
+    /// How many words the block has.
+    pub(super) n_words: usize,
+
+    /// The first word rewritten.
+    pub(super) first_out: usize,
+
+    /// First rewritten value column, one per rewritten word.
     pub(super) out: usize,
+
+    /// How many words are rewritten.
+    pub(super) n_out: usize,
 }
 
 impl BlockColumns {
     /// What the row leaves in word `k` of its block.
     pub(super) const fn left(&self, k: usize) -> usize {
-        match k.wrapping_sub(Hash::OUT as usize / 8) {
-            j if j < 4 => self.out + j,
+        match k.wrapping_sub(self.first_out) {
+            j if j < self.n_out => self.out + j,
             _ => self.words + k,
         }
     }
@@ -196,19 +205,19 @@ impl Columns {
             allocator.allocate(1),
         );
         let flags = spec.words().any(|w| w == Word::Flags).then(|| allocator.allocate(1));
-        let rs2 = spec.reads_rs2.then(|| SourceColumns {
+        let rs2 = spec.reads_rs2().then(|| SourceColumns {
             a2: allocator.allocate(1),
             v2: allocator.allocate(1),
         });
         // A doubleword load's `rd` receives its cell, which is a column further on.
-        let rd = spec.writes_rd.then(|| {
+        let rd = spec.writes_rd().then(|| {
             (
                 allocator.allocate(1),
                 allocator.allocate(1),
                 (!spec.copies).then(|| allocator.allocate(1)),
             )
         });
-        let pointer = spec.reads_rd.then(|| PointerColumns {
+        let pointer = spec.reads_rd().then(|| PointerColumns {
             ad: allocator.allocate(1),
             vd: allocator.allocate(1),
         });
@@ -218,34 +227,28 @@ impl Columns {
             exit: allocator.allocate(1),
         });
         let imm = spec.words().any(|w| w == Word::Imm).then(|| allocator.allocate(1));
-        let (ram, block) = match spec.ram {
-            Ram::None | Ram::Limbs => (None, None),
-            Ram::Read | Ram::Write => {
-                let (address, cell) = (allocator.allocate(1), allocator.allocate(1));
-                let new = match (spec.ram, rs2) {
-                    (Ram::Read, _) => cell,
-                    (Ram::Write, Some(rs2)) if spec.copies => rs2.v2,
-                    _ => allocator.allocate(1),
-                };
-                (Some(MemoryColumns { address, cell, new }), None)
-            }
-            Ram::Block => {
-                let words = allocator.allocate(Hash::WORDS);
-                (
-                    None,
-                    Some(BlockColumns {
-                        words,
-                        out: allocator.allocate(4),
-                    }),
-                )
-            }
-        };
+        let ram = spec.cell().map(|rewritten| {
+            let (address, cell) = (allocator.allocate(1), allocator.allocate(1));
+            let new = match (rewritten, rs2) {
+                (false, _) => cell,
+                (true, Some(rs2)) if spec.copies => rs2.v2,
+                (true, _) => allocator.allocate(1),
+            };
+            MemoryColumns { address, cell, new }
+        });
+        let block = spec.block().map(|(n_words, first_out, n_out)| BlockColumns {
+            words: allocator.allocate(n_words),
+            n_words,
+            first_out,
+            out: allocator.allocate(n_out),
+            n_out,
+        });
         let rd = rd.map(|(ad, vd_old, out)| DestinationColumns {
             ad,
             vd_old,
             out: out.unwrap_or_else(|| ram.expect("a doubleword load reads a cell").cell),
         });
-        let limbs = (spec.ram == Ram::Limbs).then(|| LimbColumns {
+        let limbs = spec.has_limbs().then(|| LimbColumns {
             limbs: allocator.allocate(Ext::LIMBS),
             new: allocator.allocate(3),
             addresses: allocator.allocate(Ext::OFFSET_LIMBS.len()),

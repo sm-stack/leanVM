@@ -6,32 +6,78 @@ use crate::bus::BusForm;
 use crate::rv;
 use crate::rv::{Alu, Class, Div, Ext, Hash, Ld, Load, Mul, Mulh, Sd, Shift, Store};
 use flock::circuit::Circuit;
-use std::ops::Range;
 
-/// How a class uses RAM.
+/// The register an access names: the entry's first source, its second source, or its destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ram {
-    /// No memory access.
-    None,
-    /// One cell read, in clock slot 2, at the address the circuit computes.
-    Read,
-    /// One cell read and rewritten.
-    Write,
-    /// Sixteen hash block words, with four output words rewritten.
-    Block,
-    /// Nine extension-field limbs, with the destination's three limbs rewritten.
+pub enum Register {
+    /// `rs1`, whose value is `v1`.
+    Rs1,
+    /// `rs2`, whose value is `v2`.
+    Rs2,
+    /// `rd`, the cell the entry writes.
+    Rd,
+}
+
+/// What one group of a row's accesses touches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// A register read back as found: `v1`, `v2`, or the address the destination holds.
+    Read(Register),
+    /// The destination register receiving the row's result.
+    WriteRd,
+    /// One RAM cell at the address the circuit computes, read, or read and rewritten.
+    Cell {
+        /// Whether the row writes a new value over the cell.
+        rewritten: bool,
+    },
+    /// RAM words `0..words` from the first source's value on, word `k` at `v1 ^ 8k`, those in `out..out + n_out`
+    /// rewritten.
+    Block {
+        /// How many words.
+        words: usize,
+        /// The first word rewritten.
+        out: usize,
+        /// How many words are rewritten.
+        n_out: usize,
+    },
+    /// The extension-field operands' limbs: each operand's three, then the destination's, which are rewritten.
     Limbs,
 }
 
-impl Ram {
-    /// Clock slots occupied by this memory access shape.
-    const fn slots(self) -> Range<u32> {
+impl Access {
+    /// How many accesses the group makes, each in a clock slot of its own.
+    pub const fn len(self) -> usize {
         match self {
-            Self::None => 0..0,
-            Self::Read | Self::Write => Clock::RAM_SLOT..Clock::RAM_SLOT + 1,
-            Self::Block => Clock::block_slot(0)..Clock::block_slot(Hash::WORDS),
-            Self::Limbs => Clock::limb_slot(0)..Clock::limb_slot(Ext::LIMBS),
+            Self::Read(_) | Self::WriteRd | Self::Cell { .. } => 1,
+            Self::Block { words, .. } => words,
+            Self::Limbs => Ext::LIMBS,
         }
+    }
+}
+
+/// An access group and the clock slot of its first access; its others take the slots that follow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slotted {
+    /// The group.
+    pub access: Access,
+    /// The clock slot of its first access.
+    pub slot: u32,
+}
+
+impl Slotted {
+    /// The register reads and writes, each at its slot of the clock.
+    const RS1: Self = Self::at(Access::Read(Register::Rs1), Clock::REG_SLOTS[0]);
+    const RS2: Self = Self::at(Access::Read(Register::Rs2), Clock::REG_SLOTS[1]);
+    const RD: Self = Self::at(Access::WriteRd, Clock::REG_SLOTS[2]);
+    const POINTER: Self = Self::at(Access::Read(Register::Rd), Clock::REG_SLOTS[2]);
+
+    /// A load's or a store's cell.
+    const fn cell(rewritten: bool) -> Self {
+        Self::at(Access::Cell { rewritten }, Clock::RAM_SLOT)
+    }
+
+    const fn at(access: Access, slot: u32) -> Self {
+        Self { access, slot }
     }
 }
 
@@ -125,17 +171,8 @@ pub struct ClassSpec {
     /// Whether branches and jumps move the successor by the circuit's jump.
     pub control: bool,
 
-    /// Whether the second source register is read, in clock slot 1.
-    pub reads_rs2: bool,
-
-    /// Whether the destination register receives a result, in clock slot 3.
-    pub writes_rd: bool,
-
-    /// Whether the destination register supplies an address, in clock slot 3.
-    pub reads_rd: bool,
-
-    /// Memory accesses made after the register accesses.
-    pub ram: Ram,
+    /// The row's accesses, in the order of their columns and bus tuples: the registers', then RAM's.
+    pub accesses: &'static [Slotted],
 
     /// Whether a doubleword is moved unchanged through a shared column.
     pub copies: bool,
@@ -153,10 +190,7 @@ impl ClassSpec {
         class: Class::Alu,
         name: "ALU",
         control: true,
-        reads_rs2: true,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::None,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::RD],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Alu as rv::circuits::ClassCircuit>::circuit,
@@ -173,10 +207,7 @@ impl ClassSpec {
         class: Class::Load,
         name: "LOAD",
         control: false,
-        reads_rs2: false,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::Read,
+        accesses: &[Slotted::RS1, Slotted::RD, Slotted::cell(false)],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Load as rv::circuits::ClassCircuit>::circuit,
@@ -193,10 +224,7 @@ impl ClassSpec {
         class: Class::Store,
         name: "STORE",
         control: false,
-        reads_rs2: true,
-        writes_rd: false,
-        reads_rd: false,
-        ram: Ram::Write,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::cell(true)],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Store as rv::circuits::ClassCircuit>::circuit,
@@ -213,10 +241,7 @@ impl ClassSpec {
         class: Class::Ld,
         name: "LD",
         control: false,
-        reads_rs2: false,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::Read,
+        accesses: &[Slotted::RS1, Slotted::RD, Slotted::cell(false)],
         copies: true,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Ld as rv::circuits::ClassCircuit>::circuit,
@@ -233,10 +258,7 @@ impl ClassSpec {
         class: Class::Sd,
         name: "SD",
         control: false,
-        reads_rs2: true,
-        writes_rd: false,
-        reads_rd: false,
-        ram: Ram::Write,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::cell(true)],
         copies: true,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Sd as rv::circuits::ClassCircuit>::circuit,
@@ -253,10 +275,7 @@ impl ClassSpec {
         class: Class::Shift,
         name: "SHIFT",
         control: false,
-        reads_rs2: true,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::None,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::RD],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Shift as rv::circuits::ClassCircuit>::circuit,
@@ -273,10 +292,7 @@ impl ClassSpec {
         class: Class::Mul,
         name: "MUL",
         control: false,
-        reads_rs2: true,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::None,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::RD],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Mul as rv::circuits::ClassCircuit>::circuit,
@@ -297,10 +313,7 @@ impl ClassSpec {
         class: Class::Mulh,
         name: "MULH",
         control: false,
-        reads_rs2: true,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::None,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::RD],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Mulh as rv::circuits::ClassCircuit>::circuit,
@@ -317,10 +330,7 @@ impl ClassSpec {
         class: Class::Div,
         name: "DIV",
         control: false,
-        reads_rs2: true,
-        writes_rd: true,
-        reads_rd: false,
-        ram: Ram::None,
+        accesses: &[Slotted::RS1, Slotted::RS2, Slotted::RD],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Div as rv::circuits::ClassCircuit>::circuit,
@@ -337,10 +347,18 @@ impl ClassSpec {
         class: Class::Hash,
         name: "HASH",
         control: false,
-        reads_rs2: true,
-        writes_rd: false,
-        reads_rd: false,
-        ram: Ram::Block,
+        accesses: &[
+            Slotted::RS1,
+            Slotted::RS2,
+            Slotted::at(
+                Access::Block {
+                    words: Hash::WORDS,
+                    out: Hash::OUT as usize / 8,
+                    n_out: 4,
+                },
+                Clock::block_slot(0),
+            ),
+        ],
         copies: false,
         relation: ClassRelation::Circuit(ClassCircuit {
             build: <Hash as rv::circuits::ClassCircuit>::circuit,
@@ -377,10 +395,12 @@ impl ClassSpec {
         class: Class::Ext,
         name: "EXT",
         control: false,
-        reads_rs2: true,
-        writes_rd: false,
-        reads_rd: true,
-        ram: Ram::Limbs,
+        accesses: &[
+            Slotted::RS1,
+            Slotted::RS2,
+            Slotted::POINTER,
+            Slotted::at(Access::Limbs, Clock::limb_slot(0)),
+        ],
         copies: false,
         relation: ClassRelation::Identities(ClassTable::extension_product),
         clock: ClockCircuit {
@@ -405,17 +425,33 @@ impl ClassSpec {
     pub(super) fn assert_valid(&self) {
         // Invariant: a register access exists exactly when its value is a word of one of the table's circuits, or a column a doubleword load or store moves.
         let has = |word: Word| self.words().any(|w| w == word);
-        assert_eq!(self.reads_rs2 && !self.copies, has(Word::V2), "{}: rs2 read", self.name);
         assert_eq!(
-            self.writes_rd && !self.copies,
+            self.reads_rs2() && !self.copies,
+            has(Word::V2),
+            "{}: rs2 read",
+            self.name
+        );
+        assert_eq!(
+            self.writes_rd() && !self.copies,
             has(Word::Out),
             "{}: rd write",
             self.name
         );
-        assert_eq!(self.reads_rd, has(Word::Dest), "{}: rd read", self.name);
+        assert_eq!(self.reads_rd(), has(Word::Dest), "{}: rd read", self.name);
         assert!(
-            !(self.reads_rd && self.writes_rd),
+            !(self.reads_rd() && self.writes_rd()),
             "{}: rd is read or written, not both",
+            self.name
+        );
+        // Every row reads `rs1` first, and the register accesses come before RAM's.
+        let registers = self
+            .accesses
+            .iter()
+            .take_while(|a| matches!(a.access, Access::Read(_) | Access::WriteRd));
+        assert!(
+            self.accesses.first().map(|a| a.access) == Some(Access::Read(Register::Rs1))
+                && registers.count() == self.registers().len(),
+            "{}: access order",
             self.name
         );
         // A class with branches and jumps gates the bytecode's offset in its circuit, and reads `pc + 4` for its indirect jump.
@@ -426,25 +462,88 @@ impl ClassSpec {
         );
         // A doubleword load moves its cell to `rd`, a doubleword store `v2` to its cell, and its circuit gives the address alone.
         if self.copies {
-            let moves = match self.ram {
-                Ram::Read => self.writes_rd && !self.reads_rs2,
-                Ram::Write => self.reads_rs2 && !self.writes_rd,
-                Ram::None | Ram::Block | Ram::Limbs => false,
+            let moves = match self.cell() {
+                Some(false) => self.writes_rd() && !self.reads_rs2(),
+                Some(true) => self.reads_rs2() && !self.writes_rd(),
+                None => false,
             };
             let ports = [Word::V1, Word::Imm, Word::Address];
             assert!(
-                moves && !self.control && !self.reads_rd && self.ports().eq(ports),
+                moves && !self.control && !self.reads_rd() && self.ports().eq(ports),
                 "{}: a copy",
                 self.name
             );
         }
     }
 
+    /// Whether the row makes the access.
+    const fn makes(&self, access: Access) -> bool {
+        let mut i = 0;
+        while i < self.accesses.len() {
+            if matches!(
+                (self.accesses[i].access, access),
+                (Access::Read(Register::Rs1), Access::Read(Register::Rs1))
+                    | (Access::Read(Register::Rs2), Access::Read(Register::Rs2))
+                    | (Access::Read(Register::Rd), Access::Read(Register::Rd))
+                    | (Access::WriteRd, Access::WriteRd)
+                    | (Access::Limbs, Access::Limbs)
+            ) {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Whether the second source register is read.
+    pub const fn reads_rs2(&self) -> bool {
+        self.makes(Access::Read(Register::Rs2))
+    }
+
+    /// Whether the destination register receives a result.
+    pub const fn writes_rd(&self) -> bool {
+        self.makes(Access::WriteRd)
+    }
+
+    /// Whether the destination register supplies an address.
+    pub const fn reads_rd(&self) -> bool {
+        self.makes(Access::Read(Register::Rd))
+    }
+
+    /// The one cell a load or a store accesses, if the row has it: whether it is rewritten.
+    pub const fn cell(&self) -> Option<bool> {
+        let mut i = 0;
+        while i < self.accesses.len() {
+            if let Access::Cell { rewritten } = self.accesses[i].access {
+                return Some(rewritten);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The hash block the row accesses, if it has one: its words, its first rewritten word, how many are rewritten.
+    pub const fn block(&self) -> Option<(usize, usize, usize)> {
+        let mut i = 0;
+        while i < self.accesses.len() {
+            if let Access::Block { words, out, n_out } = self.accesses[i].access {
+                return Some((words, out, n_out));
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Whether the row accesses the extension-field operands' limbs.
+    pub const fn has_limbs(&self) -> bool {
+        self.makes(Access::Limbs)
+    }
+
     /// Indices of accessed registers, in previous-timestamp column order.
     ///
     /// The indices select the first source, second source, and destination register.
     pub const fn registers(&self) -> &'static [usize] {
-        match (self.reads_rs2, self.writes_rd || self.reads_rd) {
+        match (self.reads_rs2(), self.writes_rd() || self.reads_rd()) {
             (true, true) => &[0, 1, 2],
             (true, false) => &[0, 1],
             (false, true) => &[0, 2],
@@ -454,8 +553,13 @@ impl ClassSpec {
 
     /// Accesses per row: the registers', then RAM's.
     pub const fn n_accesses(&self) -> usize {
-        let ram = self.ram.slots();
-        self.registers().len() + (ram.end - ram.start) as usize
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.accesses.len() {
+            n += self.accesses[i].access.len();
+            i += 1;
+        }
+        n
     }
 
     /// Smallest power-of-two height accepted by each of the table's circuits.
@@ -488,10 +592,8 @@ impl ClassSpec {
 
     /// The clock slots of the row's accesses, in the order of their columns.
     pub fn slots(&self) -> Vec<u32> {
-        self.registers()
-            .iter()
-            .map(|&i| Clock::REG_SLOTS[i])
-            .chain(self.ram.slots())
+        (self.accesses.iter())
+            .flat_map(|a| (0..a.access.len() as u32).map(move |k| a.slot + k))
             .collect()
     }
 

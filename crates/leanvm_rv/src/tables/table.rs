@@ -1,13 +1,13 @@
 //! One instruction table's circuit bindings and bus interactions.
 
-use super::bus::{FlushBuilder, Separator};
+use super::bus::{Accesses, FlushBuilder, Separator};
 use super::columns::Columns;
-use super::spec::ClassRelation;
+use super::spec::{Access, ClassRelation, Register};
 use super::{BAD_SLOT, CircuitId, EXIT_SLOT, Part, PerTable, Relation, TableId, Word};
 use crate::bus::BusForm;
 use crate::bus::Coord::{self, Col, Const, Scaled};
 use crate::constraints::{BitColumns, BitField};
-use crate::rv::{Ext, Hash, Reg, RegisterFile};
+use crate::rv::{Ext, Reg, RegisterFile};
 use primitives::field::{F64, F192};
 use std::sync::OnceLock;
 
@@ -235,68 +235,73 @@ impl ClassTable {
     /// Bind register, cell, block, and limb values to their ordered memory accesses.
     fn flush_accesses(&self, bus: &mut FlushBuilder) {
         let c = &self.cols;
+        let spec = self.id.spec();
+        let (registers, memory) = (Separator::Registers.coordinate(), Separator::Memory.coordinate());
+        let missing = |what: &str| -> ! { panic!("{} has no {what} columns", spec.name) };
         // The accesses' columns are in the order the row makes them.
-        let mut accesses = bus.accesses(c.ts, c.prev, self.id.spec().slots());
-        accesses.read(Separator::Registers.coordinate(), Col(c.a1), Col(c.v1));
-        if let Some(r) = c.rs2 {
-            accesses.read(Separator::Registers.coordinate(), Col(r.a2), Col(r.v2));
-        }
-        // The destination receives the circuit's output, which is the link of a jump that links.
-        if let Some(rd) = c.rd {
-            accesses.write(
-                Separator::Registers.coordinate(),
-                Col(rd.ad),
-                Col(rd.vd_old),
-                Col(rd.out),
-            );
-        }
-        // An address in `rd` is read and written back as found.
-        if let Some(p) = c.pointer {
-            accesses.read(Separator::Registers.coordinate(), Col(p.ad), Col(p.vd));
-        }
-        // Misaligned or unmapped addresses name no seeded cell.
-        // Doubleword moves share their value column on the read and write sides.
-        if let Some(ram) = c.ram {
-            accesses.write(
-                Separator::Memory.coordinate(),
-                Col(ram.address),
-                Col(ram.cell),
-                Col(ram.new),
-            );
-        }
-        // The hash's block: word `k` at `v1 ^ 8k`, which is `v1 + 8k` in the field.
-        if let Some(block) = c.block {
-            for k in 0..Hash::WORDS {
-                let addr = Coord::Sum(vec![Col(c.v1), Const(F64(8 * k as u64))]);
-                accesses.write(
-                    Separator::Memory.coordinate(),
-                    addr,
-                    Col(block.words + k),
-                    Col(block.left(k)),
-                );
-            }
-        }
-        // The limbs: each operand's first at its pointer, the others at the addresses the clock circuit computes.
-        //
-        // A base-field `b`'s high limbs are reads of `x0`, at the address zero the clock circuit gives them, under a
-        // separator that is a form in the bit `base`, which picks the registers over memory:
-        //
-        //     separator   memory + base·(memory + registers)
-        if let (Some(limbs), Some(r), Some(p), Some(bits)) = (c.limbs, c.rs2, c.pointer, c.flag_bits) {
-            let pointers = [c.v1, r.v2, p.vd];
-            let (memory, registers) = (Separator::Memory.value(), Separator::Registers.value());
-            let base = bits + 1;
-            for k in 0..Ext::LIMBS {
-                let sep = if k / 3 == 1 && k % 3 > 0 {
-                    Coord::Sum(vec![Const(memory), Scaled(memory + registers, base)])
-                } else {
-                    Separator::Memory.coordinate()
-                };
-                let addr = Col(limbs.address(k, pointers));
-                accesses.write(sep, addr, Col(limbs.limbs + k), Col(limbs.left(k)));
+        let mut accesses = bus.accesses(c.ts, c.prev, spec.slots());
+        for slotted in spec.accesses {
+            match slotted.access {
+                Access::Read(Register::Rs1) => accesses.read(registers.clone(), Col(c.a1), Col(c.v1)),
+                Access::Read(Register::Rs2) => {
+                    let r = c.rs2.unwrap_or_else(|| missing("rs2"));
+                    accesses.read(registers.clone(), Col(r.a2), Col(r.v2));
+                }
+                // The destination receives the circuit's output, which is the link of a jump that links.
+                Access::WriteRd => {
+                    let rd = c.rd.unwrap_or_else(|| missing("rd"));
+                    accesses.write(registers.clone(), Col(rd.ad), Col(rd.vd_old), Col(rd.out));
+                }
+                // An address in `rd` is read and written back as found.
+                Access::Read(Register::Rd) => {
+                    let p = c.pointer.unwrap_or_else(|| missing("pointer"));
+                    accesses.read(registers.clone(), Col(p.ad), Col(p.vd));
+                }
+                // Misaligned or unmapped addresses name no seeded cell.
+                // Doubleword moves share their value column on the read and write sides.
+                Access::Cell { .. } => {
+                    let ram = c.ram.unwrap_or_else(|| missing("cell"));
+                    accesses.write(memory.clone(), Col(ram.address), Col(ram.cell), Col(ram.new));
+                }
+                // A block's word `k` at `v1 ^ 8k`, which is `v1 + 8k` in the field.
+                Access::Block { .. } => {
+                    let block = c.block.unwrap_or_else(|| missing("block"));
+                    for k in 0..block.n_words {
+                        let addr = Coord::Sum(vec![Col(c.v1), Const(F64(8 * k as u64))]);
+                        accesses.write(memory.clone(), addr, Col(block.words + k), Col(block.left(k)));
+                    }
+                }
+                Access::Limbs => self.flush_limbs(&mut accesses),
             }
         }
         accesses.finish();
+    }
+
+    /// The limbs: each operand's first at its pointer, the others at the addresses the clock circuit computes.
+    ///
+    /// A base-field `b`'s high limbs are reads of `x0`, at the address zero the clock circuit gives them, under a
+    /// separator that is a form in the bit `base`, which picks the registers over memory:
+    ///
+    /// ```text
+    ///     separator   memory + base·(memory + registers)
+    /// ```
+    fn flush_limbs(&self, accesses: &mut Accesses<'_>) {
+        let c = &self.cols;
+        let (Some(limbs), Some(r), Some(p), Some(bits)) = (c.limbs, c.rs2, c.pointer, c.flag_bits) else {
+            unreachable!("a table accessing limbs has their columns, both operands' pointers and the flag bits")
+        };
+        let pointers = [c.v1, r.v2, p.vd];
+        let (memory, registers) = (Separator::Memory.value(), Separator::Registers.value());
+        let base = bits + 1;
+        for k in 0..Ext::LIMBS {
+            let sep = if k / 3 == 1 && k % 3 > 0 {
+                Coord::Sum(vec![Const(memory), Scaled(memory + registers, base)])
+            } else {
+                Separator::Memory.coordinate()
+            };
+            let addr = Col(limbs.address(k, pointers));
+            accesses.write(sep, addr, Col(limbs.limbs + k), Col(limbs.left(k)));
+        }
     }
 
     /// The identities the table proves of every one of its rows, in local column indices: its relation's, or none.

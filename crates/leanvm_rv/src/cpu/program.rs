@@ -781,7 +781,7 @@ mod tests {
             taken,
             vd_old: program.rv.pc_of(index) + 4,
             ram,
-            prev: [slots[0], slots[1], slots[2], 0],
+            prev: [slots[0], slots[1], slots[2]],
         }
     }
 

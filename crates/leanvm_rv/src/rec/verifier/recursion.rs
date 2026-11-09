@@ -230,6 +230,7 @@ mod tests {
             circuit,
             assignment: a,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         let session = SessionId::new(LABEL);

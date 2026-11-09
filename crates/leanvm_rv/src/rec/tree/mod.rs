@@ -953,14 +953,25 @@ impl<'p> Tree<'p> {
     }
 
     /// Prove the rows of the circuit at `position`: its reduction, then its recursion proof.
-    fn prove_rows(&self, rows: NodeRows) -> Result<TreeProof, TreeError> {
+    fn prove_rows(&self, mut rows: NodeRows<'_>) -> Result<TreeProof, TreeError> {
         self.require_prover()?;
         let d = &self.design;
         let position = rows.position();
         let reduction = rows.claim_values().prove(&d.session(), &d.vars, &self.tables);
+        let rebuild = rows.take_rebuild();
         let Finished {
-            assignment, failures, ..
+            assignment,
+            failures,
+            diverged,
+            ..
         } = info_span!("Reduce in rows").in_scope(|| rows.reduce(d, ProofSource::Proof(&reduction, &[])));
+        if diverged {
+            // A replay that left its template mid-reduction: its claims and values mean nothing, so start over.
+            d.fell_back(position, "Reduce in rows");
+            let rebuild = rebuild.expect("only a replayed build diverges, and it can build again in full");
+            let rows = info_span!("Build in full").in_scope(rebuild);
+            return self.prove_rows(rows);
+        }
         if let Some(first) = failures.into_iter().next() {
             return Err(TreeError::Unsatisfied(first));
         }
@@ -1077,6 +1088,7 @@ mod tests {
     use crate::tables::TableId;
     use fiat_shamir_rv::ProofTranscript;
     use std::sync::OnceLock;
+    use std::sync::atomic::Ordering;
     use zk::Randomness;
 
     // A program whose output is its one advice word, after a loop that reads every framework block.
@@ -1301,6 +1313,30 @@ mod tests {
         circuit
     }
 
+    // A position's rows replayed from its template and built in full, each reduced by its own claims: the same
+    // circuit, values, compressions, statement and failed checks, and the replay never left its template.
+    fn assert_replay_is_full<'a>(
+        d: &'a Design<'a>,
+        position: usize,
+        tables: &DenseTables,
+        build: impl Fn(bool) -> NodeRows<'a>,
+    ) {
+        assert!(d.templates[position].get().is_some(), "the position has a template");
+        let [replayed, full] = [true, false].map(|replay| {
+            let rows = build(replay);
+            let reduction = rows.claim_values().prove(&d.session(), &d.vars, tables);
+            rows.reduce(d, ProofSource::Proof(&reduction, &[]))
+        });
+        assert!(!replayed.diverged && !full.diverged, "the replay followed its template");
+        assert_eq!(replayed.circuit, full.circuit);
+        assert_eq!(replayed.assignment.wires, full.assignment.wires);
+        assert_eq!(replayed.assignment.values, full.assignment.values);
+        assert_eq!(replayed.assignment.hash, full.assignment.hash);
+        assert_eq!(replayed.assignment.statement, full.assignment.statement);
+        assert_eq!(replayed.failures, full.failures);
+        assert_eq!(d.fallbacks.load(Ordering::Relaxed), 0, "no build fell back");
+    }
+
     #[test]
     fn a_proven_circuit_is_the_shapes() {
         let f = fixture();
@@ -1315,15 +1351,19 @@ mod tests {
                 set: [0; 4],
             })
             .collect();
-        let rows = d.first_rows(&NodeInputs::Prove {
+        let node_inputs = NodeInputs::Prove {
             items: &leaves,
             tables: &f.tree.tables,
             union: None,
-        });
+        };
+        let rows = d.first_rows(&node_inputs);
         assert!(
             &proven_circuit(f, rows) == f.tree.circuit(0),
             "the leaves build another circuit"
         );
+        assert_replay_is_full(d, 0, &f.tree.tables, |replay| {
+            d.first_rows_built(0, &node_inputs, replay)
+        });
 
         let statements = f.firsts.each_ref().map(|p| p.statement(d.statement));
         let items: Vec<ChildWitness<'_>> = (f.firsts.iter().zip(&statements))
@@ -1334,18 +1374,19 @@ mod tests {
                 columns: f.tree.keys[0].fixed(),
             })
             .collect();
-        let rows = d.node_rows(
-            &NodeInputs::Prove {
-                items: &items,
-                tables: &f.tree.tables,
-                union: None,
-            },
-            1,
-        );
+        let node_inputs = NodeInputs::Prove {
+            items: &items,
+            tables: &f.tree.tables,
+            union: None,
+        };
+        let rows = d.node_rows(&node_inputs, 1);
         assert!(
             &proven_circuit(f, rows) == f.tree.circuit(1),
             "the children build another circuit"
         );
+        assert_replay_is_full(d, 1, &f.tree.tables, |replay| {
+            d.node_rows_built(&node_inputs, 1, replay)
+        });
     }
 
     // A fake first-level node's circuit: its leaves' outputs are free wires, its claims an honest statement's.
@@ -1367,6 +1408,7 @@ mod tests {
             mut circuit,
             assignment,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         circuit.floor = tree.design.tiers[SMALL].taus;
@@ -1432,8 +1474,17 @@ mod tests {
             honest.map(|p| p.kind())
         );
 
+        // A forged child: its replayed rows fail as its full rows do, over either polynomial.
+        let honest_inputs = inputs(&f.tree.tables);
+        assert_replay_is_full(d, 1, &f.tree.tables, |replay| {
+            d.node_rows_built(&honest_inputs, 1, replay)
+        });
+        let forged_inputs = inputs(&tables);
+        assert_replay_is_full(d, 1, &tables, |replay| d.node_rows_built(&forged_inputs, 1, replay));
+
         // Reduced over the forged polynomial, every row holds and the root's proof verifies.
-        let rows = d.node_rows(&inputs(&tables), 1);
+        let node_inputs = inputs(&tables);
+        let rows = d.node_rows(&node_inputs, 1);
         let reduction = rows.claim_values().prove(&d.session(), &d.vars, &tables);
         let Finished {
             assignment, failures, ..
@@ -1482,11 +1533,12 @@ mod tests {
                 set: [0; 4],
             })
             .collect();
-        let rows = d.first_rows(&NodeInputs::Prove {
+        let node_inputs = NodeInputs::Prove {
             items: &items,
             tables: &f.tree.tables,
             union: None,
-        });
+        };
+        let rows = d.first_rows(&node_inputs);
         let reduction = forged_reduction(&d.session(), &d.vars, &f.tree.tables, &rows.claim_values(), forge);
         let Finished {
             assignment, failures, ..
@@ -2410,6 +2462,9 @@ mod tests {
                 tables: &t.tree.tables,
                 union: union.as_ref(),
             };
+            super::assert_replay_is_full(d, position, &t.tree.tables, |replay| {
+                d.node_rows_built(&inputs, position, replay)
+            });
             let rows = t.tree.prove_rows(d.node_rows(&inputs, position));
             assert!(
                 matches!(&rows, Err(TreeError::Unsatisfied(check)) if check.scope().iter().any(|s| s == "child 0 kind")),
@@ -2505,6 +2560,7 @@ mod tests {
                     mut circuit,
                     assignment,
                     failures,
+                    ..
                 } = b.finish();
                 assert!(failures.is_empty(), "{failures:?}");
                 circuit.floor = taus;
@@ -2552,7 +2608,8 @@ mod tests {
             );
 
             // Reduced over the forged polynomial, every row holds and the wrap's proof verifies, stating the forged set.
-            let rows = d.node_rows(&inputs(&tables), wrap);
+            let node_inputs = inputs(&tables);
+            let rows = d.node_rows(&node_inputs, wrap);
             let reduction = rows.claim_values().prove(&d.session(), &d.vars, &tables);
             let Finished {
                 assignment, failures, ..

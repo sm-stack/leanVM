@@ -647,11 +647,12 @@ mod tests {
         swapped.groups[0].members[0] = *leaves[1].output.words();
         for (declared, good) in [(&honest, true), (&uncovered, false), (&swapped, false)] {
             let fill = super::super::union::tests::unbacked(&shape, &refs, declared);
-            let rows = f.tree.design.first_rows(&NodeInputs::Prove {
+            let node_inputs = NodeInputs::Prove {
                 items: &items,
                 tables: &f.tree.tables,
                 union: Some(&fill),
-            });
+            };
+            let rows = f.tree.design.first_rows(&node_inputs);
             let reduction = rows
                 .claim_values()
                 .prove(&f.tree.design.session(), &f.tree.design.vars, &f.tree.tables);
@@ -1283,14 +1284,12 @@ mod member_tests {
             output: *leaf.output.words(),
             set: set.digest(),
         }];
-        let rows = f.tree.design.first_rows_at(
-            position,
-            &NodeInputs::Prove {
-                items: &items,
-                tables: &f.tree.tables,
-                union: Some(&fill),
-            },
-        );
+        let node_inputs = NodeInputs::Prove {
+            items: &items,
+            tables: &f.tree.tables,
+            union: Some(&fill),
+        };
+        let rows = f.tree.design.first_rows_at(position, &node_inputs);
         let reduction = rows
             .claim_values()
             .prove(&f.tree.design.session(), &f.tree.design.vars, &f.tree.tables);
@@ -1399,6 +1398,7 @@ mod member_tests {
             mut circuit,
             assignment,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty());
         circuit.floor = d.tiers[SMALL].taus;
@@ -1435,14 +1435,12 @@ mod member_tests {
             .collect();
         let position = d.place(SMALL, Level::Node(2)).unwrap();
         let (union, claims) = f.tree.fill(position, &[&honest.claims, &honest.claims], None).unwrap();
-        let rows = d.node_rows(
-            &NodeInputs::Prove {
-                items: &items,
-                tables: &tables,
-                union: Some(&union),
-            },
-            position,
-        );
+        let node_inputs = NodeInputs::Prove {
+            items: &items,
+            tables: &tables,
+            union: Some(&union),
+        };
+        let rows = d.node_rows(&node_inputs, position);
         let reduction = rows.claim_values().prove(&d.session(), &d.vars, &tables);
         let Finished {
             assignment, failures, ..
@@ -1550,14 +1548,12 @@ mod zk_tests {
             output: *leaf.output.words(),
             set: set.digest(),
         }];
-        let rows = tree.design.first_rows_at(
-            position,
-            &NodeInputs::Prove {
-                items: &items,
-                tables: &tree.tables,
-                union: Some(&union),
-            },
-        );
+        let node_inputs = NodeInputs::Prove {
+            items: &items,
+            tables: &tree.tables,
+            union: Some(&union),
+        };
+        let rows = tree.design.first_rows_at(position, &node_inputs);
         Aggregate {
             proof: tree.prove_rows(rows).unwrap(),
             claims,

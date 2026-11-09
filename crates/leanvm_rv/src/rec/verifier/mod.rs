@@ -355,6 +355,7 @@ mod tests {
             circuit,
             assignment: mut a,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         let session = SessionId::new(b"selector-test");

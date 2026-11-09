@@ -22,7 +22,7 @@ use super::{ClaimShape, TreeError, reduce};
 use crate::bus::N_TUPLE_BITS;
 use crate::commitment::Rate;
 use crate::cpu::{Claim, Program, ProgramPoint};
-use crate::rec::circuit::{BuildSizes, Builder, Dw, Ew, Finished, Kw};
+use crate::rec::circuit::{BuildSizes, Builder, Dw, Ew, Finished, Kw, Template};
 use crate::rec::fixed::{FixedColumns, FixedLayout};
 use crate::rec::hash;
 use crate::rec::table::PerRecTable;
@@ -37,7 +37,9 @@ use pcs_rv::ring_switch::inverse_frobenius_ladder;
 use primitives::field::F192;
 use primitives::multilinear::mle_eval_par;
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use tracing::info_span;
 
 /// The protocol half of every recursion proof's session tag.
 const DOMAIN: &[u8] = b"leanvm-tree-19";
@@ -118,6 +120,11 @@ pub(crate) struct Design<'p> {
     pub(crate) statement: StatementLayout,
     /// What each position's first build made, so that every later build of it reserves its rows up front.
     sizes: Vec<OnceLock<BuildSizes>>,
+    /// Each position's first build, which every later build of it replays.
+    pub(crate) templates: Vec<OnceLock<Arc<Template>>>,
+    /// Replayed builds that left their template and were built again in full: none, unless a build's rows depend
+    /// on its values.
+    pub(crate) fallbacks: AtomicUsize,
 }
 
 /// A child's kind, as its node's rows read it.
@@ -172,9 +179,11 @@ pub(crate) enum NodeInputs<'a, T> {
 }
 
 /// A circuit's rows up to its reduction: they verify its proofs, and leave the claims the reduction takes.
-pub(crate) struct NodeRows {
+pub(crate) struct NodeRows<'a> {
     /// The circuit so far, and its values.
     b: Builder,
+    /// A replayed build's way to build again in full, should its reduction leave the template.
+    rebuild: Option<Box<dyn Fn() -> Self + 'a>>,
     /// The circuit's position in the tree's list.
     position: usize,
     /// The digest it states: of the leaves' outputs under it, or of its claim set.
@@ -327,6 +336,8 @@ impl<'p> Design<'p> {
             rate,
             claims,
             sizes: places.iter().map(|_| OnceLock::new()).collect(),
+            templates: places.iter().map(|_| OnceLock::new()).collect(),
+            fallbacks: AtomicUsize::new(0),
             places,
             tiers,
             tier_shift,
@@ -431,11 +442,25 @@ impl<'p> Design<'p> {
     }
 
     /// The first level's rows, verifying its leaves.
-    pub(crate) fn first_rows(&self, inputs: &NodeInputs<'_, LeafWitness<'_>>) -> NodeRows {
+    pub(crate) fn first_rows<'a>(&'a self, inputs: &'a NodeInputs<'a, LeafWitness<'a>>) -> NodeRows<'a> {
         self.first_rows_at(0, inputs)
     }
 
-    pub(crate) fn first_rows_at(&self, position: usize, inputs: &NodeInputs<'_, LeafWitness<'_>>) -> NodeRows {
+    pub(crate) fn first_rows_at<'a>(
+        &'a self,
+        position: usize,
+        inputs: &'a NodeInputs<'a, LeafWitness<'a>>,
+    ) -> NodeRows<'a> {
+        self.replayed(position, move |replay| self.first_rows_built(position, inputs, replay))
+    }
+
+    /// The rows of a first-level node, replaying its position's template if `replay`.
+    pub(crate) fn first_rows_built<'a>(
+        &'a self,
+        position: usize,
+        inputs: &'a NodeInputs<'a, LeafWitness<'a>>,
+        replay: bool,
+    ) -> NodeRows<'a> {
         let Level::First(class) = self.places[position].level else {
             panic!("a first-level circuit")
         };
@@ -445,7 +470,7 @@ impl<'p> Design<'p> {
             let (leaf, max) = &self.extra_leaves[class - 1];
             (leaf, *max)
         };
-        let mut b = self.builder(position);
+        let mut b = self.builder(position, replay);
         let mut claims = NodeClaims::default();
         let usage = vec![b.zero(); self.tiers.len()];
         let mut outputs = Vec::with_capacity(self.arity_0);
@@ -494,6 +519,7 @@ impl<'p> Design<'p> {
         };
         NodeRows {
             b,
+            rebuild: None,
             position,
             digest,
             claims,
@@ -502,7 +528,47 @@ impl<'p> Design<'p> {
     }
 
     /// The rows of the node circuit or wrap at `position`, verifying its children of any of their tier's kinds.
-    pub(crate) fn node_rows(&self, inputs: &NodeInputs<'_, ChildWitness<'_>>, position: usize) -> NodeRows {
+    pub(crate) fn node_rows<'a>(
+        &'a self,
+        inputs: &'a NodeInputs<'a, ChildWitness<'a>>,
+        position: usize,
+    ) -> NodeRows<'a> {
+        self.replayed(position, move |replay| self.node_rows_built(inputs, position, replay))
+    }
+
+    /// A position's rows by `build`: replaying its template when it has one, built in full when the replay leaves it.
+    ///
+    /// The first build of a position records its template.
+    fn replayed<'a>(&'a self, position: usize, build: impl Fn(bool) -> NodeRows<'a> + 'a) -> NodeRows<'a> {
+        if self.templates[position].get().is_none() {
+            return build(false);
+        }
+        let mut rows = build(true);
+        if rows.b.diverged() {
+            self.fell_back(position, "Build circuit");
+            return info_span!("Build in full").in_scope(|| build(false));
+        }
+        rows.rebuild = Some(Box::new(move || build(false)));
+        rows
+    }
+
+    /// Note a replayed build of `position` that left its template at `stage`: loudly, since it should never happen.
+    pub(crate) fn fell_back(&self, position: usize, stage: &'static str) {
+        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            position,
+            stage,
+            "a replayed build left its template; building it again in full"
+        );
+    }
+
+    /// The rows of a node, replaying its position's template if `replay`.
+    pub(crate) fn node_rows_built<'a>(
+        &'a self,
+        inputs: &'a NodeInputs<'a, ChildWitness<'a>>,
+        position: usize,
+        replay: bool,
+    ) -> NodeRows<'a> {
         let (arity, child_tier) = match self.places[position].level {
             Level::Node(arity) => (arity, SMALL),
             Level::Wrap => (1, LARGE),
@@ -511,7 +577,7 @@ impl<'p> Design<'p> {
         };
         let tier = &self.tiers[child_tier];
         let session = self.session();
-        let mut b = self.builder(position);
+        let mut b = self.builder(position, replay);
         let zeros = matches!(inputs, NodeInputs::Shape).then(|| FixedColumns::zeros(&tier.taus));
         let mut claims = NodeClaims::default();
         let mut usage = vec![b.zero(); self.tiers.len()];
@@ -576,6 +642,7 @@ impl<'p> Design<'p> {
         };
         NodeRows {
             b,
+            rebuild: None,
             position,
             digest,
             claims,
@@ -612,10 +679,16 @@ impl<'p> Design<'p> {
     /// A builder for the circuit at `position`, with room for what its first build made.
     ///
     /// Every build of a position makes the same rows, since rows never depend on values.
-    fn builder(&self, position: usize) -> Builder {
-        self.sizes[position]
-            .get()
-            .map_or_else(Builder::new, Builder::with_sizes)
+    ///
+    /// With `replay`, it replays the position's template. The first build of a position records it.
+    fn builder(&self, position: usize, replay: bool) -> Builder {
+        match (replay, self.templates[position].get()) {
+            (true, Some(template)) => Builder::replaying(Arc::clone(template)),
+            (_, None) => Builder::recording(self.sizes[position].get()),
+            (false, Some(_)) => self.sizes[position]
+                .get()
+                .map_or_else(Builder::new, Builder::with_sizes),
+        }
     }
 
     /// A circuit built from the shapes alone.
@@ -728,7 +801,7 @@ impl<'p> Design<'p> {
     }
 }
 
-impl NodeRows {
+impl<'a> NodeRows<'a> {
     /// The position of its circuit in the tree.
     pub(crate) const fn position(&self) -> usize {
         self.position
@@ -775,6 +848,15 @@ impl NodeRows {
             b.expose(w);
         }
         design.sizes[self.position].get_or_init(|| self.b.sizes());
-        self.b.finish()
+        let mut finished = self.b.finish();
+        if let Some(template) = finished.template.take() {
+            design.templates[self.position].get_or_init(|| template);
+        }
+        finished
+    }
+
+    /// The way to build these rows again in full, if they were replayed.
+    pub(crate) fn take_rebuild(&mut self) -> Option<Box<dyn Fn() -> Self + 'a>> {
+        self.rebuild.take()
     }
 }

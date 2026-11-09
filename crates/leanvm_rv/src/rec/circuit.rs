@@ -21,6 +21,7 @@ use primitives::blake2s::ChainingValue;
 use primitives::field::{F64, F192};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// A wire's value as four `K` words: a `K` wire uses the first, an `E` wire the first three.
@@ -68,8 +69,10 @@ pub enum PubSource {
 }
 
 /// Every table's rows, row-major, one number per slot: a wire, or the class of wires it is held equal to.
+///
+/// Shared, so that every build of one circuit hands out the same slots without copying them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TableSlots(PerRecTable<Vec<u32>>);
+pub(crate) struct TableSlots(Arc<PerRecTable<Vec<u32>>>);
 
 /// The fixed part of a circuit: its rows, and the wire class each slot names.
 ///
@@ -108,6 +111,10 @@ pub struct Finished {
     pub assignment: Assignment,
     /// The first few checks that failed, each under its scope's names.
     pub failures: Vec<Unsatisfied>,
+    /// A replayed build that left its template: its circuit and values mean nothing, and it must be built in full.
+    pub(crate) diverged: bool,
+    /// The template a recording build leaves, for later builds of the same circuit to replay.
+    pub(crate) template: Option<Arc<Template>>,
 }
 
 /// A check of a circuit's rows that fails on the prover's values.
@@ -155,6 +162,51 @@ pub struct Builder {
     scope: Vec<String>,
     /// Failed checks collected with their enclosing scope names, the first few only.
     failures: Vec<Unsatisfied>,
+    /// What the build records for a later build of the same circuit, or replays of an earlier one.
+    tape: Tape,
+}
+
+/// What a build of a circuit leaves for a later build of the same circuit.
+///
+/// The rows never depend on values, so every build of a circuit makes the same rows, wires and folds. A later build
+/// runs the same code but takes each fold from here: whether a constant, an `EMUL` or an `EXK` row is new, or the
+/// wire of an earlier one. It skips the folding tables, the rows, the public sources and the equality classes, and
+/// computes only values, compressions, the statement and the failed checks.
+#[derive(Debug)]
+pub(crate) struct Template {
+    /// The wire each foldable call returned, in call order: the next new wire's number when it made one.
+    folds: Vec<u32>,
+    /// The rows as they were made, before the statement's public rows were moved first.
+    rows: TableSlots,
+    /// The finished circuit.
+    circuit: Circuit,
+    /// The assignment's slots.
+    wires: TableSlots,
+    /// Wires, hash rows and statement words the build made.
+    n_wires: usize,
+    n_hash: usize,
+    n_statement: usize,
+}
+
+/// Whether a build records a template, replays one, or neither.
+#[derive(Debug, Default)]
+enum Tape {
+    #[default]
+    Off,
+    Record(Vec<u32>),
+    Replay(Replay),
+}
+
+/// A replay in progress.
+#[derive(Debug)]
+struct Replay {
+    template: Arc<Template>,
+    /// The next fold to take.
+    next_fold: usize,
+    /// Each table's rows made so far, which the template's must match.
+    rows: PerRecTable<usize>,
+    /// Whether the build left the template.
+    diverged: bool,
 }
 
 /// The constants arithmetic folds away, once created.
@@ -250,14 +302,14 @@ impl TableSlots {
     /// Append a row to a table.
     fn push(&mut self, table: Table, slots: &[u32]) {
         debug_assert_eq!(slots.len(), table.n_slots());
-        self.0[table].extend_from_slice(slots);
+        Arc::make_mut(&mut self.0)[table].extend_from_slice(slots);
     }
 
     /// Put a one-slot table's rows in the given order of their old indices.
     fn reorder(&mut self, table: Table, order: &[usize]) {
         debug_assert_eq!(table.n_slots(), 1);
-        let rows = &self.0[table];
-        self.0[table] = order.iter().map(|&i| rows[i]).collect();
+        let reordered = order.iter().map(|&i| self.0[table][i]).collect();
+        Arc::make_mut(&mut self.0)[table] = reordered;
     }
 
     /// A table's slots, row-major.
@@ -272,7 +324,9 @@ impl TableSlots {
 
     /// Every table's slots, each number replaced through `f`.
     pub(crate) fn map(&self, mut f: impl FnMut(u32) -> u32) -> Self {
-        Self(PerRecTable::from_fn(|t| self.0[t].iter().map(|&w| f(w)).collect()))
+        Self(Arc::new(PerRecTable::from_fn(|t| {
+            self.0[t].iter().map(|&w| f(w)).collect()
+        })))
     }
 }
 
@@ -466,13 +520,72 @@ impl Builder {
         b.kinds.reserve(sizes.wires);
         b.parent.reserve(sizes.wires);
         for (t, &n) in sizes.slots.iter() {
-            b.rows.0[t].reserve(n);
+            Arc::make_mut(&mut b.rows.0)[t].reserve(n);
         }
         b.pubs.reserve(sizes.pubs);
         b.consts.reserve(sizes.consts);
         b.arith.reserve(sizes.arith);
         b.hash.reserve(sizes.hash);
         b
+    }
+
+    /// An empty circuit that records a template of its build.
+    pub(crate) fn recording(sizes: Option<&BuildSizes>) -> Self {
+        let mut b = sizes.map_or_else(Self::new, Self::with_sizes);
+        b.tape = Tape::Record(Vec::with_capacity(sizes.map_or(0, |s| s.consts + s.arith)));
+        b
+    }
+
+    /// A circuit built again from `template`: the same code runs, but only its values are computed.
+    pub(crate) fn replaying(template: Arc<Template>) -> Self {
+        let mut b = Self::new();
+        b.values.reserve(template.n_wires);
+        b.hash.reserve(template.n_hash);
+        b.statement.reserve(template.n_statement);
+        b.tape = Tape::Replay(Replay {
+            template,
+            next_fold: 0,
+            rows: PerRecTable::default(),
+            diverged: false,
+        });
+        b
+    }
+
+    /// Whether this build replays a template and has left it.
+    pub(crate) const fn diverged(&self) -> bool {
+        matches!(&self.tape, Tape::Replay(r) if r.diverged)
+    }
+
+    /// Whether this build replays a template.
+    const fn replaying_now(&self) -> bool {
+        matches!(self.tape, Tape::Replay(_))
+    }
+
+    /// A foldable call's wire, taken from the template when replaying: `Some` for an earlier wire, `None` for a new one.
+    ///
+    /// A fold the template cannot give marks the build diverged, and makes a new wire, so the build runs to its end.
+    fn replayed_fold(&mut self) -> Option<u32> {
+        let n = self.values.len();
+        let Tape::Replay(r) = &mut self.tape else {
+            unreachable!("only a replay takes folds")
+        };
+        let fold = r.template.folds.get(r.next_fold).copied();
+        r.next_fold += 1;
+        match fold {
+            Some(w) if (w as usize) < n => Some(w),
+            Some(w) if w as usize == n => None,
+            _ => {
+                r.diverged = true;
+                None
+            }
+        }
+    }
+
+    /// Record a foldable call's wire, when recording.
+    fn record_fold(&mut self, w: u32) {
+        if let Tape::Record(folds) = &mut self.tape {
+            folds.push(w);
+        }
     }
 
     /// How much this build has made, for [`Builder::with_sizes`].
@@ -518,7 +631,55 @@ impl Builder {
     /// The circuit, its values, and the checks that failed on them.
     ///
     /// A wire class is numbered by its first slot, so a circuit is the same however it was built.
+    ///
+    /// A recording build also leaves its template, and a replay says whether it left the one it replays.
     pub fn finish(mut self) -> Finished {
+        let tape = std::mem::take(&mut self.tape);
+        if let Tape::Replay(r) = tape {
+            let t = &r.template;
+            let whole = Table::ALL.iter().all(|&table| r.rows[table] == t.rows.len(table));
+            let diverged = r.diverged
+                || !whole
+                || r.next_fold != t.folds.len()
+                || self.values.len() != t.n_wires
+                || self.hash.len() != t.n_hash
+                || self.statement.len() != t.n_statement;
+            return Finished {
+                circuit: t.circuit.clone(),
+                assignment: Assignment {
+                    wires: t.wires.clone(),
+                    values: self.values,
+                    hash: self.hash,
+                    statement: self.statement,
+                },
+                failures: self.failures,
+                diverged,
+                template: None,
+            };
+        }
+        let folds = match tape {
+            Tape::Record(folds) => Some(folds),
+            _ => None,
+        };
+        let rows = folds.as_ref().map(|_| self.rows.clone());
+        let (n_wires, n_hash, n_statement) = (self.values.len(), self.hash.len(), self.statement.len());
+        let mut finished = self.finish_full();
+        finished.template = folds.zip(rows).map(|(folds, rows)| {
+            Arc::new(Template {
+                folds,
+                rows,
+                circuit: finished.circuit.clone(),
+                wires: finished.assignment.wires.clone(),
+                n_wires,
+                n_hash,
+                n_statement,
+            })
+        });
+        finished
+    }
+
+    /// The circuit, its values and its failed checks, from a build that recorded its rows.
+    fn finish_full(mut self) -> Finished {
         let (wires, pubs) = self.statement_first();
         let mut number: Vec<Option<u32>> = vec![None; self.values.len()];
         let mut n_classes = 0;
@@ -545,6 +706,8 @@ impl Builder {
             circuit,
             assignment,
             failures: self.failures,
+            diverged: false,
+            template: None,
         }
     }
 
@@ -567,8 +730,10 @@ impl Builder {
     fn wire(&mut self, kind: WireKind, value: Limbs) -> u32 {
         let id = u32::try_from(self.values.len()).expect("fewer than 2^32 wires");
         self.values.push(value);
-        self.kinds.push(kind);
-        self.parent.push(id);
+        if !self.replaying_now() {
+            self.kinds.push(kind);
+            self.parent.push(id);
+        }
         id
     }
 
@@ -587,6 +752,9 @@ impl Builder {
         if self.values[a as usize] != self.values[b as usize] {
             self.fail("unequal wires");
         }
+        if self.replaying_now() {
+            return;
+        }
         let (ra, rb) = (self.find(a), self.find(b));
         if ra != rb {
             self.parent[rb as usize] = ra;
@@ -595,6 +763,16 @@ impl Builder {
 
     /// Append a row to a table, its slots the given wires.
     fn row(&mut self, table: Table, slots: &[u32]) {
+        if let Tape::Replay(r) = &mut self.tape {
+            // A replayed row must be the template's, slot for slot: anything else is a build that left it.
+            let n = table.n_slots();
+            let z = r.rows[table];
+            r.rows[table] += 1;
+            if r.template.rows.of(table).get(z * n..(z + 1) * n) != Some(slots) {
+                r.diverged = true;
+            }
+            return;
+        }
         debug_assert!(
             table == Table::Pub
                 || (slots.iter().zip(table.slot_kinds())).all(|(&w, &kind)| self.kinds[w as usize] == kind),
@@ -655,13 +833,21 @@ impl Builder {
 
     /// The constant wire of a kind and value, a public row the first time it is asked for.
     fn constant(&mut self, kind: WireKind, value: Limbs) -> u32 {
-        if let Some(&w) = self.consts.get(&ConstKey(kind, value)) {
+        if self.replaying_now() {
+            if let Some(w) = self.replayed_fold() {
+                return w;
+            }
+        } else if let Some(&w) = self.consts.get(&ConstKey(kind, value)) {
+            self.record_fold(w);
             return w;
         }
         let w = self.wire(kind, value);
-        self.pubs.push(PubSource::Const(value));
+        self.record_fold(w);
         self.row(Table::Pub, &[w]);
-        self.consts.insert(ConstKey(kind, value), w);
+        if !self.replaying_now() {
+            self.pubs.push(PubSource::Const(value));
+            self.consts.insert(ConstKey(kind, value), w);
+        }
         let unit = match (kind, value) {
             (WireKind::E, [0, 0, 0, 0]) => &mut self.units.e_zero,
             (WireKind::E, [1, 0, 0, 0]) => &mut self.units.e_one,
@@ -701,18 +887,30 @@ impl Builder {
     pub fn expose<W: AnyWire>(&mut self, w: W) -> usize {
         let i = self.statement.len();
         self.statement.push(self.values[w.id() as usize]);
-        self.pubs.push(PubSource::Statement(i));
+        if !self.replaying_now() {
+            self.pubs.push(PubSource::Statement(i));
+        }
         self.row(Table::Pub, &[w.id()]);
         i
     }
 
     /// The `EMUL` row `c = a·b + d`, or the earlier row with the same inputs.
     fn emul(&mut self, a: Ew, b: Ew, d: Ew) -> Ew {
+        if self.replaying_now() {
+            if let Some(c) = self.replayed_fold() {
+                return Ew(c);
+            }
+            let c = self.free_e(self.e(a) * self.e(b) + self.e(d));
+            self.row(Table::Emul, &[a.0, b.0, d.0, c.0]);
+            return c;
+        }
         let key = RowKey::new(Table::Emul, self.emul_key(a, b, d));
         if let Some(&c) = self.arith.get(&key) {
+            self.record_fold(c);
             return Ew(c);
         }
         let c = self.free_e(self.e(a) * self.e(b) + self.e(d));
+        self.record_fold(c.0);
         self.row(Table::Emul, &[a.0, b.0, d.0, c.0]);
         self.arith.insert(key, c.0);
         c
@@ -738,11 +936,21 @@ impl Builder {
         if u.k_one == Some(k.0) {
             return self.add(a, d);
         }
+        if self.replaying_now() {
+            if let Some(c) = self.replayed_fold() {
+                return Ew(c);
+            }
+            let c = self.free_e(self.e(a).mul_base(F64(self.k(k))) + self.e(d));
+            self.row(Table::Exk, &[a.0, k.0, d.0, c.0]);
+            return c;
+        }
         let key = RowKey::new(Table::Exk, [a.0, k.0, d.0]);
         if let Some(&c) = self.arith.get(&key) {
+            self.record_fold(c);
             return Ew(c);
         }
         let c = self.free_e(self.e(a).mul_base(F64(self.k(k))) + self.e(d));
+        self.record_fold(c.0);
         self.row(Table::Exk, &[a.0, k.0, d.0, c.0]);
         self.arith.insert(key, c.0);
         c
@@ -1131,6 +1339,43 @@ mod tests {
             (6, 3),
             "x·y + z, x·z + y, x + y, x·y + 1, x·y + y, x'·y + z; then x·k + z, z·k + x, x·k' + z"
         );
+    }
+
+    #[test]
+    fn a_replay_follows_its_template_and_a_different_build_leaves_it() {
+        // One build's code over other values, then that code with one more row: the first follows the recording,
+        // the second is caught as having left it.
+        let build = |b: &mut Builder, x: u64, extra: bool| {
+            let (a, k) = (b.free_e(F192::new(x, 2, 3)), b.free_k(x + 1));
+            let one = b.one();
+            let p = b.mul_add(a, a, one);
+            let q = b.mul_add(a, a, one);
+            let r = b.mul_k_add(p, k, q);
+            if extra {
+                b.mul_add(r, r, r);
+            }
+            let bits = b.split(k);
+            let w = b.pack(&bits);
+            b.eq(w, k);
+            b.expose(r);
+        };
+        let mut recording = Builder::recording(None);
+        build(&mut recording, 5, false);
+        let template = recording.finish().template.expect("a recording leaves its template");
+        for (x, extra, diverged) in [(9, false, false), (9, true, true)] {
+            let mut replay = Builder::replaying(Arc::clone(&template));
+            build(&mut replay, x, extra);
+            let replayed = replay.finish();
+            assert_eq!(replayed.diverged, diverged, "extra row: {extra}");
+            if !diverged {
+                let mut full = Builder::new();
+                build(&mut full, x, extra);
+                let full = full.finish();
+                assert_eq!(replayed.assignment.values, full.assignment.values);
+                assert_eq!(replayed.assignment.wires, full.assignment.wires);
+                assert_eq!(replayed.circuit, full.circuit);
+            }
+        }
     }
 
     #[test]

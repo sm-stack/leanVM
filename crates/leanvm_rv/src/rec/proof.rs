@@ -390,6 +390,7 @@ mod tests {
             circuit,
             assignment: a,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         let wires = Wires {
@@ -442,6 +443,7 @@ mod tests {
             circuit,
             assignment: a,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         let proof = prove_run(&circuit, &a);
@@ -528,6 +530,7 @@ mod tests {
             circuit,
             assignment: a,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         let proof = prove_run(&circuit, &a);
@@ -572,6 +575,7 @@ mod tests {
             circuit,
             assignment: a,
             failures,
+            ..
         } = b.finish();
         assert!(failures.is_empty(), "{failures:?}");
         let counts = circuit.row_counts();

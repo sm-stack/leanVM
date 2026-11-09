@@ -27,7 +27,7 @@ use crate::rec::fixed::{FixedColumns, FixedLayout};
 use crate::rec::hash;
 use crate::rec::table::PerRecTable;
 use crate::rec::transcript::{ProofSource, Transcript};
-use crate::rec::verifier::{FixedHint, ProofShape, RecShape, Rows, infallible};
+use crate::rec::verifier::{CoreRows, FixedHint, ProofShape, RecRows, RecShape, Rows, infallible};
 use crate::tables::CircuitId;
 use fiat_shamir_rv::arith::Arith;
 use fiat_shamir_rv::{ProofTranscript, SessionId};
@@ -475,10 +475,11 @@ impl<'p> Design<'p> {
         let usage = vec![b.zero(); self.tiers.len()];
         let mut outputs = Vec::with_capacity(self.arity_0);
         let mut sets = Vec::with_capacity(self.arity_0);
-        for i in 0..self.arity_0 {
+        // A leaf is its inputs, its segment, its proof's verification, and what joins it to the node.
+        let leaf_inputs = |b: &mut Builder, i: usize, sets: &mut Vec<Dw>| {
             let leaf = inputs.item(i);
             // A claim-set leaf's output is the hash of its set's digest, which the union reads.
-            let output = if self.claims.is_some() && !self.mixed {
+            if self.claims.is_some() && !self.mixed {
                 let set = b.free_d(leaf.map_or([0; 4], |l| l.set));
                 sets.push(set);
                 let words = b.d_to_k(set);
@@ -486,32 +487,68 @@ impl<'p> Design<'p> {
                 b.d_to_k(output)
             } else {
                 leaf.map_or([0; 4], |l| l.output).map(|o| b.free_k(o))
-            };
+            }
+        };
+        let segment = |b: &mut Builder, i: usize, output: [Kw; 4]| {
+            let leaf = inputs.item(i);
             let source = leaf.map_or(ProofSource::Shape, |l| ProofSource::Proof(l.proof, &l.openings));
-            let core = if self.mixed {
+            if self.mixed {
                 let (core, digest) = b.scope(format!("leaf {i}"), |b| {
                     leaf_shape.verify_mixed(b, output, source, leaf.and_then(|l| l.key))
                 });
-                sets.push(super::mixed::member_rows(
-                    &mut b,
-                    digest,
-                    output,
-                    max_members,
-                    leaf.map(|l| l.members),
-                ));
-                core
+                (core, Some(digest))
             } else {
-                b.scope(format!("leaf {i}"), |b| self.leaf.verify_core(b, output, source))
-            };
-            claims.bind_state(&mut b, core.state);
-            if !self.mixed {
-                b.scope(format!("leaf {i} program"), |b| {
-                    self.program_claims(b, &core.claims.program, inputs, &mut claims);
-                });
+                (
+                    b.scope(format!("leaf {i}"), |b| self.leaf.verify_core(b, output, source)),
+                    None,
+                )
             }
-            let fresh = CircuitId::ALL.into_iter().zip(&core.claims.circuits);
-            claims.matrices.extend(fresh.map(|(f, c)| MatrixClaim::fresh(f, c)));
-            outputs.push(output);
+        };
+        let mut join =
+            |b: &mut Builder, i: usize, output: [Kw; 4], core: CoreRows, digest: Option<Dw>, sets: &mut Vec<Dw>| {
+                if let Some(digest) = digest {
+                    let leaf = inputs.item(i);
+                    sets.push(super::mixed::member_rows(
+                        b,
+                        digest,
+                        output,
+                        max_members,
+                        leaf.map(|l| l.members),
+                    ));
+                }
+                claims.bind_state(b, core.state);
+                if !self.mixed {
+                    b.scope(format!("leaf {i} program"), |b| {
+                        self.program_claims(b, &core.claims.program, inputs, &mut claims);
+                    });
+                }
+                let fresh = CircuitId::ALL.into_iter().zip(&core.claims.circuits);
+                claims.matrices.extend(fresh.map(|(f, c)| MatrixClaim::fresh(f, c)));
+                outputs.push(output);
+            };
+        if b.phased() {
+            // As a node's children: every leaf's inputs, every segment at once on the pool, then each joining.
+            let ins: Vec<[Kw; 4]> = (0..self.arity_0)
+                .map(|i| {
+                    b.enter_part(3 * i + 1);
+                    leaf_inputs(&mut b, i, &mut sets)
+                })
+                .collect();
+            let parts: Vec<usize> = (0..self.arity_0).map(|i| 3 * i + 2).collect();
+            let cores = b.replay_parts(&parts, |b, i| segment(b, i, ins[i]));
+            for (i, (&output, (core, digest))) in ins.iter().zip(cores).enumerate() {
+                b.enter_part(3 * i + 3);
+                join(&mut b, i, output, core, digest, &mut sets);
+            }
+            b.enter_part(3 * self.arity_0 + 1);
+        } else {
+            for i in 0..self.arity_0 {
+                b.child();
+                let output = leaf_inputs(&mut b, i, &mut sets);
+                let (core, digest) = b.segment(|b| segment(b, i, output));
+                join(&mut b, i, output, core, digest, &mut sets);
+            }
+            b.children_done();
         }
         let digest = match self.union_shape(position) {
             Some(shape) => shape.rows(&mut b, &self.session(), &sets, inputs.union()),
@@ -584,7 +621,8 @@ impl<'p> Design<'p> {
         usage[child_tier] = b.one();
         let mut words = Vec::with_capacity(arity);
         let mut digests = Vec::with_capacity(arity);
-        for i in 0..arity {
+        // A child is its inputs, its segment, its own proof's verification, and what joins it to the node.
+        let child_inputs = |b: &mut Builder, i: usize| {
             let child = inputs.item(i);
             let statement = match child {
                 Some(c) => c.statement.map(|&w| b.free_e(w)),
@@ -600,13 +638,18 @@ impl<'p> Design<'p> {
                     [c0, c1, c2, zero]
                 })
                 .collect();
+            (statement, kind, limbs)
+        };
+        let segment = |b: &mut Builder, i: usize, limbs: &[[Kw; 4]]| {
+            let child = inputs.item(i);
             let columns = child.map_or_else(|| zeros.as_ref().expect("zero columns from a shape"), |c| c.columns);
             let source = child.map_or(ProofSource::Shape, |c| ProofSource::Proof(c.proof, &c.openings));
-            let rows = b.scope(format!("child {i}"), |b| {
-                tier.child.verify(b, &session, &limbs, columns, source)
-            });
-
-            claims.bind_state(&mut b, rows.state);
+            b.scope(format!("child {i}"), |b| {
+                tier.child.verify(b, &session, limbs, columns, source)
+            })
+        };
+        let mut join = |b: &mut Builder, statement: &TreeStatement<Ew>, kind: &KindBits, rows: RecRows| {
+            claims.bind_state(b, rows.state);
             claims.bound.extend(rows.hints.iter().map(|h| h.value));
             claims.dense.push(self.fixed_claim(&rows.hints, &kind.top, child_tier));
             claims.matrices.push(MatrixClaim::fresh(hash::CIRCUIT, &rows.matrix));
@@ -626,13 +669,38 @@ impl<'p> Design<'p> {
                 let sum = b.add(*used, bit);
                 *used = b.mul_add(*used, bit, sum);
             }
-            self.carried(&statement, &mut claims);
-            let digest = statement.digest_wire(&mut b);
+            self.carried(statement, &mut claims);
+            let digest = statement.digest_wire(b);
             if self.claims.is_some() {
                 digests.push(digest);
             } else {
                 words.push(b.d_to_k(digest));
             }
+        };
+        if b.phased() {
+            // Every child's inputs, then every segment at once on the pool, then each child's joining, each part
+            // from where its recording put it: part `3i + 1`, `3i + 2` and `3i + 3` of child `i`.
+            let ins: Vec<_> = (0..arity)
+                .map(|i| {
+                    b.enter_part(3 * i + 1);
+                    child_inputs(&mut b, i)
+                })
+                .collect();
+            let parts: Vec<usize> = (0..arity).map(|i| 3 * i + 2).collect();
+            let rows = b.replay_parts(&parts, |b, i| segment(b, i, &ins[i].2));
+            for (i, ((statement, kind, _), rows)) in ins.iter().zip(rows).enumerate() {
+                b.enter_part(3 * i + 3);
+                join(&mut b, statement, kind, rows);
+            }
+            b.enter_part(3 * arity + 1);
+        } else {
+            for i in 0..arity {
+                b.child();
+                let (statement, kind, limbs) = child_inputs(&mut b, i);
+                let rows = b.segment(|b| segment(b, i, &limbs));
+                join(&mut b, &statement, &kind, rows);
+            }
+            b.children_done();
         }
         let digest = match (self.places[position].level, self.union_shape(position)) {
             // A wrap states its child's set.
@@ -850,6 +918,15 @@ impl<'a> NodeRows<'a> {
         design.sizes[self.position].get_or_init(|| self.b.sizes());
         let mut finished = self.b.finish();
         if let Some(template) = finished.template.take() {
+            let probe = &template.probe;
+            if probe.children.len() > 1 && !template.segments_apart() {
+                tracing::debug!(
+                    position = self.position,
+                    crossings = probe.crossings,
+                    first = ?probe.first_crossing,
+                    "a circuit's children read each other's wires: its replays run them in order"
+                );
+            }
             design.templates[self.position].get_or_init(|| template);
         }
         finished

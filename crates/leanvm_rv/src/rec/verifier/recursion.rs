@@ -21,7 +21,7 @@ use fiat_shamir_rv::SessionId;
 use fiat_shamir_rv::arith::Arith;
 use flock::lincheck::MatrixForm;
 use primitives::field::F192;
-use primitives::multilinear::mle_eval_par;
+use primitives::multilinear::{mle_eval, mle_eval_par};
 
 /// What fixes the rows verifying a recursion proof: its circuit's heights and the commitment's rate.
 #[derive(Clone, Debug)]
@@ -132,7 +132,14 @@ impl FixedHints<'_> {
     /// A fixed column's evaluation at a point, its fixed part a hint whose value the column gives.
     pub(super) fn evaluate(&mut self, b: &mut Builder, column: FixedColumn, point: &[Ew]) -> Ew {
         let at: Vec<F192> = point.iter().map(|&w| b.e(w)).collect();
-        let value = b.free_e(mle_eval_par(self.columns.get(column), &at));
+        // On a task of the pool, a part of a phased replay must not dispatch.
+        let values = self.columns.get(column);
+        let value = if b.on_task() {
+            mle_eval(values, &at)
+        } else {
+            mle_eval_par(values, &at)
+        };
+        let value = b.free_e(value);
         self.hints.push(FixedHint {
             column,
             point: point.to_vec(),

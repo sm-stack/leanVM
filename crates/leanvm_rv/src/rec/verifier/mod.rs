@@ -19,8 +19,8 @@ use std::fmt::Debug;
 mod recursion;
 mod riscv;
 
-pub(crate) use recursion::{FixedHint, RecShape};
-pub use riscv::ProofShape;
+pub(crate) use recursion::{FixedHint, RecRows, RecShape};
+pub use riscv::{CoreRows, ProofShape};
 
 /// The verifier's arithmetic and transcript as rows: a circuit being built, and a transcript replayed in it.
 ///

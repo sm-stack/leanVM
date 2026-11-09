@@ -19,7 +19,8 @@ use crate::rv::{Hash, InstructionClass};
 use fiat_shamir_rv::arith::Arith;
 use primitives::blake2s::ChainingValue;
 use primitives::field::{F64, F192};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 use thiserror::Error;
@@ -164,6 +165,90 @@ pub struct Builder {
     failures: Vec<Unsatisfied>,
     /// What the build records for a later build of the same circuit, or replays of an earlier one.
     tape: Tape,
+    /// While recording, the children's segments and the reads that cross between them.
+    probe: Option<Box<RefCell<Probe>>>,
+    /// Where a replay writes next, and the first wire and hash row this builder holds: a part of a phased replay
+    /// holds only its own.
+    next_wire: u32,
+    next_hash: usize,
+    offset: u32,
+    hash_offset: usize,
+    /// The values a part of a phased replay reads but does not hold.
+    base: Option<Arc<Vec<Limbs>>>,
+    /// The part of a phased replay this builder runs, which orders its failures, and how many it has recorded.
+    part: usize,
+    part_failures: usize,
+    /// Each recorded failure's part.
+    failure_parts: Vec<usize>,
+    /// The part a phased replay is running, whose end it checks when it moves on.
+    running: Option<usize>,
+    /// Whether this builder runs on a task of the pool, where it must not dispatch.
+    on_task: bool,
+}
+
+/// Where a build stands: what it has made of each kind, in order.
+///
+/// A recording keeps one at each boundary of a node's parts, and a phased replay starts each part from there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Cursor {
+    wire: u32,
+    hash: usize,
+    fold: usize,
+    constant: usize,
+    union: usize,
+    rows: PerRecTable<usize>,
+    /// The unit constants made so far, which later calls take without a fold.
+    units: Units,
+}
+
+/// A child's parts in a recorded build: its first wire, its segment's first wire, and the wire after the segment.
+///
+/// Before the segment, the child's own inputs; the segment, its verification, which runs on its own transcript; after
+/// it, until the next child, what joins the child to the node.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChildParts {
+    pub(crate) start: u32,
+    pub(crate) segment: [u32; 2],
+}
+
+/// The children and crossings a recording build sees.
+#[derive(Debug, Default)]
+pub(crate) struct Probe {
+    pub(crate) children: Vec<ChildParts>,
+    /// Whether a child's segment is open.
+    open: bool,
+    /// The constant wires, whose values a template holds.
+    constants: HashSet<u32>,
+    /// How many reads crossed, and the first: the wire, the child that made it and the child that read it.
+    pub(crate) crossings: usize,
+    pub(crate) first_crossing: Option<[u32; 3]>,
+}
+
+impl Probe {
+    /// Note a read of `w`.
+    ///
+    /// A child's segment may read its own inputs and wires, the node's start, any child's inputs, and the constants,
+    /// whose values a template holds: what an earlier child's segment or joining made, it may not.
+    fn read(&mut self, w: u32) {
+        if !self.open {
+            return;
+        }
+        let read_by = self.children.len() - 1;
+        // Its own inputs and segment, and the constants, are always there.
+        if w >= self.children[read_by].start || self.constants.contains(&w) {
+            return;
+        }
+        let Some(made_by) = self.children[..read_by].iter().rposition(|c| c.start <= w) else {
+            return;
+        };
+        let c = self.children[made_by];
+        // A child's inputs, made before its segment, are ready before any segment runs.
+        if w < c.segment[0] {
+            return;
+        }
+        self.crossings += 1;
+        self.first_crossing.get_or_insert([w, made_by as u32, read_by as u32]);
+    }
 }
 
 /// What a build of a circuit leaves for a later build of the same circuit.
@@ -189,6 +274,17 @@ pub(crate) struct Template {
     n_wires: usize,
     n_hash: usize,
     n_statement: usize,
+    /// The children's parts and the crossings between them.
+    pub(crate) probe: Probe,
+}
+
+impl Template {
+    /// Whether its children's segments read nothing another child's segment or joining made, so each can be replayed
+    /// on its own once every child's inputs are.
+    pub(crate) const fn segments_apart(&self) -> bool {
+        let n = self.probe.children.len();
+        n > 1 && self.probe.crossings == 0 && self.tape.bounds.len() == 3 * n + 2
+    }
 }
 
 /// Whether a build records a template, replays one, or neither.
@@ -209,6 +305,10 @@ struct Recorded {
     consts: Vec<Limbs>,
     /// Each pair of wires merged.
     unions: Vec<[u32; 2]>,
+    /// Each constant wire, with its value.
+    constant_wires: Vec<(u32, Limbs)>,
+    /// Where each part starts: the node's start, then each child's inputs, segment and joining, then the rest.
+    bounds: Vec<Cursor>,
 }
 
 /// A replay in progress.
@@ -226,7 +326,7 @@ struct Replay {
 }
 
 /// The constants arithmetic folds away, once created.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Units {
     /// Cached wire for the extension-field constant zero.
     e_zero: Option<u32>,
@@ -552,16 +652,224 @@ impl Builder {
             folds: Vec::with_capacity(sizes.map_or(0, |s| s.consts + s.arith)),
             consts: Vec::with_capacity(sizes.map_or(0, |s| s.consts)),
             unions: Vec::new(),
+            constant_wires: Vec::new(),
+            bounds: vec![Cursor::default()],
+        });
+        b.probe = Some(Box::default());
+        b
+    }
+
+    /// Where this build stands.
+    fn cursor(&self) -> Cursor {
+        match &self.tape {
+            Tape::Replay(r) => Cursor {
+                wire: self.next_wire,
+                hash: self.next_hash,
+                fold: r.next_fold,
+                constant: r.next_const,
+                union: r.next_union,
+                rows: r.rows,
+                units: self.units,
+            },
+            Tape::Record(r) => Cursor {
+                wire: self.n_wires(),
+                hash: self.hash.len(),
+                fold: r.folds.len(),
+                constant: r.consts.len(),
+                union: r.unions.len(),
+                rows: PerRecTable::from_fn(|t| self.rows.len(t)),
+                units: self.units,
+            },
+            Tape::Off => Cursor::default(),
+        }
+    }
+
+    /// Mark the start of the next part, when recording.
+    fn bound(&mut self) {
+        let c = self.cursor();
+        if let Tape::Record(r) = &mut self.tape {
+            r.bounds.push(c);
+        }
+    }
+
+    /// Mark the end of the node's children: what follows joins them.
+    pub(crate) fn children_done(&mut self) {
+        self.bound();
+    }
+
+    /// Start the next child: what follows, until its segment, are its own inputs.
+    pub(crate) fn child(&mut self) {
+        self.bound();
+        let n = self.n_wires();
+        if let Some(p) = &self.probe {
+            p.borrow_mut().children.push(ChildParts {
+                start: n,
+                segment: [n, n],
+            });
+        }
+    }
+
+    /// Run `f`, the current child's segment: its verification, which reads only its inputs and the node's start.
+    pub(crate) fn segment<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.bound();
+        let n = self.n_wires();
+        if let Some(p) = &self.probe {
+            let mut p = p.borrow_mut();
+            let c = p.children.last_mut().expect("a segment of a started child");
+            c.segment = [n, n];
+            p.open = true;
+        }
+        let out = f(self);
+        let n = self.n_wires();
+        if let Some(p) = &self.probe {
+            let mut p = p.borrow_mut();
+            p.children.last_mut().expect("a started child").segment[1] = n;
+            p.open = false;
+        }
+        self.bound();
+        out
+    }
+
+    /// Wires made so far, or the next a replay makes.
+    fn n_wires(&self) -> u32 {
+        if self.replaying_now() {
+            return self.next_wire;
+        }
+        u32::try_from(self.values.len()).expect("fewer than 2^32 wires")
+    }
+
+    /// A wire's value, from what a part of a phased replay reads if this builder does not hold it.
+    fn value(&self, w: u32) -> Limbs {
+        if let Some(base) = &self.base {
+            if let Some(&v) = w.checked_sub(self.offset).and_then(|i| self.values.get(i as usize)) {
+                return v;
+            }
+            return base[w as usize];
+        }
+        self.values[w as usize]
+    }
+
+    /// Whether this builder runs on a task of the pool, where it must not dispatch.
+    pub(crate) const fn on_task(&self) -> bool {
+        self.on_task
+    }
+
+    /// Whether this replay runs its children's segments apart: they read nothing of each other, and the pool has
+    /// more than one thread to run them on.
+    pub(crate) fn phased(&self) -> bool {
+        matches!(&self.tape, Tape::Replay(r) if r.template.segments_apart()) && parallel::num_threads() > 1
+    }
+
+    /// Move a phased replay to the start of part `k`, checking that the part it leaves ended where its recording did.
+    pub(crate) fn enter_part(&mut self, k: usize) {
+        self.close_part();
+        let Tape::Replay(r) = &mut self.tape else {
+            return;
+        };
+        let c = r.template.tape.bounds[k];
+        (r.next_fold, r.next_const, r.next_union, r.rows) = (c.fold, c.constant, c.union, c.rows);
+        (self.next_wire, self.next_hash, self.units) = (c.wire, c.hash, c.units);
+        (self.running, self.part, self.part_failures) = (Some(k), k, 0);
+    }
+
+    /// Check that the running part ended where its recording did.
+    fn close_part(&mut self) {
+        let Some(j) = self.running.take() else {
+            return;
+        };
+        let at = self.cursor();
+        if let Tape::Replay(r) = &mut self.tape
+            && r.template.tape.bounds.get(j + 1) != Some(&at)
+        {
+            r.diverged = true;
+        }
+    }
+
+    /// Replay `parts`, each a child's segment, on tasks of the pool: `f(b, j)` builds part `parts[j]` on its own
+    /// builder, which holds its part's wires and hash rows and reads the rest from what this one has built.
+    pub(crate) fn replay_parts<T: Send>(
+        &mut self,
+        parts: &[usize],
+        f: impl Fn(&mut Self, usize) -> T + Sync,
+    ) -> Vec<T> {
+        self.close_part();
+        let Tape::Replay(r) = &self.tape else {
+            unreachable!("only a replay runs parts")
+        };
+        let template = Arc::clone(&r.template);
+        let base = Arc::new(std::mem::take(&mut self.values));
+        let scope = self.scope.clone();
+        let built: Vec<(Self, T)> = parallel::map_collect(parts.len(), |j| {
+            let mut b = Self::part(Arc::clone(&template), parts[j], Arc::clone(&base), scope.clone());
+            let out = f(&mut b, j);
+            b.base = None;
+            (b, out)
+        });
+        self.values = Arc::try_unwrap(base).expect("every part let go of the values");
+        let mut outs = Vec::with_capacity(parts.len());
+        for (&k, (b, out)) in parts.iter().zip(built) {
+            self.absorb(&template, k, b);
+            outs.push(out);
+        }
+        outs
+    }
+
+    /// A builder for part `k` of a phased replay, reading `base` below the part.
+    fn part(template: Arc<Template>, k: usize, base: Arc<Vec<Limbs>>, scope: Vec<String>) -> Self {
+        let (start, end) = (template.tape.bounds[k], template.tape.bounds[k + 1]);
+        let mut b = Self::new();
+        b.values = vec![[0; 4]; (end.wire - start.wire) as usize];
+        b.hash = vec![Compression::PADDING; end.hash - start.hash];
+        (b.next_wire, b.offset, b.next_hash, b.hash_offset) = (start.wire, start.wire, start.hash, start.hash);
+        (b.base, b.scope, b.part, b.on_task, b.units) = (Some(base), scope, k, true, start.units);
+        b.tape = Tape::Replay(Replay {
+            template,
+            next_fold: start.fold,
+            next_const: start.constant,
+            next_union: start.union,
+            rows: start.rows,
+            diverged: false,
         });
         b
+    }
+
+    /// Take part `k`'s wires, hash rows and failures from the builder that replayed it.
+    fn absorb(&mut self, template: &Template, k: usize, part: Self) {
+        let (start, end) = (template.tape.bounds[k], template.tape.bounds[k + 1]);
+        let whole = part.cursor() == end
+            && part.values.len() == (end.wire - start.wire) as usize
+            && part.hash.len() == end.hash - start.hash;
+        if part.diverged() || !whole {
+            if let Tape::Replay(r) = &mut self.tape {
+                r.diverged = true;
+            }
+            return;
+        }
+        self.values[start.wire as usize..end.wire as usize].copy_from_slice(&part.values);
+        self.hash[start.hash..end.hash].copy_from_slice(&part.hash);
+        self.failure_parts.extend(&part.failure_parts);
+        self.failures.extend(part.failures);
+    }
+
+    /// Note a read of a wire's value, while recording.
+    fn read(&self, w: u32) {
+        if let Some(p) = &self.probe {
+            p.borrow_mut().read(w);
+        }
     }
 
     /// A circuit built again from `template`: the same code runs, but only its values are computed.
     pub(crate) fn replaying(template: Arc<Template>) -> Self {
         let mut b = Self::new();
-        b.values.reserve(template.n_wires);
-        b.hash.reserve(template.n_hash);
+        // Every wire and hash row has its place, written there as the replay reaches it. A constant's value is there
+        // from the start, for a part of a phased replay that reads a constant another part makes.
+        b.values = vec![[0; 4]; template.n_wires];
+        for &(w, v) in &template.tape.constant_wires {
+            b.values[w as usize] = v;
+        }
+        b.hash = vec![Compression::PADDING; template.n_hash];
         b.statement.reserve(template.n_statement);
+        b.running = Some(0);
         b.tape = Tape::Replay(Replay {
             template,
             next_fold: 0,
@@ -587,7 +895,7 @@ impl Builder {
     ///
     /// A fold the template cannot give marks the build diverged, and makes a new wire, so the build runs to its end.
     fn replayed_fold(&mut self) -> Option<u32> {
-        let n = self.values.len();
+        let n = self.n_wires() as usize;
         let Tape::Replay(r) = &mut self.tape else {
             unreachable!("only a replay takes folds")
         };
@@ -670,7 +978,9 @@ impl Builder {
 
     /// Record a check that failed on the values and that no equality expresses.
     pub fn fail(&mut self, check: &'static str) {
-        if self.failures.len() < Self::RECORDED_FAILURES {
+        if self.part_failures < Self::RECORDED_FAILURES {
+            self.part_failures += 1;
+            self.failure_parts.push(self.part);
             self.failures.push(Unsatisfied {
                 scope: self.scope.clone(),
                 check,
@@ -693,9 +1003,19 @@ impl Builder {
                 || r.next_fold != t.tape.folds.len()
                 || r.next_const != t.tape.consts.len()
                 || r.next_union != t.tape.unions.len()
+                || self.next_wire as usize != t.n_wires
                 || self.values.len() != t.n_wires
+                || self.next_hash != t.n_hash
                 || self.hash.len() != t.n_hash
                 || self.statement.len() != t.n_statement;
+            // A phased replay ran its parts out of order: its failures go back in the recording's order, then the
+            // first few are kept, as a build in order keeps them.
+            let mut order: Vec<usize> = (0..self.failures.len()).collect();
+            order.sort_by_key(|&i| self.failure_parts[i]);
+            let mut failures: Vec<Option<Unsatisfied>> = self.failures.into_iter().map(Some).collect();
+            let failures = (order.into_iter().take(Self::RECORDED_FAILURES))
+                .map(|i| failures[i].take().expect("each failure once"))
+                .collect();
             return Finished {
                 circuit: t.circuit.clone(),
                 assignment: Assignment {
@@ -704,7 +1024,7 @@ impl Builder {
                     hash: self.hash,
                     statement: self.statement,
                 },
-                failures: self.failures,
+                failures,
                 diverged,
                 template: None,
             };
@@ -713,6 +1033,7 @@ impl Builder {
             Tape::Record(recorded) => Some(recorded),
             _ => None,
         };
+        let probe = self.probe.take().map(|p| p.into_inner()).unwrap_or_default();
         let rows = recorded.as_ref().map(|_| self.rows.clone());
         let (n_wires, n_hash, n_statement) = (self.values.len(), self.hash.len(), self.statement.len());
         let mut finished = self.finish_full();
@@ -725,6 +1046,7 @@ impl Builder {
                 n_wires,
                 n_hash,
                 n_statement,
+                probe,
             })
         });
         finished
@@ -780,12 +1102,23 @@ impl Builder {
 
     /// A new wire of a kind, holding a value.
     fn wire(&mut self, kind: WireKind, value: Limbs) -> u32 {
+        if let Tape::Replay(r) = &mut self.tape {
+            let id = self.next_wire;
+            self.next_wire += 1;
+            match self.values.get_mut((id - self.offset) as usize) {
+                Some(v) => *v = value,
+                None => {
+                    // More wires than the template's: the build has left it.
+                    r.diverged = true;
+                    self.values.push(value);
+                }
+            }
+            return id;
+        }
         let id = u32::try_from(self.values.len()).expect("fewer than 2^32 wires");
         self.values.push(value);
-        if !self.replaying_now() {
-            self.kinds.push(kind);
-            self.parent.push(id);
-        }
+        self.kinds.push(kind);
+        self.parent.push(id);
         id
     }
 
@@ -801,7 +1134,9 @@ impl Builder {
 
     /// Merge the classes of two wires, recording a failure if their values differ.
     fn union(&mut self, a: u32, b: u32) {
-        if self.values[a as usize] != self.values[b as usize] {
+        self.read(a);
+        self.read(b);
+        if self.value(a) != self.value(b) {
             self.fail("unequal wires");
         }
         self.tape_union([a, b]);
@@ -836,18 +1171,21 @@ impl Builder {
 
     /// The value of an `E` wire.
     pub fn e(&self, w: Ew) -> F192 {
-        let [c0, c1, c2, _] = self.values[w.0 as usize];
+        self.read(w.0);
+        let [c0, c1, c2, _] = self.value(w.0);
         F192::new(c0, c1, c2)
     }
 
     /// The value of a `K` wire.
     pub fn k(&self, w: Kw) -> u64 {
-        self.values[w.0 as usize][0]
+        self.read(w.0);
+        self.value(w.0)[0]
     }
 
     /// The value of a digest wire.
     pub fn d(&self, w: Dw) -> Limbs {
-        self.values[w.0 as usize]
+        self.read(w.0);
+        self.value(w.0)
     }
 
     /// An extension-field wire constrained only by the slots that use it.
@@ -896,6 +1234,12 @@ impl Builder {
             return w;
         }
         let w = self.wire(kind, value);
+        if let Some(p) = &self.probe {
+            p.borrow_mut().constants.insert(w);
+        }
+        if let Tape::Record(r) = &mut self.tape {
+            r.constant_wires.push((w, value));
+        }
         self.record_fold(w);
         self.row(Table::Pub, &[w]);
         if !self.replaying_now() {
@@ -940,7 +1284,8 @@ impl Builder {
     /// Returns the word's index in the statement.
     pub fn expose<W: AnyWire>(&mut self, w: W) -> usize {
         let i = self.statement.len();
-        self.statement.push(self.values[w.id() as usize]);
+        self.read(w.id());
+        self.statement.push(self.value(w.id()));
         if !self.replaying_now() {
             self.pubs.push(PubSource::Statement(i));
         }
@@ -1055,7 +1400,8 @@ impl Builder {
         let wires: [u32; 8] = std::array::from_fn(|s| {
             (given.iter().find(|&&(at, _)| at == s)).map_or_else(|| self.wire(kinds[s], values[s]), |&(_, w)| w)
         });
-        if given.iter().any(|&(s, w)| self.values[w as usize] != values[s]) {
+        given.iter().for_each(|&(_, w)| self.read(w));
+        if given.iter().any(|&(s, w)| self.value(w) != values[s]) {
             self.fail("cast");
         }
         self.row(Table::Cast, &wires);
@@ -1253,7 +1599,19 @@ impl Builder {
         slots[..8].copy_from_slice(&[h.0, tf.0, mux.0, bit.0, x.0, ds.0, o.0, ch.0]);
         slots[8..].copy_from_slice(&words);
         self.row(Table::Hash, &slots);
-        self.hash.push(compression);
+        if let Tape::Replay(r) = &mut self.tape {
+            let i = self.next_hash - self.hash_offset;
+            self.next_hash += 1;
+            match self.hash.get_mut(i) {
+                Some(h) => *h = compression,
+                None => {
+                    r.diverged = true;
+                    self.hash.push(compression);
+                }
+            }
+        } else {
+            self.hash.push(compression);
+        }
         (o, ch)
     }
 }
@@ -1430,6 +1788,86 @@ mod tests {
                 assert_eq!(replayed.circuit, full.circuit);
             }
         }
+    }
+
+    #[test]
+    fn a_phased_replay_is_the_build_in_order() {
+        // Two children, each an input, a segment over it and a constant the first one makes, and a joining; each
+        // fails one check in its inputs and one in its segment. With `cross`, the second segment also reads the first
+        // segment's output, which keeps its replays in order.
+        let build = |b: &mut Builder, x: u64, cross: bool| {
+            let one = b.one();
+            let input = |b: &mut Builder, i: u64| {
+                let a = b.free_e(F192::new(x + i, 1, 0));
+                b.scope(format!("input {i}"), |b| b.fail("input"));
+                a
+            };
+            let segment = |b: &mut Builder, i: usize, a: Ew, earlier: Option<Ew>| {
+                b.scope(format!("child {i}"), |b| {
+                    let c = b.e_const(F192::new(7, 0, 0));
+                    let p = b.mul_add(a, a, c);
+                    let q = earlier.map_or(p, |e| b.mul_add(e, a, p));
+                    b.eq(q, one);
+                    q
+                })
+            };
+            let mut outs = Vec::new();
+            if b.phased() {
+                let ins: Vec<Ew> = (0..2)
+                    .map(|i| {
+                        b.enter_part(3 * i + 1);
+                        input(b, i as u64)
+                    })
+                    .collect();
+                let segs = b.replay_parts(&[2, 5], |b, j| segment(b, j, ins[j], None));
+                for (i, q) in segs.into_iter().enumerate() {
+                    b.enter_part(3 * i + 3);
+                    outs.push(b.add(q, one));
+                }
+                b.enter_part(7);
+            } else {
+                let mut earlier = None;
+                for i in 0..2 {
+                    b.child();
+                    let a = input(b, i as u64);
+                    let q = b.segment(|b| segment(b, i, a, earlier.filter(|_| cross)));
+                    earlier = Some(q);
+                    outs.push(b.add(q, one));
+                }
+                b.children_done();
+            }
+            for w in outs {
+                b.expose(w);
+            }
+        };
+        let mut crossing = Builder::recording(None);
+        build(&mut crossing, 5, true);
+        let crossing = crossing.finish().template.expect("a recording leaves its template");
+        assert!(
+            !crossing.segments_apart(),
+            "the second segment reads the first's output"
+        );
+
+        let mut recording = Builder::recording(None);
+        build(&mut recording, 5, false);
+        let template = recording.finish().template.expect("a recording leaves its template");
+        assert!(template.segments_apart());
+        let mut replay = Builder::replaying(template);
+        assert_eq!(replay.phased(), parallel::num_threads() > 1);
+        build(&mut replay, 9, false);
+        let replayed = replay.finish();
+        let mut full = Builder::new();
+        build(&mut full, 9, false);
+        let full = full.finish();
+        assert!(!replayed.diverged);
+        assert_eq!(replayed.circuit, full.circuit);
+        assert_eq!(replayed.assignment.values, full.assignment.values);
+        assert_eq!(replayed.assignment.statement, full.assignment.statement);
+        assert_eq!(
+            replayed.failures, full.failures,
+            "the parts' failures in the build's order"
+        );
+        assert_eq!(full.failures.len(), 4);
     }
 
     #[test]

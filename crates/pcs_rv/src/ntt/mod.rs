@@ -1013,7 +1013,8 @@ const PAGE_WORDS: usize = 1 << 9;
 /// - Each round ends in barriers, and its first gathered pass reads the whole message.
 /// - Several replicas a round share both, which matters most for a short message at a high rate: one replica a round
 ///   would leave many rounds of little work, each waiting on its barriers, worse the more threads wait.
-const REPLICA_ROUND_WORDS: usize = 1 << 22;
+/// - A message past L3 comes from memory in every round, so fewer rounds of more replicas also read it fewer times.
+const REPLICA_ROUND_WORDS: usize = 1 << 23;
 
 /// Deep sub-blocks a row-only encode cuts each round into, per worker, when a replica outgrows L3.
 const ROUND_SUBS_PER_WORKER: usize = 8;

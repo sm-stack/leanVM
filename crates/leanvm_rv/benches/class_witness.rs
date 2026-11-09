@@ -28,11 +28,10 @@ fn main() {
     );
     // Every class with a circuit and no word-level witness of its own.
     for spec in TableId::ALL.map(TableId::spec).into_iter().filter(|spec| {
-        spec.circuit
-            .as_ref()
+        spec.class_circuit()
             .is_some_and(|c| !matches!(c.fill, Fill::Instance(_)))
     }) {
-        let circuit = spec.class.circuit();
+        let circuit = (spec.class_circuit().expect("a class circuit").build)();
 
         // Random input words: the walk costs the same on any input.
         let mut rng = Rng::new(0xC1A55);

@@ -66,6 +66,7 @@ const fn sext32(x: u64) -> u64 {
 pub(super) mod tests {
     use super::*;
     use crate::rv::Class;
+    use crate::tables::TableId;
     use crate::tables::spec::InstanceWitness;
     use flock::BatchRows;
     use flock::circuit::Circuit;
@@ -147,7 +148,11 @@ pub(super) mod tests {
 
         // The runtime dispatch on the class names this type's flags and circuit.
         assert_eq!(C::CLASS.legal_flags(), C::LEGAL);
-        assert_eq!(C::CLASS.circuit().useful_bits(), circuit.useful_bits());
+        let spec = TableId::of(C::CLASS)
+            .expect("a class with a circuit has a table")
+            .spec();
+        let build = spec.class_circuit().expect("the class's table names its circuit").build;
+        assert_eq!(build().useful_bits(), circuit.useful_bits());
 
         let mut runner = TestRunner::new(Config::with_cases(cases));
         runner

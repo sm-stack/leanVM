@@ -37,11 +37,21 @@ pub(crate) struct TableClaims<E> {
 }
 
 impl<E: Clone> TableClaims<E> {
-    /// Split the table sumcheck's claims, the settled tables' at the bus point leading the column claims.
+    /// Split the table sumcheck's claims: each table's column claims are its bus-point claims if the bus point settles
+    /// it (`settled` holds those, in table order), else its table sumcheck claims.
     pub(crate) fn new(settled: Vec<Claims<E>>, mut summed: Vec<Claims<E>>) -> Self {
         let producers = summed.split_off(N_TABLES);
-        let mut columns = settled;
-        columns.extend_from_slice(&summed[columns.len()..]);
+        let mut settled = settled.into_iter();
+        let columns = (ClassTable::all().values().zip(&summed))
+            .map(|(table, claims)| {
+                if table.settled_at_bus() {
+                    settled.next().expect("a bus-point claim per settled table")
+                } else {
+                    claims.clone()
+                }
+            })
+            .collect();
+        assert!(settled.next().is_none(), "a bus-point claim per settled table");
         Self {
             columns,
             summed,

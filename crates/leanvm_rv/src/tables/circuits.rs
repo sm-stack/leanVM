@@ -16,7 +16,7 @@
 //!
 //! The table's columns for them are virtual: their claims are routed to those words.
 
-use super::{Clock, Fill, N_CLASS_CIRCUITS, N_TABLES, PerTable, TableId};
+use super::{Fill, N_CLASS_CIRCUITS, N_TABLES, PerTable, TableId};
 use crate::cpu::{Payloads, RowRef, Trace};
 use crate::rv::RiscvProgram;
 use flock::circuit::Circuit;
@@ -27,8 +27,36 @@ use std::sync::OnceLock;
 
 pub use flock::zerocheck::MIN_CUBE_LOG;
 
-/// The most input ports a circuit with a word-level witness has: EXT's clock circuit's seventeen.
-const MAX_INPUT_WORDS: usize = 17;
+/// The most input ports a circuit with a word-level witness has.
+const MAX_INPUT_WORDS: usize = {
+    let mut max = 0;
+    let mut t = 0;
+    while t < N_TABLES {
+        let spec = TableId::ALL[t].spec();
+        let clock = 1 + spec.n_accesses() + spec.clock.inputs.len();
+        if clock > max {
+            max = clock;
+        }
+        if let Some(class) = spec.class_circuit()
+            && class.inputs.len() > max
+        {
+            max = class.inputs.len();
+        }
+        t += 1;
+    }
+    max
+};
+
+/// One argument proving part of a table's row relation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Relation {
+    /// A flock circuit over ports of its own packed witness: proven by the batched reduction right after the
+    /// commitment, which leaves a ring-switched claim on the witness and a claim on the circuit's matrices.
+    Circuit(CircuitId),
+    /// Degree-2 forms over the table's columns that vanish on every row, folded into the table sumcheck at powers of
+    /// its challenge past the bus forms'.
+    Identities,
+}
 
 /// How many circuits the tables have.
 ///
@@ -110,10 +138,20 @@ impl CircuitId {
         self.part
     }
 
-    /// Its position in protocol order.
+    /// Its position in protocol order: the class circuits in table order, then the clock circuits in table order.
     pub const fn index(self) -> usize {
         match self.part {
-            Part::Class => self.table.index(),
+            Part::Class => {
+                let mut before = 0;
+                let mut t = 0;
+                while t < self.table.index() {
+                    if TableId::ALL[t].spec().has_circuit() {
+                        before += 1;
+                    }
+                    t += 1;
+                }
+                before
+            }
             Part::Clock => N_CLASS_CIRCUITS + self.table.index(),
         }
     }
@@ -121,10 +159,10 @@ impl CircuitId {
     /// `log2` of the bits one instance occupies.
     pub const fn k_log(self) -> usize {
         let spec = self.table.spec();
-        match (self.part, &spec.circuit) {
+        match (self.part, spec.class_circuit()) {
             (Part::Class, Some(circuit)) => circuit.k_log,
             (Part::Class, None) => unreachable!(),
-            (Part::Clock, _) => spec.clock_k_log,
+            (Part::Clock, _) => spec.clock.k_log,
         }
     }
 
@@ -141,11 +179,11 @@ impl CircuitId {
     /// The table's spec fixes both, so the replay builds no circuit, and building the circuit checks them.
     pub const fn shape(self) -> Shape {
         let spec = self.table.spec();
-        let n_ports = match (self.part, &spec.circuit) {
+        let n_ports = match (self.part, spec.class_circuit()) {
             (Part::Class, Some(circuit)) => circuit.inputs.len() + circuit.outputs.len(),
             (Part::Class, None) => unreachable!(),
             // The clock, each access's previous timestamp and the clock's own inputs, then the step and its own outputs.
-            (Part::Clock, _) => spec.n_accesses() + 2 + spec.clock_inputs.len() + spec.clock_outputs.len(),
+            (Part::Clock, _) => spec.n_accesses() + 2 + spec.clock.inputs.len() + spec.clock.outputs.len(),
         };
         Shape {
             k_log: self.k_log(),
@@ -158,9 +196,9 @@ impl CircuitId {
         static CIRCUITS: [OnceLock<Circuit>; N_CIRCUITS] = [const { OnceLock::new() }; N_CIRCUITS];
         CIRCUITS[self.index()].get_or_init(|| {
             let (spec, part) = (self.table.spec(), self.part);
-            let (circuit, n_inputs) = match &spec.circuit {
-                Some(circuit) if part == Part::Class => (spec.class.circuit(), circuit.inputs.len()),
-                _ => (spec.clock_circuit(), 1 + spec.n_accesses() + spec.clock_inputs.len()),
+            let (circuit, n_inputs) = match spec.class_circuit() {
+                Some(circuit) if part == Part::Class => ((circuit.build)(), circuit.inputs.len()),
+                _ => (spec.clock_circuit(), 1 + spec.n_accesses() + spec.clock.inputs.len()),
             };
             let shape = self.shape();
             assert_eq!(
@@ -268,32 +306,29 @@ impl CircuitId {
         };
         let z = F64::as_bits_mut(window);
         let instances = BatchRows::new(rows, &rows[0], n_blocks_log);
-        let fill = match (part, &spec.circuit) {
+        let fill = match (part, spec.class_circuit()) {
             (Part::Class, Some(class)) => class.fill,
             _ => Fill::Walk,
         };
         // A clock circuit, and a class with a word-level witness, skip the walk of the gate list;
         // the others walk it 64 instances at a time.
         match (part, fill) {
-            // A clock circuit with ports of its own (EXT's) takes its input words through its ports.
-            (Part::Clock, _) if !spec.clock_inputs.is_empty() => circuit.witness_by_instance(
+            // A clock circuit's inputs are the clock and the previous timestamps, read straight off the row, then the
+            // circuit's own, which it takes through their ports.
+            (Part::Clock, _) => circuit.witness_by_instance(
                 z,
                 instances,
                 |row, z, az, bz| {
                     let mut words = [0u64; MAX_INPUT_WORDS];
                     let words = &mut words[..n_inputs];
-                    input_words(row, words);
-                    spec.clock_witness(&slots, words, z, az, bz);
-                },
-                check,
-            ),
-            // The others read the row's clock and previous timestamps straight off it.
-            (Part::Clock, _) => circuit.witness_by_instance(
-                z,
-                instances,
-                |row, z, az, bz| {
-                    let row = view(row);
-                    Clock::witness(&slots, row.row.ts, &row.prev()[..slots.len()], z, az, bz);
+                    if spec.clock.inputs.is_empty() {
+                        let row = view(row);
+                        words[0] = row.row.ts;
+                        words[1..].copy_from_slice(&row.prev()[..slots.len()]);
+                    } else {
+                        input_words(row, words);
+                    }
+                    (spec.clock.witness)(&slots, words, z, az, bz);
                 },
                 check,
             ),
@@ -323,6 +358,31 @@ impl CircuitId {
                 },
                 check,
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tables::ClassTable;
+
+    #[test]
+    fn the_circuits_are_the_tables_circuit_relations_in_protocol_order() {
+        // Invariant: the flock batch, the ring-switched witnesses and the matrix claims follow `CircuitId::ALL`, which
+        // lists every table's circuit relations, the class circuits in table order and then the clock circuits, each at
+        // its own index.
+        let mut relations: Vec<CircuitId> = (ClassTable::all().values())
+            .flat_map(ClassTable::relations)
+            .filter_map(|r| match r {
+                Relation::Circuit(f) => Some(f),
+                Relation::Identities => None,
+            })
+            .collect();
+        relations.sort_by_key(|f| (f.part() == Part::Clock, f.table().index()));
+        assert_eq!(relations, CircuitId::ALL);
+        for (i, f) in CircuitId::ALL.into_iter().enumerate() {
+            assert_eq!(f.index(), i, "{f:?}");
         }
     }
 }

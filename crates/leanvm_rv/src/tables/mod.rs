@@ -13,7 +13,7 @@ pub(crate) mod spec;
 mod table;
 mod word;
 
-pub use circuits::{CircuitId, MIN_CUBE_LOG, N_CIRCUITS, Part, batch_log};
+pub use circuits::{CircuitId, MIN_CUBE_LOG, N_CIRCUITS, Part, Relation, batch_log};
 pub use clock::Clock;
 pub use id::{N_TABLES, PerTable, TableId, TableKey};
 pub use spec::{BAD_SLOT, ClassSpec, EXIT_SLOT, Fill, N_CLASS_CIRCUITS, Ram};

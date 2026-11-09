@@ -6,7 +6,7 @@
 use super::circuit::{Assignment, WireKind};
 use super::hash;
 use crate::bus::{BusForm, Coord};
-use crate::tables::{self, PerTable, TableKey};
+use crate::tables::{self, CircuitId, PerTable, Relation, TableKey};
 use Coord::{Col, Prod, Sum};
 use WireKind::{D, E, K};
 use primitives::field::{F64, F192};
@@ -118,17 +118,35 @@ impl Table {
         }
     }
 
-    /// How many of its columns are ports of its packed witness: its first.
-    pub(crate) const fn n_ports(self) -> usize {
-        if matches!(self, Self::Hash) { hash::N_PORTS } else { 0 }
+    /// The arguments proving its rows: the hash table's are the BLAKE2s circuit and the Booleanity of its mux bit, the
+    /// split table's its identities, and the others' rows are their bus tuples alone.
+    pub(crate) const fn relations(self) -> &'static [Relation] {
+        match self {
+            Self::Hash => &[Relation::Circuit(hash::CIRCUIT), Relation::Identities],
+            Self::Split => &[Relation::Identities],
+            Self::Emul | Self::Exk | Self::Cast | Self::Pub => &[],
+        }
     }
 
-    /// `log2` of its height for `rows` rows: a power of two, at flock's floor for the hash table.
-    pub(crate) fn height_log(self, rows: usize) -> usize {
-        match self {
-            Self::Hash => tables::batch_log(hash::CIRCUIT.k_log(), rows),
-            _ => crate::log2_ceil_usize(rows.max(1)),
+    /// The flock circuit among its relations, whose packed witness its first columns are ports of.
+    pub(crate) const fn circuit(self) -> Option<CircuitId> {
+        match self.relations() {
+            [Relation::Circuit(f), ..] => Some(*f),
+            _ => None,
         }
+    }
+
+    /// How many of its columns are ports of its circuit's packed witness: its first.
+    pub(crate) const fn n_ports(self) -> usize {
+        if self.circuit().is_some() { hash::N_PORTS } else { 0 }
+    }
+
+    /// `log2` of its height for `rows` rows: a power of two, at flock's floor for a table with a circuit.
+    pub(crate) fn height_log(self, rows: usize) -> usize {
+        self.circuit().map_or_else(
+            || crate::log2_ceil_usize(rows.max(1)),
+            |f| tables::batch_log(f.k_log(), rows),
+        )
     }
 
     /// The limbs slot `s` carries, over its local columns.
@@ -144,8 +162,12 @@ impl Table {
         limbs.unwrap_or_else(|| unreachable!("{self:?} has no slot {s}"))
     }
 
-    /// The identities its rows satisfy, each a degree-two form over its local columns that vanishes.
+    /// The identities its rows satisfy, each a degree-two form over its local columns that vanishes: none unless
+    /// [`Relation::Identities`] is among its relations.
     pub(crate) fn identities(self) -> Vec<BusForm> {
+        if !self.relations().contains(&Relation::Identities) {
+            return Vec::new();
+        }
         let n = self.n_cols();
         let form = |linear: &[(usize, F192)], prods: Vec<(usize, usize, F192)>| {
             let mut coeffs = vec![F192::ZERO; n];
@@ -172,7 +194,7 @@ impl Table {
                     .chain((1..65).map(boolean))
                     .collect()
             }
-            _ => Vec::new(),
+            Self::Emul | Self::Exk | Self::Cast | Self::Pub => unreachable!("{self:?} has no identities"),
         }
     }
 

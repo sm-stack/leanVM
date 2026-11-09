@@ -2,7 +2,6 @@
 
 use super::RecError;
 use super::circuit::Circuit;
-use super::hash;
 use super::table::{PerRecTable, Table};
 use crate::bus::ColumnClaim;
 use crate::commitment::StackClaim;
@@ -24,8 +23,12 @@ pub(crate) struct RecLayout {
 }
 
 impl RecLayout {
-    /// The global column of the hash table's packed witness, the one committed column before the owned tables'.
-    pub(crate) const HASH_WITNESS: usize = 0;
+    /// The global column of the hash table's packed witness.
+    pub(crate) const HASH_WITNESS: usize = Self::witness_column(Table::Hash);
+
+    /// How many tables have a flock circuit among their relations: each one's packed witness is a global column, in
+    /// table order, before the owned tables' columns.
+    const N_WITNESSES: usize = Self::witness_column(Table::Pub);
 
     /// The most rows a table holds, as a base-two logarithm: a slot's key keeps the row in its low 32 bits.
     pub(crate) const MAX_TAU: usize = 32;
@@ -33,7 +36,7 @@ impl RecLayout {
     /// Each owned table's first global column and its number of columns, in table order.
     pub(crate) const TABLE_COLUMNS: [(usize, usize); Table::OWNED.len()] = {
         let mut spans = [(0, 0); Table::OWNED.len()];
-        let mut next = Self::HASH_WITNESS + 1;
+        let mut next = Self::N_WITNESSES;
         let mut t = 0;
         while t < spans.len() {
             spans[t] = (next, Table::OWNED[t].n_cols());
@@ -72,18 +75,21 @@ impl RecLayout {
         })
     }
 
-    /// Every global column's source: the packed witness, then each owned table's ports and committed columns.
+    /// Every global column's source: each circuit's packed witness, then each owned table's ports and committed
+    /// columns.
     fn sources(taus: &PerRecTable<usize>) -> Vec<Source> {
-        let stride_log = hash::CIRCUIT.stride_log();
-        let mut sources = vec![Source::Committed(taus[Table::Hash] + stride_log)];
+        let witness = |table: Table| table.circuit().expect("a table with a circuit");
+        let mut sources: Vec<Source> = (Self::circuit_tables())
+            .map(|table| Source::Committed(taus[table] + witness(table).stride_log()))
+            .collect();
         for table in Table::OWNED {
             debug_assert_eq!(sources.len(), Self::columns(table).start);
             sources.extend((0..table.n_cols()).map(|c| {
                 if c < table.n_ports() {
                     Source::Port {
-                        column: Self::HASH_WITNESS,
+                        column: Self::witness_column(table),
                         port: c,
-                        stride_log,
+                        stride_log: witness(table).stride_log(),
                     }
                 } else {
                     Source::Committed(taus[table])
@@ -91,6 +97,36 @@ impl RecLayout {
             }));
         }
         sources
+    }
+
+    /// The global column of a table's circuit's packed witness: how many tables before it have a circuit.
+    const fn witness_column(table: Table) -> usize {
+        let mut column = 0;
+        let mut t = 0;
+        while t < table as usize {
+            if Table::ALL[t].circuit().is_some() {
+                column += 1;
+            }
+            t += 1;
+        }
+        column
+    }
+
+    /// The tables with a flock circuit among their relations, in table order.
+    fn circuit_tables() -> impl Iterator<Item = Table> {
+        Table::ALL.into_iter().filter(|t| t.circuit().is_some())
+    }
+
+    /// Each circuit's flock batch, its shape and `log2` of its table's height, in table order.
+    pub(crate) fn batches(&self) -> Vec<(flock::reduction::Shape, usize)> {
+        (Self::circuit_tables())
+            .map(|table| {
+                (
+                    table.circuit().expect("a table with a circuit").shape(),
+                    self.tau(table),
+                )
+            })
+            .collect()
     }
 
     /// An owned table's global columns.

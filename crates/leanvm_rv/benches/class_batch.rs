@@ -100,8 +100,8 @@ impl ClassBatch {
     /// A class with no circuit has none.
     fn new(table: TableId, n_log: usize) -> Option<Self> {
         let spec = table.spec();
-        let class = spec.circuit.as_ref()?;
-        let circuit = spec.class.circuit();
+        let class = spec.class_circuit()?;
+        let circuit = (class.build)();
         let n_inputs = circuit.n_input_words();
         assert!(n_inputs <= ROW_WORDS, "{} has more input words than a row", spec.name);
 

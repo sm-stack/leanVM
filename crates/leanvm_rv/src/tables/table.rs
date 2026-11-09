@@ -2,7 +2,8 @@
 
 use super::bus::{FlushBuilder, Separator};
 use super::columns::Columns;
-use super::{BAD_SLOT, EXIT_SLOT, Part, PerTable, TableId, Word};
+use super::spec::ClassRelation;
+use super::{BAD_SLOT, CircuitId, EXIT_SLOT, Part, PerTable, Relation, TableId, Word};
 use crate::bus::BusForm;
 use crate::bus::Coord::{self, Col, Const, Scaled};
 use crate::constraints::{BitColumns, BitField};
@@ -25,6 +26,9 @@ pub struct ClassTable {
 
     /// Clock circuit ports in input-then-output order.
     clock_ports: Vec<Word>,
+
+    /// Whether the bus point settles the table (see [`Self::settled_at_bus`]).
+    settled: bool,
 }
 
 impl ClassTable {
@@ -39,15 +43,28 @@ impl ClassTable {
         let spec = id.spec();
         spec.assert_valid();
         let cols = Columns::new(spec);
-        let table = Self {
+        let mut table = Self {
             id,
             cols,
             class_ports: spec.ports().collect(),
             clock_ports: spec.clock_ports(),
+            settled: false,
         };
         table.assert_x0_is_constant();
-        table.assert_linear_if_circuit();
+        let bus = table.flushes();
+        let linear = bus.push.iter().chain(&bus.pull).flatten().all(Coord::is_linear);
+        table.settled = linear && !table.relations().contains(&Relation::Identities);
         table
+    }
+
+    /// The arguments proving the table's rows, in protocol order: its class's function (its circuit or its
+    /// identities), then its clock circuit.
+    pub(crate) fn relations(&self) -> Vec<Relation> {
+        let class = match self.id.spec().relation {
+            ClassRelation::Circuit(_) => Relation::Circuit(CircuitId::class(self.id).expect("a class circuit")),
+            ClassRelation::Identities(_) => Relation::Identities,
+        };
+        vec![class, Relation::Circuit(CircuitId::clock(self.id))]
     }
 
     /// Asserts that no access of the table can change register cell 0, `x0`.
@@ -96,9 +113,10 @@ impl ClassTable {
         }
     }
 
-    /// Whether the bus point settles the table: a table with a class circuit flushes only linear tuples.
+    /// Whether the bus point settles the table: every tuple it flushes is linear in its columns, and no identities of
+    /// its own wait for the table sumcheck.
     pub(crate) const fn settled_at_bus(&self) -> bool {
-        self.id.spec().has_circuit()
+        self.settled
     }
 
     /// The columns the table sumcheck folds, in order: all of them, or only the register numbers of a settled table.
@@ -137,23 +155,6 @@ impl ClassTable {
         } else {
             form.clone()
         }
-    }
-
-    /// Asserts that a table with a class circuit puts no product of columns on the bus.
-    ///
-    /// Such a table is settled at the bus's point, where only a linear form factors through its columns.
-    ///
-    /// # Panics
-    ///
-    /// Panics on a product in a table with a class circuit.
-    fn assert_linear_if_circuit(&self) {
-        let bus = self.flushes();
-        let linear = bus.push.iter().chain(&bus.pull).flatten().all(Coord::is_linear);
-        assert!(
-            !self.id.spec().has_circuit() || linear,
-            "{}: a product on the bus",
-            self.id.spec().name
-        );
     }
 
     /// Number of columns, the virtual ones included.
@@ -298,8 +299,15 @@ impl ClassTable {
         accesses.finish();
     }
 
-    /// The identities the table proves of every one of its rows, in local column indices: none for a class with a
-    /// circuit, and for the extension-field product its three new limbs.
+    /// The identities the table proves of every one of its rows, in local column indices: its relation's, or none.
+    pub(crate) fn identities(&self) -> Vec<BusForm> {
+        match self.id.spec().relation {
+            ClassRelation::Identities(forms) => forms(self),
+            ClassRelation::Circuit(_) => Vec::new(),
+        }
+    }
+
+    /// The extension-field product's identities, one per new limb.
     ///
     /// With `d_m = sum_{i + j = m} a_i b_j`, the product's coefficient of `y^m` (products in `K`), the reduction
     /// `y^3 = y + 1`, `y^4 = y^2 + y` has coefficients in `GF(2)`, so each new limb is a sum of `K` products:
@@ -312,10 +320,10 @@ impl ClassTable {
     ///
     /// Each form is the difference of the two sides, which vanishes on a row exactly when the row's new limb is its
     /// product: degree 2, every coefficient one. A base-field `b`'s high limbs are zero, being reads of `x0`.
-    pub(crate) fn identities(&self) -> Vec<BusForm> {
+    pub(crate) fn extension_product(&self) -> Vec<BusForm> {
         let c = &self.cols;
         let (Some(limbs), Some(bits)) = (c.limbs, c.flag_bits) else {
-            return Vec::new();
+            unreachable!("the extension-field table has limbs and flag bits")
         };
         let (a, b, old) = (limbs.limbs, limbs.limbs + 3, limbs.limbs + 6);
         (0..3)

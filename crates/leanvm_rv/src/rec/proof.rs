@@ -156,9 +156,9 @@ impl<'a> TableArgument<'a> {
         rate: Rate,
     ) -> Result<MatrixClaim<V::E>, RecError> {
         let commitment = Commitment::read(v, self.layout.shape, rate)?;
-        let batch = (hash::CIRCUIT.shape(), self.layout.tau(Table::Hash));
-        let [replay] = <[_; 1]>::try_from(v.scope("flock", |v| reduction::verify(&[batch], v))?)
-            .unwrap_or_else(|_| unreachable!("a batch of one circuit"));
+        let batches = self.layout.batches();
+        let [replay] = <[_; 1]>::try_from(v.scope("flock", |v| reduction::verify(&batches, v))?)
+            .unwrap_or_else(|_| unreachable!("the hash table is the one table with a circuit"));
         let slots = v.scope("bus and tables", |v| self.verify(v))?;
         let ring = self.layout.hash_window().ring(replay.claim);
         v.scope("opening", |v| commitment.verify(v, &slots, &[ring]))?;

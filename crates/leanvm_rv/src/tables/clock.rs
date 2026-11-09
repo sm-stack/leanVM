@@ -175,6 +175,11 @@ impl Clock {
         Self::witness_with(slots, ts, prev, [0, 0], [z, az, bz], |_| {});
     }
 
+    /// [`Self::witness`] from the circuit's input words: the clock, then each access's previous timestamp.
+    pub fn witness_of_words(slots: &[u32], inputs: &[u64], z: &mut [u64], az: &mut [u64], bz: &mut [u64]) {
+        Self::witness(slots, inputs[0], &inputs[1..], z, az, bz);
+    }
+
     /// [`Self::witness`] for a circuit of [`Self::builder`] with `extra` more input and output ports past its own:
     /// the clock's words and products, then the products `more` pushes.
     ///
@@ -328,7 +333,7 @@ mod tests {
         for spec in TableId::ALL.into_iter().map(|t| Some(t.spec())).chain([None]) {
             let slots = spec.map_or_else(|| (0..Clock::CYCLE as u32).collect(), |spec| spec.slots());
             let circuit = spec.map_or_else(|| Clock::circuit(&slots), |spec| spec.clock_circuit());
-            let operands = spec.map_or(&[][..], |spec| spec.clock_inputs);
+            let operands = spec.map_or(&[][..], |spec| spec.clock.inputs);
             let rows: Vec<Vec<u64>> = (0..1 << n_log)
                 .map(|r| {
                     let ts = match r % 6 {
@@ -379,7 +384,7 @@ mod tests {
             let rows = BatchRows::new(&rows, &rows[0], n_log);
             let walk = Witness::by_walk(&circuit, rows, |row: &Vec<u64>, words| words.copy_from_slice(row));
             let words = Witness::by_instance(&circuit, rows, |row: &Vec<u64>, z, az, bz| match spec {
-                Some(spec) => spec.clock_witness(&slots, row, z, az, bz),
+                Some(spec) => (spec.clock.witness)(&slots, row, z, az, bz),
                 None => Clock::witness(&slots, row[0], &row[1..], z, az, bz),
             });
             let name = spec.map_or("every slot", |spec| spec.name);

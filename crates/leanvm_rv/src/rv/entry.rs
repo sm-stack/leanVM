@@ -6,13 +6,11 @@
 //!
 //! The program is public, so each instruction word is decoded into an entry once, before any run.
 
-use super::circuits::ClassCircuit;
 use super::instruction::{ExtOp, ImmOp, Instruction, LoadOp, Op, RegOp, ShiftOp, StoreOp};
 use super::register::{Reg, RegisterFile};
 use super::semantics::{
     Alu, Div, Ext, Hash, InstructionClass, Ld, Load, Mul, Mulh, Outcome, Sd, Shift, Store, WordAccess,
 };
-use flock::circuit::Circuit;
 
 /// An instruction class: one table, and one circuit unless its table proves it by identities.
 ///
@@ -141,29 +139,6 @@ impl Class {
             },
             Self::Illegal => return None,
         })
-    }
-
-    /// The class's circuit: its function as a gate list over the words its table puts on the bus.
-    ///
-    /// # Panics
-    ///
-    /// Panics for the illegal class, which no table runs, and for the extension-field product, which its table
-    /// proves by identities over `K` instead (`tables::ClassTable::identities`).
-    pub fn circuit(self) -> Circuit {
-        match self {
-            Self::Alu => Alu::circuit(),
-            Self::Shift => Shift::circuit(),
-            Self::Load => Load::circuit(),
-            Self::Store => Store::circuit(),
-            Self::Ld => Ld::circuit(),
-            Self::Sd => Sd::circuit(),
-            Self::Mul => Mul::circuit(),
-            Self::Mulh => Mulh::circuit(),
-            Self::Div => Div::circuit(),
-            Self::Hash => Hash::circuit(),
-            Self::Ext => panic!("the extension-field product has no circuit"),
-            Self::Illegal => panic!("the illegal class has no circuit"),
-        }
     }
 }
 

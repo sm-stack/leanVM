@@ -392,7 +392,7 @@ mod tests {
     fn batch<const N: usize>(f: CircuitId, rows: &[[u64; N]]) -> Batch {
         let (circuit, spec) = (f.circuit(), f.table().spec());
         let n_blocks_log = spec.n_blocks_log(rows.len());
-        let witness = match spec.circuit.as_ref().map(|c| c.fill) {
+        let witness = match spec.class_circuit().map(|c| c.fill) {
             Some(Fill::Instance(instance)) => Witness::by_instance(
                 circuit,
                 BatchRows::new(rows, &[0; N], n_blocks_log),

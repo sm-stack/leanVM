@@ -266,32 +266,27 @@ fn spread3(x: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::rv::entry::Class;
     use crate::rv::semantics::tests::edge_word;
+    use crate::tables::TableId;
     use flock::BatchRows;
+    use flock::circuit::Circuit;
     use flock::test_util::Witness;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
 
-    /// Every class with a circuit.
-    const CLASSES: [Class; 10] = [
-        Class::Alu,
-        Class::Shift,
-        Class::Load,
-        Class::Store,
-        Class::Ld,
-        Class::Sd,
-        Class::Mul,
-        Class::Mulh,
-        Class::Div,
-        Class::Hash,
-    ];
+    /// Every class circuit, in table order.
+    fn class_circuits() -> impl Iterator<Item = Circuit> {
+        TableId::ALL
+            .into_iter()
+            .filter_map(|t| t.spec().class_circuit())
+            .map(|c| (c.build)())
+    }
 
     #[test]
     fn instance_sizes_are_pinned() {
         // The log of each instance's bits, which the tables fix before any circuit is built.
-        let sizes = CLASSES.map(|class| class.circuit().k_log());
-        assert_eq!(sizes, [10, 10, 10, 10, 8, 8, 12, 13, 13, 14]);
+        let sizes: Vec<usize> = class_circuits().map(|c| c.k_log()).collect();
+        assert_eq!(sizes, [10, 10, 10, 8, 8, 10, 12, 13, 13, 14]);
     }
 
     #[test]
@@ -301,7 +296,7 @@ mod tests {
         // Fixture: 128 instances per circuit, so two 64-lane walks.
         let n_log = 7;
         let mut runner = TestRunner::deterministic();
-        for circuit in CLASSES.map(Class::circuit) {
+        for circuit in class_circuits() {
             // Edge-biased words drive every carry and comparison.
             let mut draw = || edge_word().new_tree(&mut runner).unwrap().current();
             let rows: Vec<Vec<u64>> = (0..1 << n_log)

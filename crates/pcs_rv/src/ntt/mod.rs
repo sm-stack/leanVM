@@ -1011,12 +1011,9 @@ const PAGE_WORDS: usize = 1 << 9;
 ///
 /// - A round takes as many whole replicas as fit, and at least one.
 /// - Each round ends in barriers, and its first gathered pass reads the whole message.
-/// - Several replicas a round share both, which measured faster on aarch64.
-/// - Elsewhere the budget is zero, so a round is one replica.
-#[cfg(target_arch = "aarch64")]
+/// - Several replicas a round share both, which matters most for a short message at a high rate: one replica a round
+///   would leave many rounds of little work, each waiting on its barriers, worse the more threads wait.
 const REPLICA_ROUND_WORDS: usize = 1 << 22;
-#[cfg(not(target_arch = "aarch64"))]
-const REPLICA_ROUND_WORDS: usize = 0;
 
 /// Deep sub-blocks a row-only encode cuts each round into, per worker, when a replica outgrows L3.
 const ROUND_SUBS_PER_WORKER: usize = 8;

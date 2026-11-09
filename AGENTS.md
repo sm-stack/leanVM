@@ -16,7 +16,7 @@ The root `Cargo.toml` is workspace-only: libraries in `crates/`, the CLI in `bin
 | crate (package)          | layer    | role |
 | ------------------------ | -------- | ---- |
 | `parallel`               | shared   | the thread pool (below) |
-| `primitives`             | shared   | field kernels (NEON/AVX), Keccak (`hash`), BLAKE2s (`blake2s`), bit transposes (`bit_fold` for leanISA, `bit_fold_rv` for RISC-V), multilinear helpers, streaming stores, the shared test generator (`test_rng`) |
+| `primitives`             | shared   | field kernels (NEON/AVX), Keccak (`hash`), BLAKE2s (`blake2s`), bit transposes (`bit_fold` for leanISA, `bit_fold_rv` for RISC-V), the Merkle tree builder both commitments use (`merkle`, over a `TreeHash`: `Keccak` or `Blake2s`), multilinear helpers, streaming stores, the shared test generator (`test_rng`) |
 | `bench`                  | shared   | benchmark harness for the CLI and the `benches/` targets: the global allocator they install (`Counting` over `Jemalloc`, below), `Plan` (warmup, repeats, cooldown), `Timing`, the `--tracing` trace tree, Bencher Metric Format output (`Metric`, `bencher_json`), the reports' number formatting (`pretty_integer`, `pretty_f64`); never linked by the prover |
 | `fiat_shamir`            | leanISA  | the duplex sponge transcript and the prover's side of the proof transport |
 | `pcs`                    | leanISA  | additive NTT, Merkle, ring switch, stacked WHIR: commit and open, no verifier |

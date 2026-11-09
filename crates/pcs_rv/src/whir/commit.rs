@@ -8,11 +8,12 @@
 //! - L0 encodes the witness's words of `K`.
 //! - Every deeper level encodes a folded witness over `E`, with twiddles in `K`.
 
-use crate::merkle::{Hash, MerkleBuilder, MerkleTree, sorted_unique};
+use crate::merkle::{Hash, MerkleTree, sorted_unique, words_as_bytes};
 use crate::ntt::{AdditiveNtt, Pad, transpose_lane_major};
 use crate::whir::query::Padding;
 use fiat_shamir_rv::ProverState;
 use primitives::field::{F64, F192};
+use primitives::merkle::{Blake2s, MerkleBuilder};
 use std::sync::Arc;
 
 /// The L0 commitment as its prover keeps it: the codeword and its Merkle tree.
@@ -101,7 +102,7 @@ impl BaseCommitment {
         let mut codeword = Box::new_uninit_slice(codeword_len);
 
         // Leaves are hashed as the encode finishes each block of rows.
-        let builder = MerkleBuilder::new(n_positions, n_lanes, 1usize << log_batch_size);
+        let builder = MerkleBuilder::<Blake2s>::new(n_positions, 8 * n_lanes, 8 << log_batch_size, 0);
         tracing::info_span!("NTT", kind = "base encode", log_domain = k_code, lanes = n_lanes).in_scope(|| {
             // SAFETY: every codeword word is written before it is read.
             // - The transpose writes every word of the message region, the first `message.len()` words.
@@ -111,12 +112,12 @@ impl BaseCommitment {
             transpose_lane_major(&mut codeword[..message.len()], message, n_lanes, log_rows);
             let ntt = AdditiveNtt::standard(k_code);
             ntt.encode_interleaved_in_place_with(codeword, n_lanes, log_inv_rate, pad, &|row, rows| {
-                builder.absorb(row, rows);
+                builder.absorb(row, &words_as_bytes(rows));
             });
         });
         // SAFETY: the transpose and the encode above wrote every word of the codeword.
         let codeword = unsafe { codeword.assume_init() }.into_vec();
-        let tree = tracing::info_span!("Merkle").in_scope(|| builder.finish());
+        let tree = tracing::info_span!("Merkle").in_scope(|| MerkleTree::from(builder.finish()));
         Self {
             codeword,
             tree,
@@ -193,7 +194,7 @@ impl LevelCommitment {
 
         // One leaf per row, each element of `E` as its three words of `K`.
         let row_words = 3 * num_interleaved;
-        let builder = MerkleBuilder::new(1 << log_block_len, row_words, row_words);
+        let builder = MerkleBuilder::<Blake2s>::new(1 << log_block_len, 8 * row_words, 8 * row_words, 0);
         tracing::info_span!(
             "NTT",
             kind = "extension encode",
@@ -202,10 +203,10 @@ impl LevelCommitment {
         )
         .in_scope(|| {
             ntt.encode_rows_ext(&poly, num_interleaved, log_inv_rate, &|row, rows| {
-                builder.absorb(row, rows);
+                builder.absorb(row, &words_as_bytes(rows));
             });
         });
-        let tree = tracing::info_span!("Merkle").in_scope(|| builder.finish());
+        let tree = tracing::info_span!("Merkle").in_scope(|| MerkleTree::from(builder.finish()));
 
         Self {
             msg: poly,

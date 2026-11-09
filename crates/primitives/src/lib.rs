@@ -7,6 +7,7 @@ pub mod bits;
 pub mod blake2s;
 pub mod field;
 pub mod hash;
+pub mod merkle;
 pub mod multilinear;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub mod simd;

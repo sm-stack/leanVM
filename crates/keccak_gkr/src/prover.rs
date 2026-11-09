@@ -9,7 +9,7 @@
 //! From `s` on, everything stays in the power basis of `s` ([`crate::power`]) until the tables
 //! are down to one row.
 
-use crate::Transcript;
+use fiat_shamir::transcript::ProverState;
 use primitives::field::{F192, F192Unreduced};
 use primitives::multilinear::{eq_table, poly_eval};
 
@@ -732,7 +732,7 @@ impl Scratch {
 /// Prove one layer, as `crates/verifier`'s `keccak.rs` checks it: a claim on the states `step`
 /// layers below the outputs becomes one on the states a layer further down.
 pub fn prove_layer(
-    ps: &mut impl Transcript,
+    ps: &mut ProverState,
     witness: &Witness,
     scratch: &mut Scratch,
     step: usize,
@@ -849,7 +849,7 @@ pub fn prove_layer(
 /// Send a round of the sumcheck over the packs and segments and bind its variable, whose point
 /// in the claim is `at`: the claim's `eq` factor on it moves into `scale`.
 fn bind(
-    ps: &mut impl Transcript,
+    ps: &mut ProverState,
     coeffs: &[F192; 3],
     at: F192,
     value: &mut F192,

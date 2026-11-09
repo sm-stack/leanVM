@@ -12,18 +12,17 @@ workspace = true
 parallel.workspace = true
 primitives.workspace = true
 fiat_shamir.workspace = true
+pcs.workspace = true
 tracing.workspace = true
 bench = { workspace = true, optional = true }
-pcs = { workspace = true, optional = true }
 verifier = { workspace = true, optional = true }
 
 [features]
 # The standalone batch benchmark (`batch_bench`), for the `hash_batch` target and the CLI.
-bench = ["dep:bench", "dep:pcs", "dep:verifier", "primitives/test-util"]
+bench = ["dep:bench", "dep:verifier", "primitives/test-util"]
 
 [dev-dependencies]
 keccak_gkr = { path = ".", features = ["bench"] }
-pcs.workspace = true
 primitives = { workspace = true, features = ["test-util"] }
 verifier.workspace = true
 

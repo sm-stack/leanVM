@@ -86,6 +86,7 @@
 //! of eight positions' weights applied to bit-transposed products (`products_gfni`); elsewhere,
 //! the positions grouped by each byte of their weight (`prover`'s digit buckets).
 
+use fiat_shamir::transcript::ProverState;
 use keccak::LANE_VARS;
 use primitives::field::{F64, F192, F192Unreduced};
 use primitives::multilinear::eq_table;
@@ -176,62 +177,12 @@ fn first(shape: Shape, output: &OutputClaim, segment: Vec<F192>, r_lane: &[F192]
     claim
 }
 
-/// The prover's side of a Fiat-Shamir transcript, as the reduction writes to it: scalars it sends, round polynomials
-/// with the coefficient their claim fixes left out, and challenges.
-///
-/// The reduction runs on any transcript that provides them, the leanISA prover's and the RISC-V prover's alike.
-pub trait Transcript {
-    /// Send `x`, binding it into the transcript.
-    fn add_scalar(&mut self, x: F192);
-
-    /// Send each of `xs` in order.
-    fn add_scalars(&mut self, xs: &[F192]) {
-        for &x in xs {
-            self.add_scalar(x);
-        }
-    }
-
-    /// Send a sumcheck round's polynomial, constant first, short of the coefficient its claim fixes: the linear one,
-    /// or with `eq` the round's eq weight factored out, the constant.
-    fn add_round_poly(&mut self, coeffs: &[F192], eq: bool);
-
-    /// Draw a challenge.
-    fn sample(&mut self) -> F192;
-
-    /// Draw `n` challenges, in order.
-    fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        (0..n).map(|_| self.sample()).collect()
-    }
-}
-
-impl Transcript for fiat_shamir::transcript::ProverState {
-    fn add_scalar(&mut self, x: F192) {
-        Self::add_scalar(self, x);
-    }
-
-    fn add_scalars(&mut self, xs: &[F192]) {
-        Self::add_scalars(self, xs);
-    }
-
-    fn add_round_poly(&mut self, coeffs: &[F192], eq: bool) {
-        Self::add_round_poly(self, coeffs, eq);
-    }
-
-    fn sample(&mut self) -> F192 {
-        Self::sample(self)
-    }
-
-    fn sample_vec(&mut self, n: usize) -> Vec<F192> {
-        Self::sample_vec(self, n)
-    }
-}
-
 impl Witness {
     /// Reduce "the committed states follow Keccak-f, to an output satisfying `output`" to
     /// openings of the commitment. `committed` is the WHOLE committed block, spare slots and
     /// all, not just the states [`Witness::generate`] wrote: the openings it leaves are claims
     /// on all of it, so they fold whatever rides those slots (§cpu).
-    pub fn prove(&self, ps: &mut impl Transcript, committed: &[F64], output: &OutputClaim) -> Openings {
+    pub fn prove(&self, ps: &mut ProverState, committed: &[F64], output: &OutputClaim) -> Openings {
         let shape = self.shape;
         assert_eq!(
             committed.len(),

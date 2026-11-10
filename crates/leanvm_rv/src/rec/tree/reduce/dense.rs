@@ -106,6 +106,40 @@ struct Part<'a> {
     table: Vec<F192>,
     /// The buffers the next fold writes.
     spare: [Vec<F192>; 2],
+    /// Which tiles of its values as given are zero.
+    zeros: ZeroTiles,
+}
+
+/// Which tiles of a table as given are all zero, as counts of the nonzero ones before each.
+///
+/// A folded entry is zero wherever every entry it folds is, so the tiles say which entries of every later round are
+/// zero too: their folds and their share of a message are skipped, the table holding zeros there. The weights are
+/// still folded everywhere, since a later round's entry can fold a zero one with one that is not.
+struct ZeroTiles {
+    /// The nonzero tiles before each tile, then the total.
+    nonzero_before: Vec<u32>,
+    /// The entries the tiles cover.
+    len: usize,
+}
+
+impl ZeroTiles {
+    /// The tiles of `flags`, each whether its tile of the table's `len` entries is all zero.
+    fn new(flags: &[bool], len: usize) -> Self {
+        let mut nonzero_before = Vec::with_capacity(flags.len() + 1);
+        let mut count = 0;
+        nonzero_before.push(count);
+        for &zero in flags {
+            count += u32::from(!zero);
+            nonzero_before.push(count);
+        }
+        Self { nonzero_before, len }
+    }
+
+    /// Whether entries `a..b` after `rounds` folds are all zero.
+    fn zero(&self, rounds: usize, a: usize, b: usize) -> bool {
+        let (lo, hi) = (a << rounds, self.len.min(b << rounds));
+        lo < hi && self.nonzero_before[hi.div_ceil(TILE)] == self.nonzero_before[lo / TILE]
+    }
 }
 
 /// One term of a weight table: `c eq(p, .)` on one aligned block of the table.
@@ -413,8 +447,15 @@ impl<'a> Part<'a> {
             weights: Vec::new(),
             table: Vec::new(),
             spare: [Vec::new(), Vec::new()],
+            zeros: ZeroTiles {
+                nonzero_before: Vec::new(),
+                len: 0,
+            },
         };
         let len = part.len_at(0);
+        // Whether each tile of the values is zero, noted as the first pass reads it.
+        let mut flags = vec![false; len.div_ceil(TILE)];
+        let fc = ChunkView::new(&mut flags, PAR_LEN / TILE);
         let (source, w_len) = if factored > 0 {
             (Source::Blocks(&blocks), 0)
         } else {
@@ -429,10 +470,18 @@ impl<'a> Part<'a> {
             let touching = source.touching(from, to);
             // SAFETY: each chunk index is taken once, and the table outlives the dispatch.
             let wo: &mut [F192] = if wc.is_empty() { &mut [] } else { unsafe { wc.get(c) } };
+            // SAFETY: as above.
+            let flags = unsafe { fc.get(c) };
             (from..to)
                 .step_by(TILE)
-                .map(|a| {
+                .zip(flags)
+                .map(|(a, zero)| {
                     let b = to.min(a + TILE);
+                    *zero = base[a..b].iter().all(|x| *x == F64::ZERO);
+                    // A zero tile adds nothing to a message; only weights written out still need it.
+                    if *zero && wo.is_empty() {
+                        return Msg::default();
+                    }
                     let wo = wo.get_mut(a - from..b - from).unwrap_or_default();
                     source.message(&touching, a, &base[a..b], wo, F192::ZERO)
                 })
@@ -442,6 +491,7 @@ impl<'a> Part<'a> {
         unsafe { weights.set_len(w_len) };
         part.blocks = blocks;
         part.weights = weights;
+        part.zeros = ZeroTiles::new(&flags, len);
         (part, message)
     }
 
@@ -487,10 +537,12 @@ impl<'a> Part<'a> {
                 write_only(&mut t.spare_capacity_mut()[..len]),
             )
         };
+        let zeros = &self.zeros;
+        let zero = |a: usize, b: usize| zeros.zero(i + 1, a, b);
         let message = if i == 0 {
-            source.fold_round(self.base, r, half, extra, w_out, t_out)
+            source.fold_round(self.base, r, half, extra, (w_out, t_out), &zero)
         } else {
-            source.fold_round(&self.table, r, half, extra, w_out, t_out)
+            source.fold_round(&self.table, r, half, extra, (w_out, t_out), &zero)
         };
         // SAFETY: the fold wrote the first `w_len` and `len` entries.
         unsafe {
@@ -570,15 +622,16 @@ impl Source<'_> {
     /// round's message.
     ///
     /// The first `half` entries fold from pairs. Past them, when `t_out` is one longer, are the weight's zero and the
-    /// table's `extra`. The message is over the folded pairs, none when one entry is left.
+    /// table's `extra`. The message is over the folded pairs, none when one entry is left. Entries `zero` says are
+    /// folded from zeros are written zero and add nothing to it.
     fn fold_round<T: Entry>(
         self,
         t: &[T],
         r: F192,
         half: usize,
         extra: Option<F192>,
-        w_out: &mut [F192],
-        t_out: &mut [F192],
+        (w_out, t_out): (&mut [F192], &mut [F192]),
+        zero: &(dyn Fn(usize, usize) -> bool + Sync),
     ) -> Msg {
         if t_out.len() == 1 {
             t_out[0] = T::fold(t[0], t[1], r);
@@ -599,8 +652,17 @@ impl Source<'_> {
                 .map(|a| {
                     let b = to.min(a + TILE);
                     let tile = &mut tables[a - from..b - from];
-                    T::fold_into(&t[2 * a..2 * b], r, tile);
                     let wo = wo.get_mut(a - from..b - from).unwrap_or_default();
+                    if zero(a, b) {
+                        // Entries folded from zeros: zero, adding nothing to the message, though their weights
+                        // are still written out or folded.
+                        tile.fill(F192::ZERO);
+                        if wo.is_empty() {
+                            return Msg::default();
+                        }
+                    } else {
+                        T::fold_into(&t[2 * a..2 * b], r, tile);
+                    }
                     self.message(&touching, a, tile, wo, r)
                 })
                 .sum()
@@ -742,6 +804,46 @@ mod tests {
     use primitives::test_rng::Rng;
 
     // Claims on every table at random points, one of several terms with public bits, a kind bit and a scale, the last.
+    #[test]
+    fn zero_tiles_reduce_as_the_rest() {
+        // Invariant: a table's zero tiles, which the prover skips, reduce as their zeros do.
+        //
+        // Fixture state: tables of up to 2^13 entries, runs of tiles zeroed in each (a lone tile, a long aligned run, an
+        // unaligned run, the last tile), so the skipped entries meet unskipped ones at every level of the folds.
+        let mut rng = Rng::new(23);
+        let vars = DenseVars(vec![8, 10, 13, 12]);
+        let zeroed = [(1, 2), (8, 40), (45, 61)];
+        let tables = DenseTables(
+            vars.0
+                .iter()
+                .map(|&n| {
+                    let mut t: Vec<F64> = (0..1 << n).map(|_| F64(rng.next_u64())).collect();
+                    let tiles = t.len() / TILE;
+                    for &(a, b) in zeroed.iter().chain([&(tiles - 1, tiles)]) {
+                        let (a, b) = (a.min(tiles), b.min(tiles));
+                        t[a * TILE..b * TILE].fill(F64::ZERO);
+                    }
+                    t
+                })
+                .collect(),
+        );
+        let claims = dense_claims(&mut rng, &tables, &vars);
+        let session = SessionId::tagged(reduce::SESSION_TAG, &SessionId::new(b"tree-test").0);
+        let mut ps = ProverState::new(&session, &0u64);
+        DenseProver::prove(&mut ps, &vars, &tables, &claims);
+        let proof = ps.into_proof();
+        let mut vs = VerifierState::new(&session, &0u64, &proof);
+        let reduced = DenseReduced::verify(&mut vs, &vars, &claims).expect("an honest reduction");
+        for poly in DensePoly::ALL {
+            let point = &reduced.point[..vars.0[poly.index()]];
+            assert_eq!(
+                reduced.values[poly.index()],
+                Some(mle_eval(&tables.0[poly.index()], point)),
+                "{poly:?}"
+            );
+        }
+    }
+
     fn dense_claims(rng: &mut Rng, tables: &DenseTables, vars: &DenseVars) -> Vec<DenseClaim<F192>> {
         let mut claims = Vec::new();
         for poly in DensePoly::ALL {

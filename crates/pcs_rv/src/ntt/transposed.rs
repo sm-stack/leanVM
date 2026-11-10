@@ -51,7 +51,7 @@ impl AdditiveNtt {
         let k = if log_d >= 12 { 8usize.min(log_d) } else { 0 };
         let prefix_steps = k.min(log_d - log_inv_rate);
 
-        let mut data = vec![F192::ZERO; n];
+        let mut data = zeroed(n);
         if k == 0 {
             for (&p, &v) in positions.iter().zip(values) {
                 data[p] += v;
@@ -207,6 +207,22 @@ impl AdditiveNtt {
             }
         });
     }
+}
+
+/// `n` zeros, cleared a chunk per task: a whole domain is more than one thread clears quickly.
+fn zeroed(n: usize) -> Vec<F192> {
+    /// Elements one task clears: 768 KiB.
+    const CHUNK: usize = 1 << 15;
+    if n < 4 * CHUNK {
+        return vec![F192::ZERO; n];
+    }
+    let mut data = Box::new_uninit_slice(n);
+    parallel::chunks_mut(&mut data, CHUNK, |_, chunk| {
+        // SAFETY: the chunk is written here before anything reads it.
+        unsafe { primitives::write_only(chunk) }.fill(F192::ZERO);
+    });
+    // SAFETY: every chunk was written.
+    unsafe { data.assume_init() }.into_vec()
 }
 
 /// The transposed butterfly `s = a + b; a' = s; b' = t*s + b` on every pair of a top and a bottom row.

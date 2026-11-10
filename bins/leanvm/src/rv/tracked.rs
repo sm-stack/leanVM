@@ -4,9 +4,9 @@
 //! Two lists. The counts are exact and cheap, so they are taken at the README's sizes, the
 //! most one proof holds, on one runner (`.github/workflows/counts.yml`), which compares a
 //! PR's with its base's: they are the same on every machine. Proving on CI's GitHub-hosted
-//! runners (16 GB, `.github/workflows/bench.yml`) takes the sizes that fit them (leanXMSS and
-//! leanSPHINCS at a quarter, and no leanDA, whose one blob is its smallest run), and a PR's
-//! base and head are proven in turns on one runner and compared there. leanXMSS at a quarter,
+//! runners (16 GB, `.github/workflows/bench.yml`) takes the sizes that fit them (leanXMSS at
+//! 100, leanSPHINCS at a quarter, and no leanDA, whose one blob is its smallest run), and a PR's
+//! base and head are proven in turns on one runner and compared there. leanXMSS at 100,
 //! and the 2-to-1 and 4-to-1 trees over it, retain their 1, 4 and 8 performance-worker cases.
 //! Other cases use exactly 16 total threads, each in a process of its own (`THREADS`).
 //! A case's name is what a PR's results are matched by, so
@@ -57,7 +57,7 @@ fn counted() -> Vec<Case> {
     vec![
         Case::new("fibonacci-asm-2000000", Workload::fibonacci(2_000_000)),
         Case::new("hash-50000", Workload::hash(50_000)),
-        Case::new("leanxmss-400", Workload::leanxmss(400)),
+        Case::new("leanxmss-2020", Workload::leanxmss(2020)),
         Case::new("leansphincs-104", Workload::leansphincs(104)),
         Case::new("leanda-1", Workload::leanda(1)),
         Case::new("shielded-1035", Workload::shielded(1035)),

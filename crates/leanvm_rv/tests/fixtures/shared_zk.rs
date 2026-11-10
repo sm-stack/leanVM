@@ -19,17 +19,19 @@ pub fn config() -> ([LeafClass; 3], TreeShape) {
         )
         .unwrap(),
     };
+    // Sized for 400 signatures of the member-list guest, at rate 1/4 so that its first-level circuit's HASH table
+    // stays at the shared tier's height.
     let signature = LeafClass {
         program: ProgramClass {
             log_bytecode: 13,
             log_ram: 17,
-            log_advice: 16,
+            log_advice: 18,
             image_words: 64,
-            max_members: 128,
+            max_members: 512,
         },
         shape: LeafShape::plain(
-            PerTable::from_fn(|t: TableId| [20, 4, 15, 18, 18, 16, 4, 4, 4, 16, 3][t.index()]),
-            rate,
+            PerTable::from_fn(|t: TableId| [21, 4, 17, 20, 20, 18, 4, 4, 4, 18, 3][t.index()]),
+            Rate::new(2).unwrap(),
         )
         .unwrap(),
     };

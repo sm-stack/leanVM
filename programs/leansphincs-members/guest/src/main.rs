@@ -5,7 +5,7 @@
 use leansphincs::{Message, PublicKey, Signature};
 use leanvm_guest::{commit, members::Members, read, read_unchecked};
 
-leanvm_guest::advice_words!(1 << 16);
+leanvm_guest::advice_words!(1 << 18);
 
 #[unsafe(no_mangle)]
 extern "C" fn main() {

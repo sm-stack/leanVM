@@ -187,7 +187,7 @@ Benchmarks (the timing subcommands use 16 threads unless `LEANVM_NUM_THREADS` is
 cargo leanvm rv fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 cargo leanvm rv guest programs/blake2s/blake2s.elf --advice 10000 --repeat 3    # BLAKE2s in plain Rust
 cargo leanvm rv guest programs/hash/hash.elf --advice 50000 --repeat 3          # BLAKE2s through the precompile
-cargo leanvm rv leanxmss --n 400 --repeat 3
+cargo leanvm rv leanxmss --n 2020 --repeat 3
 cargo leanvm rv leansphincs --n 104 --repeat 3
 cargo leanvm rv leanda --blobs 1 --repeat 3
 cargo leanvm rv falcon --n 28 --repeat 3
